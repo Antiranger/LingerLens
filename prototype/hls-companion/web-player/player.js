@@ -116,14 +116,31 @@
     }
   }
 
-  async function stop() {
-    setBusy(true);
-    try { await request("/api/stop", {}); } catch (error) { showError(error); }
+  function resetStoppedUi() {
     destroyPlayer();
     stage.classList.remove("has-media");
+    el("quality").disabled = true;
+    el("quality").innerHTML = '<option value="auto">自动（最高兼容）</option>';
+    el("start").disabled = true;
     el("stop").disabled = true;
+    el("streamTitle").textContent = "等待直播地址";
+    el("message").textContent = "已停止当前直播。可以输入另一个 YouTube 或 Bilibili 地址继续探测。";
+    for (const id of ["hiddenDelay", "playerDelay", "totalDelay", "buffer", "resolution", "uptime", "subtitleProviderStatus", "subtitleCost", "translationLatency", "subtitleReadyLag", "budgetMargin", "cueDuration", "timingSources", "schedulerDrops"]) {
+      el(id).textContent = "—";
+    }
     setState("已停止", "idle");
-    setBusy(false);
+  }
+
+  async function stop() {
+    setBusy(true);
+    try {
+      await request("/api/stop", {});
+      resetStoppedUi();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function attach(url) {
@@ -207,7 +224,7 @@
       // The stream may have been started from another tab, the extension, or a
       // diagnostic client. Restore controls from server truth on every poll
       // instead of relying on this page's start() call having run.
-      const serverActive = data.state === "running" || Boolean(data.pageUrl);
+      const serverActive = data.state === "running";
       el("stop").disabled = !serverActive;
       if (data.playlistUrl) attach(data.playlistUrl);
       if (data.state === "error") throw new Error(data.error || "FFmpeg failed");
@@ -215,9 +232,7 @@
         const playing = data.playlistReady && !video.paused;
         setState(data.playlistReady ? (playing ? "延迟播放中" : "就绪待播放") : "建立延迟缓冲", playing ? "stable" : "waiting");
       }
-      if (data.state === "idle" && data.pageUrl && !data.playlistReady) {
-        throw new Error("媒体管线已经停止，但没有生成可播放列表。请重新启动 Companion 后再试。\n" + (data.ffmpegLogTail?.join("\n") || ""));
-      }
+      if (data.state === "idle" && (hls || video.src)) resetStoppedUi();
       el("hiddenDelay").textContent = seconds(Number(data.hiddenMediaSeconds));
       const playerBehind = Number.isFinite(browserLatency) ? browserLatency : estimateVideoLatency();
       el("playerDelay").textContent = seconds(playerBehind);
@@ -304,10 +319,21 @@
     el("modelSettingsDialog").close();
   }
 
+  function updateCookiePlatformHelp() {
+    const bilibili = el("cookiePlatform").value === "bilibili";
+    el("cookieImportIntro").textContent = bilibili
+      ? "从 bilibili.com 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。yt-dlp 登录检查只要求 SESSDATA；其他有效 Cookie 会一并保留。"
+      : "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。";
+    el("cookiePayload").placeholder = bilibili
+      ? "SESSDATA　xxxxxxxx…\nbili_jct　yyyyyyyy…\nDedeUserID　12345"
+      : "SID　xxxxxxxx…\nHSID　yyyyyyyy…\n（直接从 DevTools Cookie 列表复制即可）";
+  }
+
   function openCookieImport() {
     const feedback = el("cookieImportFeedback");
     feedback.textContent = "";
     feedback.dataset.tone = "";
+    updateCookiePlatformHelp();
     el("cookieImportDialog").showModal();
   }
 
@@ -323,7 +349,7 @@
     feedback.dataset.tone = "";
     submit.disabled = true;
     try {
-      const payload = { domain: el("cookieDomain").value };
+      const payload = { platform: el("cookiePlatform").value };
       if (el("cookieFormat").value === "netscape") {
         payload.netscape = el("cookiePayload").value;
       } else if (el("cookieFormat").value === "lines") {
@@ -334,10 +360,13 @@
       const data = await request("/api/auth-cookies", payload);
       authToken = data.authToken;
       if (data.missingCritical && data.missingCritical.length) {
-        feedback.textContent = `已导入 ${data.accepted} 个 Cookie，但缺少登录关键字段：${data.missingCritical.join("、")}。请在 DevTools 的 Cookie 列表里全选（点击第一行后 Shift+点击最后一行）重新复制粘贴，确保包含 HSID、APISID、SAPISID、__Secure-1PSID 等全部条目。`;
+        feedback.textContent = data.platform === "bilibili"
+          ? `已保存 ${data.accepted} 个 Bilibili Cookie，但缺少 yt-dlp 登录关键字段 SESSDATA。请从 bilibili.com 的 Cookie 列表重新复制。`
+          : `已保存 ${data.accepted} 个 YouTube Cookie，但缺少登录关键字段：${data.missingCritical.join("、")}。请从 YouTube/Google 登录域的 Cookie 列表重新复制。`;
         feedback.dataset.tone = "error";
       } else {
-        feedback.textContent = `已导入 ${data.accepted} 个 Cookie（${data.names.length} 个名称），登录凭据完整${data.persisted ? "，已保存到本机（重启 Companion 后仍然有效）" : "（保存到磁盘失败，仅本次运行有效）"}。现在点击「探测清晰度」。`;
+        const platformName = data.platform === "bilibili" ? "Bilibili" : "YouTube";
+        feedback.textContent = `已导入 ${data.accepted} 个 ${platformName} Cookie（${data.names.join("、")}）${data.persisted ? "，已按平台保存到本机" : "，磁盘保存失败，仅本次运行有效"}。现在可以探测对应平台地址。`;
         feedback.dataset.tone = "success";
       }
       el("message").textContent = "登录 Cookie 已导入，探测与启动将使用该登录态。";
@@ -607,7 +636,7 @@
   el("openCookieImport").addEventListener("click", openCookieImport);
   el("closeCookieImport").addEventListener("click", closeCookieImport);
   el("cancelCookieImport").addEventListener("click", closeCookieImport);
-  el("cookieFormat").addEventListener("change", () => { el("cookieDomainField").hidden = el("cookieFormat").value === "netscape"; });
+  el("cookiePlatform").addEventListener("change", updateCookiePlatformHelp);
   el("cookieImportForm").addEventListener("submit", submitCookieImport);
   el("modelSettingsForm").addEventListener("submit", saveModelSettings);
   el("asrModel").addEventListener("change", () => updateAsrProtocolNote({ applyDefaultUrl: true }));

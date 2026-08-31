@@ -87,20 +87,29 @@ DEFAULT_PROVIDERS = ROOT / "runtime" / "providers.json"
 PROBE_INFO_TTL_SECONDS = 90.0
 
 
-CRITICAL_LOGIN_COOKIES = (
-    "SID",
-    "HSID",
-    "SSID",
-    "APISID",
-    "SAPISID",
-    "LOGIN_INFO",
-    "__Secure-1PSID",
-    "__Secure-3PSID",
-    "__Secure-1PSIDTS",
-    "__Secure-3PSIDTS",
-    "__Secure-1PSIDCC",
-    "__Secure-3PSIDCC",
-)
+SUPPORTED_AUTH_PLATFORMS = {
+    "youtube": {
+        "defaultDomain": ".youtube.com",
+        "critical": (
+            "SID",
+            "HSID",
+            "SSID",
+            "APISID",
+            "SAPISID",
+            "LOGIN_INFO",
+            "__Secure-1PSID",
+            "__Secure-3PSID",
+            "__Secure-1PSIDTS",
+            "__Secure-3PSIDTS",
+            "__Secure-1PSIDCC",
+            "__Secure-3PSIDCC",
+        ),
+    },
+    "bilibili": {
+        "defaultDomain": ".bilibili.com",
+        "critical": ("SESSDATA",),
+    },
+}
 
 
 class CompanionApplication:
@@ -116,7 +125,8 @@ class CompanionApplication:
         self.providers_path = args.providers_file
         self.providers_config = load_config(self.providers_path)
         self.auth_file = Path(args.providers_file).parent / "auth-snapshot.json"
-        self.persisted_auth: list[dict[str, Any]] | None = self._load_persisted_auth()
+        self.persisted_auth: dict[str, list[dict[str, Any]]] = {}
+        self.persisted_auth = self._load_persisted_auth()
         self.subtitle_pipeline: SubtitlePipeline | None = None
         self.subtitle_store = CueStore()
         self.subtitle_last_error: str | None = None
@@ -224,26 +234,36 @@ class CompanionApplication:
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("cookie import must be an object")
+        platform = str(body.get("platform") or "youtube").lower()
+        platform_config = SUPPORTED_AUTH_PLATFORMS.get(platform)
+        if platform_config is None:
+            raise ValueError("platform must be youtube or bilibili")
+        domain = str(body.get("domain") or platform_config["defaultDomain"])
         if body.get("netscape"):
             raw = parse_netscape_cookies(str(body["netscape"]))
         elif body.get("lines"):
-            raw = parse_name_value_lines(str(body["lines"]), str(body.get("domain") or ".youtube.com"))
+            raw = parse_name_value_lines(str(body["lines"]), domain)
         elif body.get("header"):
-            raw = parse_header_cookies(str(body["header"]), str(body.get("domain") or ".youtube.com"))
+            raw = parse_header_cookies(str(body["header"]), domain)
         else:
             raise ValueError("Provide either a Netscape cookies.txt export or a cookie header")
-        cookies = normalize_imported_cookies(raw)
+        cookies = [
+            cookie
+            for cookie in normalize_imported_cookies(raw)
+            if self._platform_for_cookie_domain(cookie.get("domain")) == platform
+        ]
         if not cookies:
             raise ValueError("No usable YouTube/Google/Bilibili cookies were found in the import")
         token = secrets.token_urlsafe(24)
         with self.auth_lock:
             self.auth_snapshots[token] = cookies
-        persisted = self._persist_auth(cookies)
+        persisted = self._persist_auth(platform, cookies)
         names = sorted({cookie["name"] for cookie in cookies})
-        missing_critical = [name for name in CRITICAL_LOGIN_COOKIES if name not in names]
+        missing_critical = [name for name in platform_config["critical"] if name not in names]
         return web.json_response(
             {
                 "ok": True,
+                "platform": platform,
                 "authToken": token,
                 "accepted": len(cookies),
                 "skipped": len(raw) - len(cookies),
@@ -521,22 +541,58 @@ class CompanionApplication:
             self.auth_snapshots[token] = cookies
         return {"ok": True, "authToken": token}
 
-    def _load_persisted_auth(self) -> list[dict[str, Any]] | None:
-        """Reload a previously imported cookie snapshot after a restart."""
+    def _load_persisted_auth(self) -> dict[str, list[dict[str, Any]]]:
+        """Reload per-platform snapshots and migrate the legacy single snapshot."""
         try:
             raw = json.loads(self.auth_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(raw, dict) or not isinstance(raw.get("cookies"), list):
-            return None
-        return normalize_imported_cookies([dict(item) for item in raw["cookies"] if isinstance(item, dict)]) or None
+            return {}
+        platforms: dict[str, list[dict[str, Any]]] = {}
+        if isinstance(raw, dict) and isinstance(raw.get("platforms"), dict):
+            for platform in SUPPORTED_AUTH_PLATFORMS:
+                cookies = raw["platforms"].get(platform)
+                if isinstance(cookies, list):
+                    normalized = normalize_imported_cookies([dict(item) for item in cookies if isinstance(item, dict)])
+                    if normalized:
+                        platforms[platform] = normalized
+            return platforms
+        if isinstance(raw, dict) and isinstance(raw.get("cookies"), list):
+            cookies = normalize_imported_cookies([dict(item) for item in raw["cookies"] if isinstance(item, dict)])
+            if cookies:
+                platform = self._platform_for_cookie_domain(cookies[0].get("domain"))
+                if platform:
+                    platforms[platform] = cookies
+                    self.persisted_auth = platforms
+                    self._write_persisted_auth()
+        return platforms
 
-    def _persist_auth(self, cookies: list[dict[str, Any]]) -> bool:
-        """Save the imported snapshot to a user-private local file (best effort)."""
-        self.persisted_auth = cookies
+    @staticmethod
+    def _platform_for_cookie_domain(domain: object) -> str | None:
+        bare = str(domain or "").lower().lstrip(".")
+        if bare == "bilibili.com" or bare.endswith(".bilibili.com"):
+            return "bilibili"
+        if bare in {"youtube.com", "google.com"} or bare.endswith((".youtube.com", ".google.com")):
+            return "youtube"
+        return None
+
+    @staticmethod
+    def _platform_for_url(url: object) -> str | None:
+        host = (urllib.parse.urlparse(str(url or "")).hostname or "").lower()
+        if host == "bilibili.com" or host.endswith(".bilibili.com"):
+            return "bilibili"
+        if host in {"youtube.com", "youtu.be"} or host.endswith(".youtube.com"):
+            return "youtube"
+        return None
+
+    def _persist_auth(self, platform: str, cookies: list[dict[str, Any]]) -> bool:
+        """Merge one platform snapshot into the user-private local auth file."""
+        self.persisted_auth[platform] = cookies
+        return self._write_persisted_auth()
+
+    def _write_persisted_auth(self) -> bool:
         try:
             self.auth_file.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps({"version": 1, "cookies": cookies}, ensure_ascii=False, indent=2) + "\n"
+            payload = json.dumps({"version": 2, "platforms": self.persisted_auth}, ensure_ascii=False, indent=2) + "\n"
             fd, temporary = tempfile.mkstemp(prefix=".auth-snapshot.", dir=self.auth_file.parent)
             try:
                 if os.name != "nt":
@@ -565,10 +621,11 @@ class CompanionApplication:
             if cookies is None:
                 raise web.HTTPUnauthorized(text=json.dumps({"error": "Authentication snapshot expired"}), content_type="application/json")
             return BrowserCookieSnapshot(cookies)
-        # Fall back to the last imported snapshot so restarts keep the login
-        # without the player having to re-import.
-        if self.persisted_auth:
-            return BrowserCookieSnapshot(self.persisted_auth)
+        # Select the persisted login matching the target URL. Imports for the
+        # other platform remain intact and are never merged into this request.
+        platform = self._platform_for_url(body.get("url"))
+        if platform and self.persisted_auth.get(platform):
+            return BrowserCookieSnapshot(self.persisted_auth[platform])
         browser = body.get("cookiesFromBrowser") or self.args.cookies_from_browser
         return DevelopmentBrowserProfileFallback(str(browser) if browser else None)
 

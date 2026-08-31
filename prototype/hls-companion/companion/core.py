@@ -883,8 +883,17 @@ class LiveSession:
                 self.process.wait(timeout=3)
         if self.process and self.process.stderr:
             self.process.stderr.close()
+        if self._log_thread and self._log_thread is not threading.current_thread():
+            self._log_thread.join(timeout=1)
         self.process = None
         self.source_process = None
+        self.quality = None
+        self.page_url = None
+        self.started_at = None
+        self.error = None
+        self.log_tail.clear()
+        self._log_thread = None
+        shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
     def status(self) -> dict[str, Any]:
         exit_code = self.process.poll() if self.process else None

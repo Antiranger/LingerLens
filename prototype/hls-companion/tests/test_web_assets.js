@@ -68,10 +68,24 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(js, /authToken = data\.authToken/);
 });
 
+test("cookie import is platform-aware without exposing cookie values", () => {
+  const html = fs.readFileSync(path.join(root, "web-player/index.html"), "utf8");
+  const js = fs.readFileSync(path.join(root, "web-player/player.js"), "utf8");
+  assert.match(html, /id="cookiePlatform"/);
+  assert.match(html, /value="youtube"/);
+  assert.match(html, /value="bilibili"/);
+  assert.match(js, /platform:\s*el\("cookiePlatform"\)\.value/);
+  assert.match(js, /SESSDATA/);
+  assert.match(js, /data\.names/);
+  assert.doesNotMatch(js, /data\.cookies|data\.values/);
+});
+
 test("server status restores stop control after refresh or external start", () => {
   const js = fs.readFileSync(path.join(root, "web-player/player.js"), "utf8");
   assert.match(js, /el\("stop"\)\.disabled\s*=\s*!serverActive/);
-  assert.match(js, /const serverActive\s*=\s*data\.state === "running" \|\| Boolean\(data\.pageUrl\)/);
+  assert.match(js, /const serverActive\s*=\s*data\.state === "running"/);
+  assert.doesNotMatch(js, /idle"\s*&&\s*data\.pageUrl/);
+  assert.match(js, /resetStoppedUi/);
 });
 
 test("hls.js is bundled locally and no CDN is referenced", () => {

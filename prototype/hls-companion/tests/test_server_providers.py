@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from aiohttp.test_utils import AioHTTPTestCase
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from companion.server import CompanionApplication, errors
-from companion.core import BrowserCookieSnapshot
+from companion.core import BrowserCookieSnapshot, LiveSession
 
 
 class ProviderApiTests(AioHTTPTestCase):
@@ -173,6 +174,63 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertIn("HSID", payload["missingCritical"])
         self.assertIn("SAPISID", payload["missingCritical"])
 
+    async def test_bilibili_cookie_import_formats_preserve_cookies_and_only_require_sessdata(self) -> None:
+        cases = [
+            {"lines": "SESSDATA\tsession-secret\nbili_jct\tcsrf-secret\nDedeUserID\t12345\n"},
+            {"header": "SESSDATA=session-secret; bili_jct=csrf-secret; DedeUserID=12345"},
+            {
+                "netscape": (
+                    "# Netscape HTTP Cookie File\n"
+                    ".bilibili.com\tTRUE\t/\tTRUE\t1900000000\tSESSDATA\tsession-secret\n"
+                    ".bilibili.com\tTRUE\t/\tTRUE\t1900000000\tbili_jct\tcsrf-secret\n"
+                    ".bilibili.com\tTRUE\t/\tTRUE\t1900000000\tDedeUserID\t12345\n"
+                )
+            },
+        ]
+        for import_body in cases:
+            response = await self.client.post(
+                "/api/auth-cookies",
+                json={"platform": "bilibili", **import_body},
+            )
+            self.assertEqual(response.status, 200)
+            payload = await response.json()
+            self.assertEqual(payload["platform"], "bilibili")
+            self.assertEqual(payload["missingCritical"], [])
+            self.assertEqual(payload["names"], ["DedeUserID", "SESSDATA", "bili_jct"])
+            companion = self.app["companion"]
+            snapshot = companion._authentication(
+                {"url": "https://live.bilibili.com/1", "authToken": payload["authToken"]},
+                consume=False,
+            )
+            try:
+                rows = Path(snapshot.yt_dlp_args()[1]).read_text(encoding="utf-8").splitlines()[1:]
+                self.assertEqual(len(rows), 3)
+                self.assertTrue(all(len(row.split("\t")) == 7 for row in rows))
+                self.assertTrue(all(row.startswith(".bilibili.com\t") for row in rows))
+            finally:
+                snapshot.close()
+
+        response = await self.client.post(
+            "/api/auth-cookies",
+            json={"platform": "bilibili", "lines": "bili_jct\tcsrf-secret\nDedeUserID\t12345\n"},
+        )
+        payload = await response.json()
+        self.assertEqual(payload["missingCritical"], ["SESSDATA"])
+
+        response = await self.client.post(
+            "/api/auth-cookies",
+            json={
+                "platform": "bilibili",
+                "netscape": (
+                    ".bilibili.com\tTRUE\t/\tTRUE\t1900000000\tSESSDATA\tbili\n"
+                    ".youtube.com\tTRUE\t/\tTRUE\t1900000000\tSID\tyoutube\n"
+                ),
+            },
+        )
+        payload = await response.json()
+        self.assertEqual(payload["accepted"], 1)
+        self.assertEqual(payload["names"], ["SESSDATA"])
+
     async def test_cookie_import_rejects_cross_origin_and_empty_imports(self) -> None:
         response = await self.client.post(
             "/api/auth-cookies",
@@ -182,6 +240,65 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 403)
         response = await self.client.post("/api/auth-cookies", json={"header": "a=b", "domain": ".evil.com"})
         self.assertEqual(response.status, 400)
+
+    async def test_platform_cookies_coexist_survive_restart_and_are_selected_by_url(self) -> None:
+        youtube = await self.client.post(
+            "/api/auth-cookies",
+            json={"platform": "youtube", "lines": "SID\tyoutube-secret\n"},
+        )
+        bilibili = await self.client.post(
+            "/api/auth-cookies",
+            json={"platform": "bilibili", "lines": "SESSDATA\tbilibili-secret\nbili_jct\tkeep-me\n"},
+        )
+        self.assertTrue((await youtube.json())["persisted"])
+        self.assertTrue((await bilibili.json())["persisted"])
+
+        args = argparse.Namespace(
+            runtime_dir=Path(self.temporary.name) / "media2",
+            providers_file=Path(self.temporary.name) / "providers.json",
+            publish_delay=2.0,
+            cookies_from_browser=None,
+        )
+        restarted = CompanionApplication(args)
+        saved = json.loads((Path(self.temporary.name) / "auth-snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["version"], 2)
+        self.assertEqual(sorted(saved["platforms"]), ["bilibili", "youtube"])
+
+        for url, expected, absent in [
+            ("https://www.youtube.com/watch?v=test", "youtube-secret", "bilibili-secret"),
+            ("https://live.bilibili.com/1", "bilibili-secret", "youtube-secret"),
+        ]:
+            auth = restarted._authentication({"url": url}, consume=True)
+            try:
+                contents = Path(auth.yt_dlp_args()[1]).read_text(encoding="utf-8")
+                self.assertIn(expected, contents)
+                self.assertNotIn(absent, contents)
+                if "bilibili" in url:
+                    self.assertIn("bili_jct", contents)
+            finally:
+                auth.close()
+
+    async def test_legacy_single_snapshot_migrates_to_target_platform(self) -> None:
+        legacy_file = Path(self.temporary.name) / "auth-snapshot.json"
+        legacy_file.write_text(
+            json.dumps({"version": 1, "cookies": [{"domain": ".youtube.com", "path": "/", "name": "SID", "value": "legacy-secret", "secure": True}]}),
+            encoding="utf-8",
+        )
+        args = argparse.Namespace(
+            runtime_dir=Path(self.temporary.name) / "media-legacy",
+            providers_file=Path(self.temporary.name) / "providers.json",
+            publish_delay=2.0,
+            cookies_from_browser=None,
+        )
+        restarted = CompanionApplication(args)
+        auth = restarted._authentication({"url": "https://www.youtube.com/watch?v=test"}, consume=True)
+        try:
+            self.assertIn("legacy-secret", Path(auth.yt_dlp_args()[1]).read_text(encoding="utf-8"))
+        finally:
+            auth.close()
+        migrated = json.loads(legacy_file.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["version"], 2)
+        self.assertIn("youtube", migrated["platforms"])
 
     async def test_imported_cookies_survive_restart(self) -> None:
         companion = self.app["companion"]
@@ -201,15 +318,101 @@ class ProviderApiTests(AioHTTPTestCase):
         )
         restarted = CompanionApplication(args)
         self.assertIsNotNone(restarted.persisted_auth)
-        auth = restarted._authentication({}, consume=True)
+        auth = restarted._authentication({"url": "https://www.youtube.com/watch?v=test"}, consume=True)
         try:
             self.assertIsInstance(auth, BrowserCookieSnapshot)
             cookie_args = auth.yt_dlp_args()
             self.assertIn("--cookies", cookie_args)
             saved = json.loads((Path(self.temporary.name) / "auth-snapshot.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved["cookies"][0]["name"], "SID")
+            self.assertEqual(saved["platforms"]["youtube"][0]["name"], "SID")
         finally:
             auth.close()
+
+    async def test_stop_clears_session_identity_and_allows_a_different_start(self) -> None:
+        companion = self.app["companion"]
+
+        def info_for(url: str):
+            return {
+                "title": "Stream B" if url.endswith("/2") else "Stream A",
+                "extractor": "BiliBili",
+                "is_live": True,
+                "formats": [
+                    {
+                        "format_id": "live",
+                        "url": "https://media.example/live.m3u8",
+                        "width": 1280,
+                        "height": 720,
+                        "fps": 30,
+                        "vcodec": "avc1.4d401f",
+                        "acodec": "mp4a.40.2",
+                        "tbr": 2500,
+                    }
+                ],
+            }
+
+        companion.probe.extract = lambda url, auth: info_for(url)
+
+        class FakeIngest:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def input_urls(self):
+                return ["http://127.0.0.1:1/live.ts"]
+
+            def snapshot(self):
+                return {}
+
+            def tee_snapshot(self):
+                return {"teeDropped": 0}
+
+            def detach_audio_tee(self):
+                pass
+
+        def fake_start(page_url, inputs, _publish_delay, _command):
+            LiveSession.stop(companion.session)
+            companion.session.page_url = page_url
+            companion.session.quality = inputs.quality
+            companion.session.started_at = 123.0
+            companion.session.error = None
+
+        companion.session.start = fake_start
+        with patch("companion.server.YtDlpLiveIngest", FakeIngest), patch("companion.server.ProbeInfoSnapshot"):
+            response = await self.client.post(
+                "/api/start",
+                json={"url": "https://live.bilibili.com/1", "qualityId": "auto"},
+            )
+            self.assertEqual(response.status, 200)
+
+            response = await self.client.post("/api/stop", json={})
+            self.assertEqual(response.status, 200)
+            stopped = (await response.json())["status"]
+            self.assertEqual(stopped["state"], "idle")
+            self.assertIsNone(stopped["pageUrl"])
+            self.assertIsNone(stopped["quality"])
+            self.assertIsNone(stopped["playlistUrl"])
+            self.assertIsNone(stopped["error"])
+            self.assertEqual(stopped["uptimeSeconds"], 0)
+            self.assertEqual(stopped["ffmpegLogTail"], [])
+
+            response = await self.client.post("/api/stop", json={})
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())["status"], stopped)
+
+            response = await self.client.post("/api/probe", json={"url": "https://live.bilibili.com/2"})
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())["title"], "Stream B")
+            response = await self.client.post(
+                "/api/start",
+                json={"url": "https://live.bilibili.com/2", "qualityId": "auto"},
+            )
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())["status"]["pageUrl"], "https://live.bilibili.com/2")
 
     async def test_subtitle_polling_returns_seq_updates_and_status(self) -> None:
         companion = self.app["companion"]

@@ -249,11 +249,11 @@
         <div><span>登录态 · AUTH</span><h2 id="cookieImportTitle">导入登录 Cookie</h2></div>
         <button id="closeCookieImport" class="icon-button" type="button" aria-label="关闭">×</button>
       </header>
-      <p class="settings-intro">在已登录的浏览器里用 Cookie 导出扩展（如 Get cookies.txt LOCALLY）导出 youtube.com 的 Cookie 后粘贴到下面。内容只存本机内存，探测/启动时一次性写入临时文件并立即删除。</p>
+      <p id="cookieImportIntro" class="settings-intro">选择平台后，粘贴对应站点的 Cookie。内容按平台保存在本机；探测/启动时只为目标 URL 生成临时文件并立即删除。</p>
       <section class="settings-section">
         <div class="settings-grid">
+          <label><span>平台</span><select id="cookiePlatform"><option value="youtube" selected>YouTube</option><option value="bilibili">Bilibili</option></select></label>
           <label><span>格式</span><select id="cookieFormat"><option value="lines" selected>名称/值 多行（DevTools 复制行）</option><option value="netscape">Netscape cookies.txt</option><option value="header">请求头 Cookie 串</option></select></label>
-          <label id="cookieDomainField" hidden><span>作用域域名</span><select id="cookieDomain"><option value=".youtube.com" selected>.youtube.com</option><option value=".google.com">.google.com</option><option value=".bilibili.com">.bilibili.com</option></select></label>
           <label class="wide"><span>粘贴内容</span><textarea id="cookiePayload" rows="10" autocomplete="off" spellcheck="false" placeholder="SID　xxxxxxxx…&#10;HSID　yyyyyyyy…&#10;（直接从 DevTools Cookie 列表全选复制粘贴即可）" required></textarea><small>每行一个 Cookie：名称 + 制表符/空格/等号 + 值；也兼容 cookies.txt 和请求头格式。</small></label>
         </div>
       </section>
