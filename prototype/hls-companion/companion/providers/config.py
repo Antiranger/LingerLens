@@ -183,6 +183,21 @@ def validate_config(config: dict[str, Any]) -> None:
                 raise ValueError(f"unknown provider kind {kind!r}; available kinds: {available}")
             if kind not in allowed_kinds:
                 raise ValueError(f"provider kind {kind!r} is not valid for {section_name}")
+            pricing_fields = (
+                ("pricePerSecondCny",)
+                if section_name == "asr"
+                else (
+                    "pricePerMillionInputTokensCny",
+                    "pricePerMillionCachedInputTokensCny",
+                    "pricePerMillionOutputTokensCny",
+                )
+            )
+            for field in pricing_fields:
+                if field not in provider or provider[field] is None:
+                    continue
+                value = provider[field]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    raise ValueError(f"{section_name} provider {field} must be a non-negative number")
         if section.get("active") not in ids:
             raise ValueError(f"{section_name}.active must name a configured provider")
         if section_name == "translation":

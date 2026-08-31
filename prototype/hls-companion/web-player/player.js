@@ -39,6 +39,10 @@
   };
 
   const seconds = (value) => Number.isFinite(value) ? `${value.toFixed(1)} 秒` : "—";
+  const integer = (value) => Number(value || 0).toLocaleString("zh-CN");
+  const cny = (value, reason) => Number.isFinite(Number(value))
+    ? `¥${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`
+    : `不可估算${reason ? `（${reason}）` : ""}`;
 
   async function request(path, body) {
     const response = await fetch(path, {
@@ -129,7 +133,7 @@
     el("stop").disabled = true;
     el("streamTitle").textContent = "等待直播地址";
     el("message").textContent = "已停止当前直播。可以输入另一个 YouTube 或 Bilibili 地址继续探测。";
-    for (const id of ["hiddenDelay", "playerDelay", "totalDelay", "buffer", "resolution", "uptime", "subtitleProviderStatus", "subtitleCost", "translationLatency", "subtitleReadyLag", "budgetMargin", "cueDuration", "timingSources", "schedulerDrops"]) {
+    for (const id of ["hiddenDelay", "playerDelay", "totalDelay", "buffer", "resolution", "uptime", "subtitleProviderStatus", "asrUsageCost", "translationUsageCost", "totalUsageCost", "translationLatency", "subtitleReadyLag", "budgetMargin", "cueDuration", "timingSources", "schedulerDrops"]) {
       el(id).textContent = "—";
     }
     setState("已停止", "idle");
@@ -250,7 +254,11 @@
       el("uptime").textContent = seconds(Number(data.uptimeSeconds));
       const subtitles = data.subtitles || {};
       el("subtitleProviderStatus").textContent = subtitles.asrProviderId ? `${subtitles.asrProviderId} / ${subtitles.translationProviderId || "原文"}` : "未运行";
-      el("subtitleCost").textContent = `${Number(subtitles.asrSeconds || 0).toFixed(1)}s / ¥${Number(subtitles.estimatedCostCny || 0).toFixed(4)}`;
+      const asrUsage = subtitles.asrUsage || { seconds: subtitles.asrSeconds || 0 };
+      const translationUsage = subtitles.translationUsage || {};
+      el("asrUsageCost").textContent = `${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒 · ${cny(subtitles.asrEstimatedCostCny, subtitles.asrEstimateReason)}`;
+      el("translationUsageCost").textContent = `输入 ${integer(translationUsage.nonCachedInputTokens)} · 缓存 ${integer(translationUsage.cachedInputTokens)} · 输出 ${integer(translationUsage.outputTokens)} · ${cny(subtitles.translationEstimatedCostCny, subtitles.translationEstimateReason)}`;
+      el("totalUsageCost").textContent = cny(subtitles.totalEstimatedCostCny, subtitles.totalEstimateReason);
       const latency = subtitles.avgTranslationLatencyMs;
       el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} 秒` : "—";
       updateSubtitleBudget(subtitles, measuredDelay, Number(data.targetDelaySeconds));
@@ -357,6 +365,7 @@
           <label><span>模型</span><input data-field="model" value="${escapeHtml(provider.model || "")}" required></label>
           <label><span>Base URL</span><input data-field="baseUrl" value="${escapeHtml(provider.baseUrl || "")}" required></label>
           <label class="wide"><span>API Key（原文显示）</span><input data-field="apiKey" type="text" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>本窗口会直接显示保存的 Key；共享屏幕、截图或旁观者都可能看到。</small></label>
+          ${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
           ${section === "asr" ? asrOptionFields(provider) : translationOptionFields(provider)}
         </div>`;
       card.addEventListener("input", handleProviderInput);
@@ -373,6 +382,21 @@
       });
       container.append(card);
     });
+  }
+
+  function pricingValue(value) {
+    return value === null || value === undefined ? "" : escapeHtml(value);
+  }
+
+  function asrPricingFields(provider) {
+    return `<label class="wide"><span>ASR 单价（CNY / 秒）</span><input data-field="pricePerSecondCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerSecondCny)}" placeholder="留空表示不可估算"><small>本地免费服务请显式填写 0；留空不是免费。</small></label>`;
+  }
+
+  function translationPricingFields(provider) {
+    return `
+      <label><span>普通输入（CNY / 百万 token）</span><input data-field="pricePerMillionInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionInputTokensCny)}" placeholder="留空不可估算"></label>
+      <label><span>缓存输入（CNY / 百万 token）</span><input data-field="pricePerMillionCachedInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCachedInputTokensCny)}" placeholder="留空不可估算"></label>
+      <label><span>输出（CNY / 百万 token）</span><input data-field="pricePerMillionOutputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionOutputTokensCny)}" placeholder="留空不可估算"></label>`;
   }
 
   function asrOptionFields(provider) {
@@ -400,7 +424,11 @@
     if (!provider) return;
     const field = event.target.dataset.field;
     const option = event.target.dataset.option;
-    if (field) provider[field] = event.target.value;
+    if (field) {
+      provider[field] = event.target.type === "number"
+        ? (event.target.value === "" ? null : Number(event.target.value))
+        : event.target.value;
+    }
     if (option) {
       provider.options ||= {};
       provider.options[option] = event.target.type === "number" ? Number(event.target.value) : event.target.value;

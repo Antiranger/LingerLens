@@ -57,6 +57,41 @@ def _median(values: list[float]) -> float:
     return statistics.median(values)
 
 
+def _usage_integer(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    integer = int(value)
+    return integer if integer >= 0 and integer == value else None
+
+
+def normalize_translation_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize reported OpenAI-compatible usage without estimating tokens."""
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = _usage_integer(usage.get("prompt_tokens"))
+    if input_tokens is None:
+        input_tokens = _usage_integer(usage.get("input_tokens"))
+    output_tokens = _usage_integer(usage.get("completion_tokens"))
+    if output_tokens is None:
+        output_tokens = _usage_integer(usage.get("output_tokens"))
+    if input_tokens is None or output_tokens is None:
+        return None
+    details = usage.get("prompt_tokens_details")
+    cached_tokens = _usage_integer(details.get("cached_tokens")) if isinstance(details, dict) else 0
+    if cached_tokens is None or cached_tokens > input_tokens:
+        return None
+    total_tokens = _usage_integer(usage.get("total_tokens"))
+    if total_tokens is None:
+        total_tokens = input_tokens + output_tokens
+    return {
+        "nonCachedInputTokens": input_tokens - cached_tokens,
+        "cachedInputTokens": cached_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "rawUsage": dict(usage),
+    }
+
+
 class MediaAnchor:
     """Continuously measured constant offset ``C`` between the two legs.
 
@@ -318,6 +353,7 @@ class SubtitlePipeline:
         meta: StreamMeta,
         translation_provider: TranslationProvider | None = None,
         fallback_translation_provider: TranslationProvider | None = None,
+        translation_pricing_by_provider: dict[str, dict[str, float | None]] | None = None,
         glossary: list[tuple[str, str]] | None = None,
         hotwords: list[str] | None = None,
         asr_context: list[str] | None = None,
@@ -353,6 +389,7 @@ class SubtitlePipeline:
         self.asr_provider = asr_provider
         self.translation_provider = translation_provider
         self.fallback_translation_provider = fallback_translation_provider
+        self.translation_pricing_by_provider = dict(translation_pricing_by_provider or {})
         self.store = cue_store
         self.meta = meta
         self.source_language = source_language or meta.source_lang
@@ -427,6 +464,7 @@ class SubtitlePipeline:
         self._degrade_level = 0
         self._empty_since: float | None = None
         self._active_translation_provider_id: str | None = None
+        self._translation_usage_by_provider: dict[str, dict[str, Any]] = {}
         self._manual_commit_ok = bool(getattr(self.asr_provider.capabilities, "manual_commit", False))
         self._last_forced_commit_at: float | None = None
         # Finals that arrived before the media anchor could map them.  They are
@@ -1034,6 +1072,7 @@ class SubtitlePipeline:
                 if not translated:
                     raise ValueError("translation provider returned empty text")
                 self._record_translation_latency(result.latency_ms)
+                self._record_translation_usage(result.provider_id, result.usage)
                 self.context.add(cue.src, translated, self.wall_clock())
                 self.context.trim(self.wall_clock())
                 with contextlib.suppress(KeyError):
@@ -1090,6 +1129,58 @@ class SubtitlePipeline:
             float(latency_ms) if current is None else round(0.7 * current + 0.3 * float(latency_ms), 1)
         )
 
+    def _record_translation_usage(self, provider_id: str, usage: dict[str, Any] | None) -> None:
+        provider = self._translation_usage_by_provider.setdefault(provider_id, {
+            "calls": 0,
+            "unknownUsageCalls": 0,
+            "nonCachedInputTokens": 0,
+            "cachedInputTokens": 0,
+            "outputTokens": 0,
+            "totalTokens": 0,
+            "rawUsage": {},
+        })
+        provider["calls"] += 1
+        normalized = normalize_translation_usage(usage)
+        if normalized is None:
+            provider["unknownUsageCalls"] += 1
+            if isinstance(usage, dict):
+                provider["rawUsage"] = dict(usage)
+            return
+        for field in ("nonCachedInputTokens", "cachedInputTokens", "outputTokens", "totalTokens"):
+            provider[field] += normalized[field]
+        provider["rawUsage"] = normalized["rawUsage"]
+
+    def _translation_metering(self) -> tuple[dict[str, Any], float | None, str | None]:
+        by_provider = {provider_id: dict(values) for provider_id, values in self._translation_usage_by_provider.items()}
+        usage = {
+            "calls": sum(item["calls"] for item in by_provider.values()),
+            "unknownUsageCalls": sum(item["unknownUsageCalls"] for item in by_provider.values()),
+            "nonCachedInputTokens": sum(item["nonCachedInputTokens"] for item in by_provider.values()),
+            "cachedInputTokens": sum(item["cachedInputTokens"] for item in by_provider.values()),
+            "outputTokens": sum(item["outputTokens"] for item in by_provider.values()),
+            "totalTokens": sum(item["totalTokens"] for item in by_provider.values()),
+            "byProvider": by_provider,
+        }
+        if usage["unknownUsageCalls"]:
+            return usage, None, "translation usage unavailable for one or more completed calls"
+        cost = 0.0
+        for provider_id, provider_usage in by_provider.items():
+            prices = self.translation_pricing_by_provider.get(provider_id, {})
+            required = (prices.get("input"), prices.get("cachedInput"), prices.get("output"))
+            if any(price is None for price in required):
+                return usage, None, f"translation pricing incomplete for provider {provider_id}"
+            input_price, cached_price, output_price = required
+            provider_cost = (
+                provider_usage["nonCachedInputTokens"] * input_price
+                + provider_usage["cachedInputTokens"] * cached_price
+                + provider_usage["outputTokens"] * output_price
+            ) / 1_000_000
+            provider_usage["estimatedCostCny"] = round(provider_cost, 9)
+            cost += provider_cost
+        if not by_provider:
+            return usage, None, "translation usage unavailable"
+        return usage, round(cost, 9), None
+
     def _update_recovery(self, backlog: int) -> None:
         now = self.monotonic()
         if backlog:
@@ -1132,6 +1223,17 @@ class SubtitlePipeline:
         anchor_status = self.anchor.status()
         ready_p50, ready_p95 = self._ready_lag_percentiles()
         price = getattr(self.asr_provider, "price_per_second_cny", None)
+        asr_cost = round(self._pcm_offset * price, 9) if price is not None else None
+        asr_reason = None if price is not None else "ASR pricing unavailable"
+        translation_usage, translation_cost, translation_reason = self._translation_metering()
+        total_cost = (
+            round(asr_cost + translation_cost, 9)
+            if asr_cost is not None and translation_cost is not None
+            else None
+        )
+        total_reason = None
+        if total_cost is None:
+            total_reason = "; ".join(reason for reason in (asr_reason, translation_reason) if reason)
         return {
             "running": self._running,
             "pdtEpoch": self.anchor._pdt_zero(),
@@ -1142,7 +1244,15 @@ class SubtitlePipeline:
             "mediaAnchorDrift": anchor_status["drift"],
             "pcmOffset": round(self._pcm_offset, 3),
             "asrSeconds": round(self._pcm_offset, 3),
-            "estimatedCostCny": round(self._pcm_offset * price, 6) if price is not None else None,
+            "asrUsage": {"seconds": round(self._pcm_offset, 3)},
+            "asrEstimatedCostCny": asr_cost,
+            "asrEstimateReason": asr_reason,
+            "translationUsage": translation_usage,
+            "translationEstimatedCostCny": translation_cost,
+            "translationEstimateReason": translation_reason,
+            "totalEstimatedCostCny": total_cost,
+            "totalEstimateReason": total_reason,
+            "estimatedCostCny": asr_cost,
             "teeDropped": self.tee_sink.dropped if self.tee_sink else 0,
             "pcmDropped": self.stats.pcm_dropped,
             "forcedCommits": self.stats.forced_commits,

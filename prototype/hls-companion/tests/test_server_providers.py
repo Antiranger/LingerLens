@@ -135,6 +135,46 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual((await response.json())["translation"]["active"], "local-translation")
 
+    async def test_model_settings_persists_provider_pricing_and_rejects_negative_rates(self) -> None:
+        catalog = await (await self.client.get("/api/model-settings")).json()
+        asr = catalog["asr"]["providers"][0]
+        translation = catalog["translation"]["providers"][0]
+        asr["pricePerSecondCny"] = 0
+        translation["pricePerMillionInputTokensCny"] = 1.25
+        translation["pricePerMillionCachedInputTokensCny"] = 0.25
+        translation["pricePerMillionOutputTokensCny"] = 3.5
+
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
+        saved = await response.json()
+        self.assertEqual(saved["asr"]["providers"][0]["pricePerSecondCny"], 0)
+        self.assertEqual(saved["translation"]["providers"][0]["pricePerMillionInputTokensCny"], 1.25)
+        self.assertEqual(saved["translation"]["providers"][0]["pricePerMillionCachedInputTokensCny"], 0.25)
+        self.assertEqual(saved["translation"]["providers"][0]["pricePerMillionOutputTokensCny"], 3.5)
+
+        restarted = CompanionApplication(argparse.Namespace(
+            runtime_dir=Path(self.temporary.name) / "media-pricing-restart",
+            providers_file=Path(self.temporary.name) / "providers.json",
+            publish_delay=2.0,
+            cookies_from_browser=None,
+        ))
+        restarted_translation = restarted.providers_config["translation"]["providers"][0]
+        self.assertEqual(restarted.providers_config["asr"]["providers"][0]["pricePerSecondCny"], 0)
+        self.assertEqual(restarted_translation["pricePerMillionInputTokensCny"], 1.25)
+        self.assertEqual(restarted_translation["pricePerMillionCachedInputTokensCny"], 0.25)
+        self.assertEqual(restarted_translation["pricePerMillionOutputTokensCny"], 3.5)
+
+        catalog["asr"]["providers"][0]["pricePerSecondCny"] = -0.01
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 400)
+        self.assertIn("pricePerSecondCny", (await response.json())["error"])
+
+        catalog["asr"]["providers"][0]["pricePerSecondCny"] = 0
+        catalog["translation"]["providers"][0]["pricePerMillionCachedInputTokensCny"] = -1
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 400)
+        self.assertIn("pricePerMillionCachedInputTokensCny", (await response.json())["error"])
+
     async def test_version_one_catalog_migrates_without_losing_records_or_subtitle_preferences(self) -> None:
         path = Path(self.temporary.name) / "providers.json"
         legacy = {
@@ -597,7 +637,18 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertEqual(payload["cues"][0]["tEnd"], cue_end)
         self.assertEqual(payload["cues"][0]["seq"], 1)
         self.assertEqual(payload["maxSeq"], 1)
-        self.assertIn("asrSeconds", payload["stats"])
+        self.assertIn("asrUsage", payload["stats"])
+        self.assertIn("asrEstimatedCostCny", payload["stats"])
+        self.assertIn("translationUsage", payload["stats"])
+        self.assertIn("translationEstimatedCostCny", payload["stats"])
+        self.assertIn("totalEstimatedCostCny", payload["stats"])
+        self.assertIsNone(payload["stats"]["totalEstimatedCostCny"])
+        self.assertIn("unavailable", payload["stats"]["totalEstimateReason"])
+
+        status = await (await self.client.get("/api/status")).json()
+        self.assertEqual(status["subtitles"]["asrUsage"], payload["stats"]["asrUsage"])
+        self.assertEqual(status["subtitles"]["translationUsage"], payload["stats"]["translationUsage"])
+        self.assertIsNone(status["subtitles"]["totalEstimatedCostCny"])
 
         companion.subtitle_store.update(1, zh="你好", state="done")
         response = await self.client.get("/api/subtitles?afterSeq=1")

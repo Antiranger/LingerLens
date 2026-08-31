@@ -486,6 +486,14 @@ class CompanionApplication:
         )
         asr_provider = create_asr(asr_config)
         translation_providers = [create_translation(item) for item in translation_configs]
+        translation_pricing = {
+            item["id"]: {
+                "input": item.get("pricePerMillionInputTokensCny"),
+                "cachedInput": item.get("pricePerMillionCachedInputTokensCny"),
+                "output": item.get("pricePerMillionOutputTokensCny"),
+            }
+            for item in translation_configs
+        }
         primary_translation = FallbackChain(translation_providers) if len(translation_providers) > 1 else translation_providers[0]
         subtitle = {**config.get("subtitle", {}), **request}
         source_language = str(subtitle.get("sourceLanguage") or "ja")
@@ -507,6 +515,7 @@ class CompanionApplication:
             asr_provider=asr_provider,
             translation_provider=primary_translation,
             fallback_translation_provider=translation_providers[1] if len(translation_providers) > 1 else None,
+            translation_pricing_by_provider=translation_pricing,
             cue_store=self.subtitle_store,
             meta=StreamMeta(
                 info.get("title"),
@@ -548,7 +557,23 @@ class CompanionApplication:
         return {
             "running": False,
             "asrSeconds": 0.0,
-            "estimatedCostCny": 0.0,
+            "asrUsage": {"seconds": 0.0},
+            "asrEstimatedCostCny": None,
+            "asrEstimateReason": "ASR usage and pricing unavailable while subtitles are not running",
+            "translationUsage": {
+                "calls": 0,
+                "unknownUsageCalls": 0,
+                "nonCachedInputTokens": 0,
+                "cachedInputTokens": 0,
+                "outputTokens": 0,
+                "totalTokens": 0,
+                "byProvider": {},
+            },
+            "translationEstimatedCostCny": None,
+            "translationEstimateReason": "translation usage unavailable while subtitles are not running",
+            "totalEstimatedCostCny": None,
+            "totalEstimateReason": "subtitle usage unavailable while subtitles are not running",
+            "estimatedCostCny": None,
             "teeDropped": self.source_ingest.tee_snapshot()["teeDropped"] if self.source_ingest else 0,
             "translationBacklog": 0,
             "degradeLevel": 0,

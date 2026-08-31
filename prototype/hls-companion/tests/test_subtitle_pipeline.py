@@ -6,6 +6,7 @@ import time
 import unittest
 from pathlib import Path
 import sys
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -55,8 +56,9 @@ class FakeASR(ASRProvider):
     model = "fake"
     price_per_second_cny = 0.5
 
-    def __init__(self, manual_commit: bool = False) -> None:
+    def __init__(self, manual_commit: bool = False, price_per_second_cny: float | None = 0.5) -> None:
         self.manual_commit = manual_commit
+        self.price_per_second_cny = price_per_second_cny
 
     @property
     def capabilities(self) -> ASRCapabilities:
@@ -68,11 +70,20 @@ class FakeASR(ASRProvider):
 
 
 class RecordingTranslation(TranslationProvider):
-    def __init__(self, provider_id: str, prefix: str = "译") -> None:
+    def __init__(
+        self,
+        provider_id: str,
+        prefix: str = "译",
+        *,
+        usage: dict | None = None,
+        result_provider_id: str | None = None,
+    ) -> None:
         self.id = provider_id
         self.label = provider_id
         self.model = provider_id
         self.prefix = prefix
+        self.usage = usage
+        self.result_provider_id = result_provider_id or provider_id
         self.requests: list[TranslationRequest] = []
 
     @property
@@ -81,7 +92,195 @@ class RecordingTranslation(TranslationProvider):
 
     async def translate(self, request: TranslationRequest) -> TranslationResult:
         self.requests.append(request)
-        return TranslationResult(self.prefix + request.source_text, self.id, 1)
+        return TranslationResult(
+            self.prefix + request.source_text,
+            self.result_provider_id,
+            1,
+            self.usage,
+        )
+
+
+class TranslationMeteringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cached_prompt_usage_uses_independent_literal_rates(self) -> None:
+        provider = RecordingTranslation(
+            "primary",
+            usage={
+                "prompt_tokens": 1000,
+                "completion_tokens": 200,
+                "total_tokens": 1200,
+                "prompt_tokens_details": {"cached_tokens": 400},
+                "diagnostic_field": "preserved",
+            },
+        )
+        pipeline = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_provider=provider,
+            translation_pricing_by_provider={
+                "primary": {
+                    "input": 2.0,
+                    "cachedInput": 0.5,
+                    "output": 6.0,
+                }
+            },
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        cue = pipeline.store.add(
+            t_start=0.0,
+            t_end=1.0,
+            hold=1.2,
+            src="meter me",
+            lang="ja",
+            timing_source="asr",
+        )
+        pipeline._audio_end_walls[cue.id] = pipeline.wall_clock()
+        pipeline._enqueue_translation(cue)
+        pipeline._running = True
+        worker = asyncio.create_task(pipeline._translation_worker())
+        await asyncio.wait_for(pipeline._translation_queue.join(), 1)
+        pipeline._running = False
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+        status = pipeline.status()
+        self.assertEqual(status["translationUsage"]["calls"], 1)
+        self.assertEqual(status["translationUsage"]["nonCachedInputTokens"], 600)
+        self.assertEqual(status["translationUsage"]["cachedInputTokens"], 400)
+        self.assertEqual(status["translationUsage"]["outputTokens"], 200)
+        self.assertEqual(status["translationUsage"]["totalTokens"], 1200)
+        self.assertEqual(
+            status["translationUsage"]["byProvider"]["primary"]["rawUsage"]["diagnostic_field"],
+            "preserved",
+        )
+        # Worked independently: 600×2/1m + 400×0.5/1m + 200×6/1m = 0.0026 CNY.
+        self.assertEqual(status["translationEstimatedCostCny"], 0.0026)
+        self.assertIsNone(status["translationEstimateReason"])
+        pipeline._pcm_offset = 2.0
+        status = pipeline.status()
+        # ASR: 2s × 0.5 = 1 CNY; translation: 0.0026 CNY.
+        self.assertEqual(status["totalEstimatedCostCny"], 1.0026)
+        self.assertIsNone(status["totalEstimateReason"])
+
+    async def test_accumulates_compatible_usage_names_and_explicit_zero_rates(self) -> None:
+        provider = RecordingTranslation(
+            "primary",
+            usage={"input_tokens": 25, "output_tokens": 10, "extra": {"trace": "kept"}},
+        )
+        pipeline = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_provider=provider,
+            translation_pricing_by_provider={
+                "primary": {"input": 0, "cachedInput": 0, "output": 0}
+            },
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        pipeline._record_translation_usage(provider.id, provider.usage)
+        pipeline._record_translation_usage(provider.id, provider.usage)
+        status = pipeline.status()
+        self.assertEqual(status["translationUsage"]["calls"], 2)
+        self.assertEqual(status["translationUsage"]["nonCachedInputTokens"], 50)
+        self.assertEqual(status["translationUsage"]["cachedInputTokens"], 0)
+        self.assertEqual(status["translationUsage"]["outputTokens"], 20)
+        self.assertEqual(status["translationUsage"]["totalTokens"], 70)
+        self.assertEqual(status["translationEstimatedCostCny"], 0)
+        self.assertIsNone(status["translationEstimateReason"])
+
+    async def test_missing_usage_or_required_price_is_unavailable_not_zero(self) -> None:
+        missing_usage = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_pricing_by_provider={
+                "primary": {"input": 1, "cachedInput": 1, "output": 1}
+            },
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        missing_usage._record_translation_usage("primary", None)
+        status = missing_usage.status()
+        self.assertEqual(status["translationUsage"]["calls"], 1)
+        self.assertEqual(status["translationUsage"]["unknownUsageCalls"], 1)
+        self.assertEqual(status["translationUsage"]["byProvider"]["primary"]["calls"], 1)
+        self.assertIsNone(status["translationEstimatedCostCny"])
+        self.assertIn("usage unavailable", status["translationEstimateReason"])
+
+        missing_price = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_pricing_by_provider={
+                "primary": {"input": 1, "cachedInput": None, "output": 3}
+            },
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        missing_price._record_translation_usage(
+            "primary",
+            {"prompt_tokens": 10, "completion_tokens": 5},
+        )
+        status = missing_price.status()
+        self.assertIsNone(status["translationEstimatedCostCny"])
+        self.assertIn("pricing incomplete", status["translationEstimateReason"])
+
+    async def test_fallback_chain_usage_is_attributed_to_actual_result_provider(self) -> None:
+        provider = RecordingTranslation(
+            "fallback-chain",
+            usage={"prompt_tokens": 100, "completion_tokens": 20},
+            result_provider_id="actual-fallback",
+        )
+        pipeline = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_provider=provider,
+            translation_pricing_by_provider={
+                "fallback-chain": {"input": 99, "cachedInput": 99, "output": 99},
+                "actual-fallback": {"input": 2, "cachedInput": 1, "output": 5},
+            },
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        cue = pipeline.store.add(
+            t_start=0.0,
+            t_end=1.0,
+            hold=1.2,
+            src="fallback",
+            lang="ja",
+            timing_source="asr",
+        )
+        pipeline._audio_end_walls[cue.id] = pipeline.wall_clock()
+        pipeline._enqueue_translation(cue)
+        pipeline._running = True
+        worker = asyncio.create_task(pipeline._translation_worker())
+        await asyncio.wait_for(pipeline._translation_queue.join(), 1)
+        pipeline._running = False
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        status = pipeline.status()
+        self.assertEqual(list(status["translationUsage"]["byProvider"]), ["actual-fallback"])
+        # 100×2/1m + 20×5/1m = 0.0003 CNY.
+        self.assertEqual(status["translationEstimatedCostCny"], 0.0003)
+
+
+class AsrMeteringTests(unittest.TestCase):
+    def test_asr_and_total_costs_preserve_zero_and_report_unavailable_reasons(self) -> None:
+        free = SubtitlePipeline(
+            asr_provider=FakeASR(price_per_second_cny=0),
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        free._pcm_offset = 12.5
+        status = free.status()
+        self.assertEqual(status["asrUsage"], {"seconds": 12.5})
+        self.assertEqual(status["asrEstimatedCostCny"], 0)
+        self.assertIsNone(status["asrEstimateReason"])
+        self.assertIsNone(status["totalEstimatedCostCny"])
+        self.assertIn("translation usage unavailable", status["totalEstimateReason"])
+
+        unknown = SubtitlePipeline(
+            asr_provider=FakeASR(price_per_second_cny=None),
+            cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+        )
+        unknown._pcm_offset = 12.5
+        status = unknown.status()
+        self.assertIsNone(status["asrEstimatedCostCny"])
+        self.assertIn("ASR pricing unavailable", status["asrEstimateReason"])
 
 
 class TranslationLatencyStatsTests(unittest.IsolatedAsyncioTestCase):
@@ -127,7 +326,7 @@ class TeeSinkTests(unittest.IsolatedAsyncioTestCase):
 
 class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
     def make_pipeline(self, **changes):
-        arguments = dict(
+        arguments: dict[str, Any] = dict(
             asr_provider=FakeASR(),
             cue_store=CueStore(),
             meta=StreamMeta("title", "channel", "gaming", "ja", "zh"),
@@ -344,7 +543,7 @@ class PrefixSplitTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def make_pipeline(self, **changes):
-        arguments = dict(
+        arguments: dict[str, Any] = dict(
             asr_provider=FakeASR(),
             cue_store=CueStore(),
             meta=StreamMeta("title", "channel", "gaming", "ja", "zh"),

@@ -52,6 +52,10 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(js, /data-field="baseUrl"/);
   assert.match(js, /data-field="model"/);
   assert.match(js, /data-field="apiKey"/);
+  assert.match(js, /data-field="pricePerSecondCny"/);
+  assert.match(js, /data-field="pricePerMillionInputTokensCny"/);
+  assert.match(js, /data-field="pricePerMillionCachedInputTokensCny"/);
+  assert.match(js, /data-field="pricePerMillionOutputTokensCny"/);
   assert.match(js, /type="text" value=.*provider\.apiKey/);
   assert.match(js, /isActive \|\| group\.providers\.length === 1/);
   assert.match(html, /id="cookieImportDialog"/);
@@ -88,6 +92,15 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(html, /id="schedulerDrops"/);
   assert.match(js, /subtitleScheduler\.stats/);
   assert.match(js, /translationLatency/);
+  assert.match(html, /id="asrUsageCost"/);
+  assert.match(html, /id="translationUsageCost"/);
+  assert.match(html, /id="totalUsageCost"/);
+  assert.match(js, /asrEstimatedCostCny/);
+  assert.match(js, /translationEstimatedCostCny/);
+  assert.match(js, /totalEstimatedCostCny/);
+  assert.match(js, /toLocaleString/);
+  assert.match(js, /不可估算/);
+  assert.doesNotMatch(js, /Number\(subtitles\.estimatedCostCny \|\| 0\)/);
   assert.match(js, /\/api\/model-settings/);
   assert.match(js, /\/api\/auth-cookies/);
   assert.match(js, /authToken = data\.authToken/);

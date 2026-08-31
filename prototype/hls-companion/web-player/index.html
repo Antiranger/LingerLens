@@ -158,8 +158,16 @@
               <dd id="subtitleProviderStatus">—</dd>
             </div>
             <div>
-              <dt>ASR 时长 / 费用<small>已识别音频时长与按量估算的人民币费用</small></dt>
-              <dd id="subtitleCost">—</dd>
+              <dt>ASR 用量 / 费用<small>实际送入识别的音频秒数；缺价时明确不可估算</small></dt>
+              <dd id="asrUsageCost">—</dd>
+            </div>
+            <div>
+              <dt>翻译用量 / 费用<small>普通输入、缓存输入、输出 token 与实际供应商费用</small></dt>
+              <dd id="translationUsageCost">—</dd>
+            </div>
+            <div>
+              <dt>估算合计<small>仅在 ASR 与翻译两部分都可估算时显示</small></dt>
+              <dd id="totalUsageCost">—</dd>
             </div>
             <div>
               <dt>翻译延迟<small>单句译文从请求到返回的平均耗时</small></dt>
