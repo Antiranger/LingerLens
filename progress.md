@@ -170,3 +170,17 @@ The native-player extension spike is retained as evidence, but its first YouTube
 - Explore subagents could not start because Anthropic OAuth refresh returned 403; completed the bounded investigation directly without repeating the failed delegation path.
 - Produced `.scratch/laglingo-productization/spec.md` and five minimal dependency-ordered tickets. Frontier tickets 01/02/03 can run in parallel; ticket 04 is blocked by 01; release ticket 05 is blocked by all feature tickets.
 - No product implementation or GitHub repository creation was performed in this session.
+
+## Productization implementation and private release
+- Initialized Git only after excluding provider keys, Cookie/auth snapshots, control secrets, media captures, logs, agent state, caches, and approximately 2GB of runtime recordings. Created and pushed the private repository `https://github.com/Antiranger/LagLingo`.
+- Ran five GPT-5.6 Sol / medium-thinking implementation agents in isolated worktrees, one per productization ticket. Tickets 01/02/03 ran in parallel; Ticket 04 followed Provider Catalog integration; Ticket 05 hardened release/bootstrap after feature integration.
+- Independently rejected the first Ticket 01 result because the full suite failed and the player still referenced removed model-settings fields. A repair agent completed the Provider Catalog controller, local OpenAI-compatible transcription adapter, migration, documentation, and tests before integration.
+- Integrated Ticket 03 platform Cookie/session cleanup and Ticket 02 subtitle floating-window/target-delay changes in a dedicated integration worktree, resolving only the shared server test conflict and preserving both behavior sets.
+- Integrated Ticket 01 after repair, resolved shared package/player initialization conflicts, and restored the project task plan after an agent-local planning rewrite leaked into the first commit.
+- Integrated Ticket 04 usage metering: ASR seconds, OpenAI-compatible prompt/cached/output token usage, fallback attribution, provider pricing, null-on-unknown estimates, and separate runtime costs.
+- Integrated Ticket 05: Windows bootstrap, checksum verification, secret/release guard, current README, MIT/license/security/contribution/third-party docs, package lock, and Windows GitHub Actions CI.
+- First remote CI failed because `YtDlpProbe` required a global PATH yt-dlp while the download path used the vendored binary. Added a red→green product regression and made probing prefer the vendored verified executable.
+- Second remote CI exposed three server tests that accidentally depended on development-machine FFmpeg. Isolated those tests at their intended media-process seam and verified them under a PATH containing neither FFmpeg nor global yt-dlp.
+- Final GitHub Actions Windows CI passed: `https://github.com/Antiranger/LagLingo/actions/runs/33430078496`.
+- Final real Chromium smoke against a clean temporary Companion configuration verified Provider Catalog rendering and raw-key warning, and verified `document.fullscreenElement` is `.player-stage` containing `#subtitleLayer`.
+- Repository remains PRIVATE. Final bootstrap command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1` (requires Python 3.11+; this machine's default Python 3.10 is intentionally rejected, while installed Python 3.14 passes check-only validation).
