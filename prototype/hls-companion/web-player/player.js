@@ -19,7 +19,11 @@
   const subtitleScheduler = window.createSubtitleScheduler
     ? window.createSubtitleScheduler({ minDwell: 1.2, maxLateSeconds: 2.0, bridgeGap: 0.3 })
     : null;
+  const subtitleWindow = window.createSubtitleWindowController
+    ? window.createSubtitleWindowController({ stage, windowElement: el("subtitleLayer"), storage: localStorage, fullscreenDocument: document })
+    : null;
   const subtitleBudget = { lowSince: null, suggested: null };
+  const savedTargetDelay = Number(localStorage.getItem("laglingo.targetDelaySeconds") || 15);
   const subtitlePrefs = {
     enabled: localStorage.getItem("laglingo.subtitle.enabled") !== "false",
     mode: localStorage.getItem("laglingo.subtitle.mode") || "bilingual",
@@ -27,6 +31,7 @@
     offset: Number(localStorage.getItem("laglingo.subtitle.offset") || 0),
   };
   if (initialParams.get("url")) el("url").value = initialParams.get("url");
+  el("targetDelay").value = String(savedTargetDelay > 10 && savedTargetDelay <= 60 ? savedTargetDelay : 15);
 
   const setState = (text, tone = "idle") => {
     el("stateText").textContent = text;
@@ -93,7 +98,7 @@
       const body = {
         ...commonBody(),
         qualityId: el("quality").value,
-        publishDelaySeconds: Number(el("publishDelay").value),
+        targetDelaySeconds: Number(el("targetDelay").value),
         subtitles: {
           enabled: el("subtitlesEnabled").checked,
           sourceLanguage: "ja",
@@ -103,6 +108,7 @@
         },
       };
       const data = await request("/api/start", body);
+      localStorage.setItem("laglingo.targetDelaySeconds", String(body.targetDelaySeconds));
       el("stop").disabled = false;
       const quality = data.quality;
       el("resolution").textContent = `${quality.width || "?"}×${quality.height || "?"}${quality.fps ? ` @ ${quality.fps}fps` : ""}`;
@@ -236,8 +242,12 @@
       el("hiddenDelay").textContent = seconds(Number(data.hiddenMediaSeconds));
       const playerBehind = Number.isFinite(browserLatency) ? browserLatency : estimateVideoLatency();
       el("playerDelay").textContent = seconds(playerBehind);
-      const totalDelay = Number(data.sourceDelaySeconds || 0) + Number(data.hiddenMediaSeconds || 0) + (playerBehind || 0);
-      el("totalDelay").textContent = seconds(totalDelay);
+      const measuredDelay = Number(data.sourceDelaySeconds || 0) + Number(data.hiddenMediaSeconds || 0) + (playerBehind || 0);
+      el("totalDelay").textContent = seconds(measuredDelay);
+      if (data.state === "running" && Number(data.targetDelaySeconds) > 10) {
+        el("targetDelay").value = String(data.targetDelaySeconds);
+        localStorage.setItem("laglingo.targetDelaySeconds", String(data.targetDelaySeconds));
+      }
       el("buffer").textContent = seconds(bufferAhead());
       el("uptime").textContent = seconds(Number(data.uptimeSeconds));
       const subtitles = data.subtitles || {};
@@ -245,7 +255,7 @@
       el("subtitleCost").textContent = `${Number(subtitles.asrSeconds || 0).toFixed(1)}s / ¥${Number(subtitles.estimatedCostCny || 0).toFixed(4)}`;
       const latency = subtitles.avgTranslationLatencyMs;
       el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} 秒` : "—";
-      updateSubtitleBudget(subtitles, totalDelay, Number(data.publishDelaySeconds));
+      updateSubtitleBudget(subtitles, measuredDelay, Number(data.targetDelaySeconds));
       if (data.quality) el("resolution").textContent = `${data.quality.width || "?"}×${data.quality.height || "?"}${data.quality.fps ? ` @ ${data.quality.fps}fps` : ""}`;
     } catch (error) {
       if (!String(error.message).includes("Failed to fetch")) showError(error);
@@ -469,7 +479,7 @@
     return { p50: at(0.5), p95: at(0.95) };
   }
 
-  function updateSubtitleBudget(subtitles, totalDelaySeconds, publishDelaySeconds) {
+  function updateSubtitleBudget(subtitles, totalDelaySeconds, targetDelaySeconds) {
     const p50 = Number(subtitles.readyLagP50);
     const p95 = Number(subtitles.readyLagP95);
     const hasStats = Number.isFinite(p95) && Number.isFinite(Number(totalDelaySeconds));
@@ -509,9 +519,9 @@
     }
     if (!subtitleBudget.lowSince) subtitleBudget.lowSince = Date.now();
     if (Date.now() - subtitleBudget.lowSince < 30_000) return;
-    const current = Number.isFinite(Number(publishDelaySeconds)) ? Number(publishDelaySeconds) : Number(el("publishDelay").value) || 0;
+    const current = Number.isFinite(Number(targetDelaySeconds)) ? Number(targetDelaySeconds) : Number(el("targetDelay").value) || 15;
     const needed = current + Math.max(1, Math.ceil(1.5 - margin));
-    subtitleBudget.suggested = Math.min(15, needed);
+    subtitleBudget.suggested = Math.max(11, Math.min(60, needed));
     el("applyDelayButton").hidden = false;
     el("applyDelayButton").textContent = `字幕来不及：延迟调到 ${subtitleBudget.suggested} 秒`;
   }
@@ -522,26 +532,16 @@
     const button = el("applyDelayButton");
     button.disabled = true;
     try {
-      await request("/api/publish-delay", { seconds: suggested });
-      ensureDelayOption(suggested);
-      el("publishDelay").value = String(suggested);
-      el("message").textContent = `已把发布延迟调到 ${suggested} 秒。字幕就绪预算现在有余量；负载回落后可手动调回。`;
+      await request("/api/target-delay", { seconds: suggested });
+      el("targetDelay").value = String(suggested);
+      localStorage.setItem("laglingo.targetDelaySeconds", String(suggested));
+      el("message").textContent = `已把目标总延迟调到 ${suggested} 秒。字幕就绪预算现在有余量；负载回落后可手动调回。`;
       subtitleBudget.lowSince = null;
       button.hidden = true;
     } catch (error) {
       showError(error);
     } finally {
       button.disabled = false;
-    }
-  }
-
-  function ensureDelayOption(value) {
-    const select = el("publishDelay");
-    if (![...select.options].some((option) => Number(option.value) === value)) {
-      const option = document.createElement("option");
-      option.value = String(value);
-      option.textContent = `${value} 秒`;
-      select.append(option);
     }
   }
 
@@ -612,6 +612,37 @@
     el("subtitleOffsetValue").textContent = `${subtitlePrefs.offset.toFixed(1)}s`;
     el("subtitleLayer").dataset.mode = subtitlePrefs.mode;
     el("subtitleLayer").dataset.size = subtitlePrefs.size;
+    const windowPrefs = subtitleWindow?.preferences();
+    if (windowPrefs) {
+      el("subtitleOpacity").value = String(windowPrefs.opacity);
+      el("subtitleScale").value = String(windowPrefs.scale);
+      el("subtitleSourceColor").value = windowPrefs.sourceColor;
+      el("subtitleTranslationColor").value = windowPrefs.translationColor;
+    }
+  }
+
+  function updateSubtitleWindowStyle() {
+    subtitleWindow?.updateStyle({
+      opacity: Number(el("subtitleOpacity").value),
+      scale: Number(el("subtitleScale").value),
+      sourceColor: el("subtitleSourceColor").value,
+      translationColor: el("subtitleTranslationColor").value,
+    });
+  }
+
+  function beginSubtitleDrag(event) {
+    if (!subtitleWindow || event.button !== 0) return;
+    event.preventDefault();
+    const move = (pointer) => {
+      const rect = stage.getBoundingClientRect();
+      subtitleWindow.moveTo((pointer.clientX - rect.left) / rect.width, (pointer.clientY - rect.top) / rect.height);
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
   }
 
   function showError(error) {
@@ -623,13 +654,23 @@
     el("probe").disabled = busy;
     el("start").disabled = busy || el("quality").disabled;
     el("url").disabled = busy;
-    el("publishDelay").disabled = busy;
+    el("targetDelay").disabled = busy;
   }
 
   el("probe").addEventListener("click", probe);
   el("start").addEventListener("click", start);
   el("stop").addEventListener("click", stop);
   el("applyDelayButton").addEventListener("click", applySuggestedDelay);
+  el("toggleFullscreen").addEventListener("click", () => subtitleWindow?.toggleFullscreen());
+  el("subtitleDragHandle").addEventListener("pointerdown", beginSubtitleDrag);
+  el("subtitleDragHandle").addEventListener("keydown", (event) => {
+    if (subtitleWindow?.nudge(event.key, event.shiftKey)) event.preventDefault();
+  });
+  el("resetSubtitlePosition").addEventListener("click", () => { subtitleWindow?.reset(); applySubtitlePrefs(); });
+  ["subtitleOpacity", "subtitleScale", "subtitleSourceColor", "subtitleTranslationColor"].forEach((id) => el(id).addEventListener("input", updateSubtitleWindowStyle));
+  document.addEventListener("fullscreenchange", () => subtitleWindow?.apply());
+  window.addEventListener("resize", () => subtitleWindow?.apply());
+  if (window.ResizeObserver && subtitleWindow) new ResizeObserver(() => subtitleWindow.apply()).observe(stage);
   el("openModelSettings").addEventListener("click", openModelSettings);
   el("closeModelSettings").addEventListener("click", closeModelSettings);
   el("cancelModelSettings").addEventListener("click", closeModelSettings);
@@ -649,6 +690,7 @@
   video.addEventListener("playing", () => setState("延迟播放中", "stable"));
   video.addEventListener("waiting", () => setState("播放器缓冲", "waiting"));
   applySubtitlePrefs();
+  subtitleWindow?.apply();
   loadProviders();
   statusTimer = setInterval(refreshStatus, 1000);
   subtitleTimer = setInterval(refreshSubtitles, 500);

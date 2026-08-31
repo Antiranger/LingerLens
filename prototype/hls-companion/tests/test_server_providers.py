@@ -13,6 +13,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import companion.server as server_module
 from companion.server import CompanionApplication, errors
 from companion.core import BrowserCookieSnapshot, LiveSession
 
@@ -413,6 +414,56 @@ class ProviderApiTests(AioHTTPTestCase):
             )
             self.assertEqual(response.status, 200)
             self.assertEqual((await response.json())["status"]["pageUrl"], "https://live.bilibili.com/2")
+
+    async def test_target_delay_defaults_rejects_unsafe_values_and_stays_separate_from_estimate(self) -> None:
+        companion = self.app["companion"]
+        status = await (await self.client.get("/api/status")).json()
+        self.assertEqual(status["targetDelaySeconds"], 15.0)
+        self.assertIn("estimatedTotalDelaySeconds", status)
+        self.assertNotIn("publishDelaySeconds", status)
+
+        response = await self.client.post("/api/target-delay", json={"seconds": 10})
+        self.assertEqual(response.status, 400)
+        response = await self.client.post("/api/target-delay", json={"seconds": 18})
+        self.assertEqual(response.status, 400)  # live tuning requires an active publisher
+
+        class FakeIngest:
+            def __init__(self, *_args, **_kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def input_urls(self): return ["tcp://127.0.0.1:1"]
+            def snapshot(self): return {}
+            def detach_audio_tee(self): pass
+
+        info = {
+            "is_live": True,
+            "title": "test",
+            "formats": [{
+                "format_id": "95", "url": "https://media.example/live.m3u8", "height": 720,
+                "width": 1280, "fps": 30, "vcodec": "avc1", "acodec": "mp4a", "tbr": 1200,
+            }],
+        }
+        companion.probe.extract = lambda *_args: info
+        captured = {}
+        companion.session.stop = lambda: None
+        companion.session.start = lambda _url, _inputs, delay, _command: captured.update(delay=delay)
+        original = server_module.YtDlpLiveIngest
+        server_module.YtDlpLiveIngest = FakeIngest
+        try:
+            response = await self.client.post("/api/start", json={"url": "https://www.youtube.com/watch?v=test", "qualityId": "auto"})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(captured["delay"], 3.0)
+            self.assertEqual((await response.json())["status"]["targetDelaySeconds"], 15.0)
+
+            response = await self.client.post("/api/start", json={"url": "https://www.youtube.com/watch?v=test", "qualityId": "auto", "targetDelaySeconds": 18})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(captured["delay"], 6.0)
+            self.assertEqual((await response.json())["status"]["targetDelaySeconds"], 18.0)
+
+            response = await self.client.post("/api/start", json={"url": "https://www.youtube.com/watch?v=test", "qualityId": "auto", "targetDelaySeconds": 10})
+            self.assertEqual(response.status, 400)
+        finally:
+            server_module.YtDlpLiveIngest = original
 
     async def test_subtitle_polling_returns_seq_updates_and_status(self) -> None:
         companion = self.app["companion"]

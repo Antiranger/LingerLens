@@ -85,6 +85,9 @@ DEFAULT_PROVIDERS = ROOT / "runtime" / "providers.json"
 # How long an /api/probe extraction may be reused by /api/start. Live manifests
 # are signed and the live edge keeps moving, so this stays far below any expiry.
 PROBE_INFO_TTL_SECONDS = 90.0
+DEFAULT_TARGET_DELAY_SECONDS = 15.0
+MIN_TARGET_DELAY_SECONDS = 11.0
+PLAYER_LIVE_SYNC_SECONDS = 12.0
 
 
 SUPPORTED_AUTH_PLATFORMS = {
@@ -130,6 +133,7 @@ class CompanionApplication:
         self.subtitle_pipeline: SubtitlePipeline | None = None
         self.subtitle_store = CueStore()
         self.subtitle_last_error: str | None = None
+        self.target_delay_seconds = DEFAULT_TARGET_DELAY_SECONDS
 
     def routes(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
@@ -138,12 +142,13 @@ class CompanionApplication:
         app.router.add_get("/favicon.ico", self.favicon)
         app.router.add_get("/player.js", self.static_file)
         app.router.add_get("/subtitle-scheduler.js", self.static_file)
+        app.router.add_get("/subtitle-window-controller.js", self.static_file)
         app.router.add_get("/style.css", self.static_file)
         app.router.add_get("/vendor/{name}", self.static_file)
         app.router.add_get("/hls/{name}", self.hls_file)
         app.router.add_get("/api/status", self.status)
         app.router.add_get("/api/subtitles", self.handle_subtitles)
-        app.router.add_post("/api/publish-delay", self.handle_publish_delay)
+        app.router.add_post("/api/target-delay", self.handle_target_delay)
         app.router.add_get("/api/providers", self.handle_get_providers)
         app.router.add_post("/api/providers", self.handle_update_providers)
         app.router.add_get("/api/model-settings", self.handle_get_model_settings)
@@ -186,6 +191,14 @@ class CompanionApplication:
         status["sourceDelaySeconds"] = 0.0
         status["sourceIngest"] = [ingest_snapshot] if ingest_snapshot else []
         status["subtitles"] = self._subtitle_status()
+        status["targetDelaySeconds"] = self.target_delay_seconds
+        status["estimatedTotalDelaySeconds"] = round(
+            float(status.get("sourceDelaySeconds") or 0.0)
+            + float(status.get("hiddenMediaSeconds") or 0.0)
+            + PLAYER_LIVE_SYNC_SECONDS,
+            3,
+        )
+        status.pop("publishDelaySeconds", None)
         if ingest_snapshot and ingest_snapshot.get("sourceError") and status.get("state") == "running":
             status["state"] = "error"
             status["error"] = ingest_snapshot["sourceError"]
@@ -210,24 +223,33 @@ class CompanionApplication:
             headers={"Cache-Control": "no-store"},
         )
 
-    async def handle_publish_delay(self, request: web.Request) -> web.Response:
-        """Live-tune the publisher's delay budget (redesign Fix E).
-
-        DelayedPlaylistPublisher._tick re-reads ``publish_delay`` every
-        iteration, so this takes effect immediately without a session restart.
-        """
+    async def handle_target_delay(self, request: web.Request) -> web.Response:
         body = await request.json()
-        try:
-            seconds = float(body.get("seconds"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("publish delay must be a number of seconds") from exc
-        if not 0.0 <= seconds <= 60.0:
-            raise ValueError("publish delay must be between 0 and 60 seconds")
+        seconds = self._target_delay(body.get("seconds"))
         publisher = self.session.publisher
         if publisher is None:
             raise RuntimeError("no active live session")
-        publisher.publish_delay = seconds
-        return web.json_response({"ok": True, **publisher.snapshot()}, headers={"Cache-Control": "no-store"})
+        self.target_delay_seconds = seconds
+        publisher.publish_delay = self._publisher_delay(seconds)
+        status = self.session.status()
+        status.pop("publishDelaySeconds", None)
+        return web.json_response({"ok": True, "targetDelaySeconds": seconds, "status": status}, headers={"Cache-Control": "no-store"})
+
+    @staticmethod
+    def _target_delay(value: Any) -> float:
+        if value is None:
+            return DEFAULT_TARGET_DELAY_SECONDS
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("target total delay must be a number of seconds") from exc
+        if not MIN_TARGET_DELAY_SECONDS <= seconds <= 60.0:
+            raise ValueError("target total delay must be between 11 and 60 seconds")
+        return seconds
+
+    @staticmethod
+    def _publisher_delay(target_delay: float) -> float:
+        return max(0.0, target_delay - PLAYER_LIVE_SYNC_SECONDS)
 
     async def handle_import_cookies(self, request: web.Request) -> web.Response:
         self._require_local_request(request)
@@ -349,7 +371,8 @@ class CompanionApplication:
             options = build_quality_options(info)
             quality = select_quality(options, str(body.get("qualityId") or "auto"), int(body.get("maxHeight") or 1080))
             inputs = selected_inputs(info, quality)
-            publish_delay = max(0.0, min(float(body.get("publishDelaySeconds") or self.args.publish_delay), 60.0))
+            target_delay = self._target_delay(body.get("targetDelaySeconds"))
+            publish_delay = self._publisher_delay(target_delay)
             await asyncio.to_thread(self.session.stop)
             await self._stop_subtitles()
             if self.source_ingest:
@@ -400,6 +423,7 @@ class CompanionApplication:
             )
             try:
                 await asyncio.to_thread(self.session.start, url, inputs, publish_delay, command)
+                self.target_delay_seconds = target_delay
             except Exception:
                 await asyncio.to_thread(self.source_ingest.stop)
                 self.source_ingest = None
@@ -410,7 +434,10 @@ class CompanionApplication:
                 auth.close()
                 if probe_snapshot is not None:
                     probe_snapshot.close()
-        return web.json_response({"ok": True, "quality": asdict(quality), "status": self.session.status()})
+        status = self.session.status()
+        status.pop("publishDelaySeconds", None)
+        status["targetDelaySeconds"] = self.target_delay_seconds
+        return web.json_response({"ok": True, "quality": asdict(quality), "status": status})
 
     def _fresh_probe_info(self, url: str) -> dict[str, Any] | None:
         """Return a recent /api/probe extraction, or None if it is too old.
@@ -666,7 +693,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PROTOTYPE 2: localhost delayed HLS/CMAF companion")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--publish-delay", type=float, default=3.0, help="Additional post-download publication delay. Most of the ~15s total budget now comes from the player deliberately sitting behind the live edge (player.js liveSyncDurationCount), which is what actually buys rebuffer headroom")
+    parser.add_argument("--publish-delay", type=float, default=3.0, help=argparse.SUPPRESS)
     parser.add_argument("--cookies-from-browser", choices=["chrome", "edge"])
     parser.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME)
     parser.add_argument("--providers-file", type=Path, default=DEFAULT_PROVIDERS)
@@ -684,7 +711,7 @@ def main() -> int:
     app = companion.routes()
     app.middlewares.append(errors)
     print(f"[LagLingo] Prototype 2 player: http://{args.host}:{args.port}/")
-    print(f"[LagLingo] Server-held media delay: {args.publish_delay:g}s (target total near 10s)")
+    print(f"[LagLingo] Target total live delay: {DEFAULT_TARGET_DELAY_SECONDS:g}s")
     print("[LagLingo] Cookies are accepted only through Native Messaging or the explicit development browser fallback.")
     try:
         web.run_app(app, host=args.host, port=args.port, print=None, handle_signals=True)

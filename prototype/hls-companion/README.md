@@ -173,6 +173,10 @@ python prototype/hls-companion/scripts/synthetic-smoke.py
 npm test
 ```
 
+## 浏览器冒烟边界
+
+自动测试覆盖字幕浮窗控制器的归一化位置持久化、边界夹取、键盘移动、重置与样式参数，并检查播放器舞台全屏的 DOM 资源合同。仓库当前没有 DOM/Playwright 依赖，因此 Chromium 原生全屏归属仍需人工冒烟：启动媒体后点击 LagLingo 的“全屏”，确认 `document.fullscreenElement` 是 `.player-stage`、字幕仍可见；退出全屏后确认字幕调度继续。
+
 ## 已完成的自动验证
 
 - 格式归一化和自动选择可选 1080p AVC/AAC；

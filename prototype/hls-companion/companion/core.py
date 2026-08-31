@@ -622,9 +622,8 @@ class DelayedPlaylistPublisher:
     def __init__(self, private_dir: Path, public_dir: Path, publish_delay: float, window_seconds: float = 120):
         self.private_dir = private_dir
         self.public_dir = public_dir
-        # NOTE (redesign Fix E): the release criterion in _tick re-reads this
-        # attribute every iteration, so mutating it takes effect immediately —
-        # POST /api/publish-delay relies on this; do not snapshot it locally.
+        # The release criterion in _tick re-reads this internal allocation on
+        # every iteration, so the target-total-delay API can retune it live.
         self.publish_delay = publish_delay
         self.window_seconds = window_seconds
         self.pending: dict[str, Segment] = {}

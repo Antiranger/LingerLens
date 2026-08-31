@@ -16,7 +16,7 @@ test("Prototype 2 extension is MV3 with local cookie/native messaging permission
 });
 
 test("all prototype JavaScript parses", () => {
-  for (const relative of ["extension/service-worker.js", "web-player/subtitle-scheduler.js", "web-player/player.js"]) {
+  for (const relative of ["extension/service-worker.js", "web-player/subtitle-scheduler.js", "web-player/subtitle-window-controller.js", "web-player/player.js"]) {
     const code = fs.readFileSync(path.join(root, relative), "utf8");
     assert.doesNotThrow(() => new vm.Script(code, { filename: relative }));
   }
@@ -27,7 +27,15 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   const css = fs.readFileSync(path.join(root, "web-player/style.css"), "utf8");
   const js = fs.readFileSync(path.join(root, "web-player/player.js"), "utf8");
   const scheduler = fs.readFileSync(path.join(root, "web-player/subtitle-scheduler.js"), "utf8");
+  const windowController = fs.readFileSync(path.join(root, "web-player/subtitle-window-controller.js"), "utf8");
   assert.match(html, /id="subtitleLayer"/);
+  assert.match(html, /id="subtitleDragHandle"/);
+  assert.match(html, /id="toggleFullscreen"/);
+  assert.match(html, /id="resetSubtitlePosition"/);
+  assert.match(html, /id="subtitleOpacity"/);
+  assert.match(html, /id="subtitleScale"/);
+  assert.match(html, /id="subtitleSourceColor"/);
+  assert.match(html, /id="subtitleTranslationColor"/);
   assert.match(html, /id="subtitleOffset"/);
   assert.match(html, /id="asrProvider"/);
   assert.match(html, /id="modelSettingsDialog"/);
@@ -45,13 +53,22 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(html, /id="subtitleReadyLag"/);
   assert.match(html, /id="budgetMargin"/);
   assert.match(css, /\.subtitle-layer[^}]+pointer-events:\s*none/s);
+  assert.match(css, /\.subtitle-drag-handle[^}]+pointer-events:\s*auto/s);
   assert.match(css, /transition:\s*opacity\s+120ms/);
+  assert.match(windowController, /requestFullscreen/);
+  assert.match(js, /fullscreenchange/);
+  assert.match(js, /ResizeObserver/);
+  assert.match(html, /subtitle-window-controller\.js/);
   assert.match(js, /hls\?\.playingDate/);
   assert.match(js, /\/api\/subtitles\?afterSeq=/);
   assert.match(js, /setInterval\(refreshSubtitles, 500\)/);
   assert.match(js, /setInterval\(renderSubtitle, 100\)/);
   assert.match(js, /subtitleScheduler\.pick/);
-  assert.match(js, /\/api\/publish-delay/);
+  assert.match(js, /\/api\/target-delay/);
+  assert.doesNotMatch(html, /下载后额外延迟/);
+  assert.doesNotMatch(html, /id="publishDelay"/);
+  assert.match(html, /id="targetDelay"[^>]+type="number"[^>]+min="11"[^>]+value="15"/);
+  assert.match(html, /希望落后真实直播的总时间/);
   assert.doesNotMatch(js, /textContent\s*=\s*["'`]翻译中/);
   assert.match(scheduler, /cue\.state === "done" \|\| cue\.state === "failed"/);
   // The display window is anchored at the sentence start, not its end.
