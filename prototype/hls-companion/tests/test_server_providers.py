@@ -5,7 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 from aiohttp.test_utils import AioHTTPTestCase
@@ -270,12 +270,16 @@ class ProviderApiTests(AioHTTPTestCase):
             return original(section, provider_id)
 
         companion._provider_record = record
-        await companion._prepare_subtitles({}, {
-            "asrProviderId": "bailian-qwen3-realtime",
-            "translationProviderId": "bailian-qwen35-flash",
-        })
-        self.assertEqual(selected[:2], ["bailian-paraformer", "bailian-qwen-mt-flash"])
-        await companion._stop_subtitles()
+        with (
+            patch.object(server_module.SubtitlePipeline, "start", new=AsyncMock(return_value=lambda _chunk: None)),
+            patch.object(server_module.SubtitlePipeline, "stop", new=AsyncMock(return_value=None)),
+        ):
+            await companion._prepare_subtitles({}, {
+                "asrProviderId": "bailian-qwen3-realtime",
+                "translationProviderId": "bailian-qwen35-flash",
+            })
+            self.assertEqual(selected[:2], ["bailian-paraformer", "bailian-qwen-mt-flash"])
+            await companion._stop_subtitles()
 
     async def test_cookie_import_filters_domains_and_returns_token(self) -> None:
         lines = (
@@ -537,7 +541,11 @@ class ProviderApiTests(AioHTTPTestCase):
             companion.session.error = None
 
         companion.session.start = fake_start
-        with patch("companion.server.YtDlpLiveIngest", FakeIngest), patch("companion.server.ProbeInfoSnapshot"):
+        with (
+            patch("companion.server.YtDlpLiveIngest", FakeIngest),
+            patch("companion.server.ProbeInfoSnapshot"),
+            patch("companion.server.build_ffmpeg_command", return_value=["fake-ffmpeg"]),
+        ):
             response = await self.client.post(
                 "/api/start",
                 json={"url": "https://live.bilibili.com/1", "qualityId": "auto"},
@@ -601,9 +609,10 @@ class ProviderApiTests(AioHTTPTestCase):
         captured = {}
         companion.session.stop = lambda: None
         companion.session.start = lambda _url, _inputs, delay, _command: captured.update(delay=delay)
-        original = server_module.YtDlpLiveIngest
-        server_module.YtDlpLiveIngest = FakeIngest
-        try:
+        with (
+            patch.object(server_module, "YtDlpLiveIngest", FakeIngest),
+            patch.object(server_module, "build_ffmpeg_command", return_value=["fake-ffmpeg"]),
+        ):
             response = await self.client.post("/api/start", json={"url": "https://www.youtube.com/watch?v=test", "qualityId": "auto"})
             self.assertEqual(response.status, 200)
             self.assertEqual(captured["delay"], 3.0)
@@ -616,8 +625,6 @@ class ProviderApiTests(AioHTTPTestCase):
 
             response = await self.client.post("/api/start", json={"url": "https://www.youtube.com/watch?v=test", "qualityId": "auto", "targetDelaySeconds": 10})
             self.assertEqual(response.status, 400)
-        finally:
-            server_module.YtDlpLiveIngest = original
 
     async def test_subtitle_polling_returns_seq_updates_and_status(self) -> None:
         companion = self.app["companion"]
