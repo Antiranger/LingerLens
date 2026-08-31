@@ -15,7 +15,7 @@
   let subtitleCues = new Map();
   let subtitleAfterSeq = 0;
   let subtitleMaxKnownEnd = 0;
-  let asrModelChoices = new Map();
+  let providerCatalog = null;
   const subtitleScheduler = window.createSubtitleScheduler
     ? window.createSubtitleScheduler({ minDwell: 1.2, maxLateSeconds: 2.0, bridgeGap: 0.3 })
     : null;
@@ -103,8 +103,6 @@
           enabled: el("subtitlesEnabled").checked,
           sourceLanguage: "ja",
           targetLanguage: el("targetLanguage").value,
-          asrProviderId: el("asrProvider").value || null,
-          translationProviderId: el("translationProvider").value || null,
         },
       };
       const data = await request("/api/start", body);
@@ -283,30 +281,8 @@
     feedback.dataset.tone = "";
     dialog.showModal();
     try {
-      const data = await request("/api/model-settings");
-      const modelSelect = el("asrModel");
-      modelSelect.innerHTML = "";
-      asrModelChoices = new Map();
-      for (const choice of data.asr.choices || [data.asr]) {
-        asrModelChoices.set(choice.providerId, choice);
-        const option = document.createElement("option");
-        option.value = choice.providerId;
-        option.textContent = choice.label || choice.model;
-        modelSelect.append(option);
-      }
-      modelSelect.value = data.asr.providerId || "";
-      el("asrBaseUrl").value = data.asr.baseUrl || "";
-      el("asrApiKey").value = "";
-      updateAsrProtocolNote();
-      setKeyStatus(el("asrKeyStatus"), data.asr.apiKeyConfigured);
-      el("translationBaseUrl").value = data.translation.baseUrl || "https://api.openai.com/v1";
-      el("translationModel").value = data.translation.model || "";
-      el("translationApiKey").value = "";
-      el("translationTemperature").value = data.translation.temperature ?? 0.3;
-      el("translationMaxTokens").value = data.translation.maxTokens ?? 256;
-      el("translationTimeout").value = data.translation.timeoutSeconds ?? 6;
-      el("translationContextPairs").value = data.translation.contextPairs ?? 6;
-      setKeyStatus(el("translationKeyStatus"), data.translation.apiKeyConfigured);
+      providerCatalog = await request("/api/model-settings");
+      renderProviderProfiles();
       feedback.textContent = "";
     } catch (error) {
       feedback.textContent = error.message || String(error);
@@ -314,15 +290,126 @@
     }
   }
 
-  function updateAsrProtocolNote({ applyDefaultUrl = false } = {}) {
-    const choice = asrModelChoices.get(el("asrModel").value);
-    if (!choice) return;
-    const taskProtocol = choice.kind === "dashscope-task-asr";
-    el("asrProtocolNote").textContent = taskProtocol
-      ? `${choice.model} · DashScope Task WebSocket（run-task + 二进制 PCM）`
-      : `${choice.model} · DashScope Realtime WebSocket（session.update + base64 PCM）`;
-    if (applyDefaultUrl) el("asrBaseUrl").value = choice.baseUrl || "";
-    setKeyStatus(el("asrKeyStatus"), choice.apiKeyConfigured);
+  const providerKinds = {
+    asr: [
+      ["dashscope-qwen-realtime", "DashScope Qwen Realtime"],
+      ["dashscope-task-asr", "DashScope Task ASR"],
+      ["openai-audio-transcriptions", "OpenAI Audio Transcriptions"],
+    ],
+    translation: [
+      ["openai-compatible", "OpenAI Compatible"],
+      ["qwen-mt", "Qwen MT"],
+    ],
+  };
+
+  function newProviderId(section) {
+    const prefix = section === "asr" ? "asr" : "translation";
+    const used = new Set(providerCatalog[section].providers.map((item) => item.id));
+    let index = 1;
+    while (used.has(`${prefix}-${index}`)) index += 1;
+    return `${prefix}-${index}`;
+  }
+
+  function addProvider(section) {
+    const id = newProviderId(section);
+    const asr = section === "asr";
+    providerCatalog[section].providers.push({
+      id,
+      label: asr ? "新 ASR Provider" : "新翻译 Provider",
+      kind: asr ? "openai-audio-transcriptions" : "openai-compatible",
+      model: asr ? "whisper-1" : "",
+      baseUrl: asr ? "http://127.0.0.1:8000/v1" : "http://127.0.0.1:8000/v1",
+      apiKey: "",
+      options: asr
+        ? { language: "ja", windowSeconds: 3, requestTimeoutSeconds: 20 }
+        : { temperature: 0.3, maxTokens: 256, timeoutSeconds: 6, contextPairs: 6 },
+    });
+    renderProviderProfiles();
+  }
+
+  function renderProviderProfiles() {
+    if (!providerCatalog) return;
+    renderProviderSection("asr", el("asrProfiles"));
+    renderProviderSection("translation", el("translationProfiles"));
+  }
+
+  function renderProviderSection(section, container) {
+    const group = providerCatalog[section];
+    container.innerHTML = "";
+    group.providers.forEach((provider) => {
+      const card = document.createElement("article");
+      card.className = "provider-profile";
+      card.dataset.providerId = provider.id;
+      const isActive = group.active === provider.id;
+      const cannotDelete = isActive || group.providers.length === 1;
+      const kinds = providerKinds[section].map(([value, label]) =>
+        `<option value="${value}"${provider.kind === value ? " selected" : ""}>${label}</option>`
+      ).join("");
+      card.innerHTML = `
+        <header class="provider-profile-head">
+          <label class="active-provider"><input type="radio" name="active-${section}" data-action="active" ${isActive ? "checked" : ""}> 当前使用</label>
+          <code>${escapeHtml(provider.id)}</code>
+          <button class="secondary compact provider-delete" type="button" data-action="delete" ${cannotDelete ? "disabled" : ""}>删除</button>
+        </header>
+        <div class="provider-fields">
+          <label><span>名称</span><input data-field="label" value="${escapeHtml(provider.label || "")}" required></label>
+          <label><span>协议</span><select data-field="kind">${kinds}</select></label>
+          <label><span>模型</span><input data-field="model" value="${escapeHtml(provider.model || "")}" required></label>
+          <label><span>Base URL</span><input data-field="baseUrl" value="${escapeHtml(provider.baseUrl || "")}" required></label>
+          <label class="wide"><span>API Key（原文显示）</span><input data-field="apiKey" type="text" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>本窗口会直接显示保存的 Key；共享屏幕、截图或旁观者都可能看到。</small></label>
+          ${section === "asr" ? asrOptionFields(provider) : translationOptionFields(provider)}
+        </div>`;
+      card.addEventListener("input", handleProviderInput);
+      card.addEventListener("change", handleProviderInput);
+      card.querySelector('[data-action="active"]').addEventListener("change", () => {
+        group.active = provider.id;
+        renderProviderProfiles();
+      });
+      card.querySelector('[data-action="delete"]').addEventListener("click", () => {
+        if (group.active === provider.id || group.providers.length <= 1) return;
+        group.providers = group.providers.filter((item) => item.id !== provider.id);
+        if (section === "translation") group.fallback = (group.fallback || []).filter((id) => id !== provider.id);
+        renderProviderProfiles();
+      });
+      container.append(card);
+    });
+  }
+
+  function asrOptionFields(provider) {
+    const options = provider.options || {};
+    if (provider.kind !== "openai-audio-transcriptions") return "";
+    return `
+      <label><span>语言</span><input data-option="language" value="${escapeHtml(options.language || "ja")}"></label>
+      <label><span>分窗秒数</span><input data-option="windowSeconds" type="number" min="0.5" step="0.5" value="${Number(options.windowSeconds || 3)}"></label>
+      <label><span>请求超时（秒）</span><input data-option="requestTimeoutSeconds" type="number" min="1" step="1" value="${Number(options.requestTimeoutSeconds || 20)}"></label>`;
+  }
+
+  function translationOptionFields(provider) {
+    const options = provider.options || {};
+    return `
+      <label><span>温度</span><input data-option="temperature" type="number" min="0" max="2" step="0.1" value="${Number(options.temperature ?? 0.3)}"></label>
+      <label><span>最大 Tokens</span><input data-option="maxTokens" type="number" min="32" step="1" value="${Number(options.maxTokens || 256)}"></label>
+      <label><span>超时（秒）</span><input data-option="timeoutSeconds" type="number" min="1" step="1" value="${Number(options.timeoutSeconds || 6)}"></label>
+      <label><span>上下文对数</span><input data-option="contextPairs" type="number" min="0" step="1" value="${Number(options.contextPairs ?? 6)}"></label>`;
+  }
+
+  function handleProviderInput(event) {
+    const card = event.currentTarget;
+    const section = card.closest("#asrProfiles") ? "asr" : "translation";
+    const provider = providerCatalog[section].providers.find((item) => item.id === card.dataset.providerId);
+    if (!provider) return;
+    const field = event.target.dataset.field;
+    const option = event.target.dataset.option;
+    if (field) provider[field] = event.target.value;
+    if (option) {
+      provider.options ||= {};
+      provider.options[option] = event.target.type === "number" ? Number(event.target.value) : event.target.value;
+    }
+    if (field === "kind") renderProviderProfiles();
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   }
 
   function closeModelSettings() {
@@ -388,11 +475,6 @@
     }
   }
 
-  function setKeyStatus(node, configured) {
-    node.textContent = configured ? "已配置" : "未配置";
-    node.classList.toggle("configured", configured);
-  }
-
   async function saveModelSettings(event) {
     event.preventDefault();
     const feedback = el("modelSettingsFeedback");
@@ -401,32 +483,13 @@
     feedback.textContent = "正在保存…";
     feedback.dataset.tone = "";
     try {
-      const payload = {
-        asr: {
-          providerId: el("asrModel").value,
-          baseUrl: el("asrBaseUrl").value.trim(),
-          apiKey: el("asrApiKey").value.trim(),
-        },
-        translation: {
-          baseUrl: el("translationBaseUrl").value.trim(),
-          model: el("translationModel").value.trim(),
-          apiKey: el("translationApiKey").value.trim(),
-          temperature: Number(el("translationTemperature").value),
-          maxTokens: Number(el("translationMaxTokens").value),
-          timeoutSeconds: Number(el("translationTimeout").value),
-          contextPairs: Number(el("translationContextPairs").value),
-        },
-      };
+      const payload = structuredClone(providerCatalog);
       const data = await request("/api/model-settings", payload);
-      setKeyStatus(el("asrKeyStatus"), data.asr.apiKeyConfigured);
-      setKeyStatus(el("translationKeyStatus"), data.translation.apiKeyConfigured);
-      el("asrModel").value = data.asr.providerId;
-      updateAsrProtocolNote();
-      el("asrApiKey").value = "";
-      el("translationApiKey").value = "";
+      providerCatalog = data;
+      renderProviderProfiles();
       feedback.textContent = "已保存。下次启动直播时使用新配置。";
       feedback.dataset.tone = "success";
-      await loadProviders();
+      el("targetLanguage").value = data.subtitle?.targetLanguage || el("targetLanguage").value;
     } catch (error) {
       feedback.textContent = error.message || String(error);
       feedback.dataset.tone = "error";
@@ -435,33 +498,13 @@
     }
   }
 
-  function toggleSecret(button) {
-    const input = el(button.dataset.target);
-    const showing = input.type === "text";
-    input.type = showing ? "password" : "text";
-    button.textContent = showing ? "显示" : "隐藏";
-  }
-
-  async function loadProviders() {
+  async function loadSubtitleDefaults() {
     try {
       const data = await request("/api/providers");
-      populateProviderSelect(el("asrProvider"), data.asr.providers, data.asr.active);
-      populateProviderSelect(el("translationProvider"), data.translation.providers, data.translation.active);
       el("targetLanguage").value = data.subtitle?.targetLanguage || "zh";
     } catch (error) {
       showError(error);
     }
-  }
-
-  function populateProviderSelect(select, providers, active) {
-    select.innerHTML = "";
-    for (const provider of providers || []) {
-      const option = document.createElement("option");
-      option.value = provider.id;
-      option.textContent = provider.apiKeyConfigured ? provider.label : `${provider.label}（未配置 Key）`;
-      select.append(option);
-    }
-    select.value = active || "";
   }
 
   // 延迟预算闭环（redesign Fix E）：预算余量 = 当前总观看延迟 − p95(readyLag)。
@@ -680,8 +723,8 @@
   el("cookiePlatform").addEventListener("change", updateCookiePlatformHelp);
   el("cookieImportForm").addEventListener("submit", submitCookieImport);
   el("modelSettingsForm").addEventListener("submit", saveModelSettings);
-  el("asrModel").addEventListener("change", () => updateAsrProtocolNote({ applyDefaultUrl: true }));
-  document.querySelectorAll(".reveal-secret").forEach((button) => button.addEventListener("click", () => toggleSecret(button)));
+  el("addAsrProfile").addEventListener("click", () => addProvider("asr"));
+  el("addTranslationProfile").addEventListener("click", () => addProvider("translation"));
   el("subtitlesEnabled").addEventListener("change", () => { subtitlePrefs.enabled = el("subtitlesEnabled").checked; localStorage.setItem("laglingo.subtitle.enabled", String(subtitlePrefs.enabled)); if (!subtitlePrefs.enabled) clearSubtitle(); });
   el("subtitleMode").addEventListener("change", () => { subtitlePrefs.mode = el("subtitleMode").value; localStorage.setItem("laglingo.subtitle.mode", subtitlePrefs.mode); applySubtitlePrefs(); });
   el("subtitleSize").addEventListener("change", () => { subtitlePrefs.size = el("subtitleSize").value; localStorage.setItem("laglingo.subtitle.size", subtitlePrefs.size); applySubtitlePrefs(); });
@@ -691,7 +734,7 @@
   video.addEventListener("waiting", () => setState("播放器缓冲", "waiting"));
   applySubtitlePrefs();
   subtitleWindow?.apply();
-  loadProviders();
+  loadSubtitleDefaults();
   statusTimer = setInterval(refreshStatus, 1000);
   subtitleTimer = setInterval(refreshSubtitles, 500);
   subtitleRenderTimer = setInterval(renderSubtitle, 100);

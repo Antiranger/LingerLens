@@ -32,7 +32,7 @@ YouTube下载层不再使用 Streamlink 或自制通用 HLS 代理。yt-dlp 独�
 - `companion/core.py`：格式归一化、认证边界、FFmpeg 命令、延迟 playlist 发布、环形清理。
 - `companion/ytdlp_ingest.py`：当前版 yt-dlp 子进程；完整负责 YouTube 直播下载并输出 MPEG-TS。
 - `companion/server.py`：只绑定 loopback 的 HTTP/API 服务，提供字幕与 provider 配置接口。
-- `companion/providers/`：ASR/翻译 provider 抽象、百炼 Realtime/任务式 ASR、OpenAI 兼容/Qwen-MT 与 fallback。
+- `companion/providers/`：ASR/翻译 provider 抽象、百炼 Realtime/任务式 ASR、OpenAI-compatible Audio Transcriptions、OpenAI 兼容/Qwen-MT 与 fallback。
 - `companion/subtitle_pipeline.py`：音频 tee、TS→PCM、ASR、翻译、句尾墙钟对齐与统计。
 - `companion/subtitle_text.py` / `subtitle_store.py` / `context_manager.py`：纯字幕逻辑。
 - `web-player/`：独立播放器；`vendor/hls.min.js` 为本地打包的 hls.js 1.7.1。
@@ -127,6 +127,22 @@ powershell -ExecutionPolicy Bypass -File `
   -ExtensionId 你的扩展ID -Unregister
 ```
 
+## Provider Catalog 与本地 Whisper
+
+播放器右上角「模型设置」是 ASR 和翻译 Provider 的唯一新增、编辑、删除与 active 选择入口。每类至少保留一条记录；当前 active 记录必须先切换到另一条后才能删除。保存后，下一次启动字幕只使用目录中 active 的 ASR 与翻译记录。
+
+LagLingo **不安装、不下载、也不启动 Whisper 服务**。请先自行运行 Speaches、faster-whisper-server、Xinference、LocalAI 或其他兼容 `POST /v1/audio/transcriptions` 的服务，再新增 ASR：
+
+- 协议：`OpenAI Audio Transcriptions`
+- Base URL：例如 `http://127.0.0.1:8000/v1`
+- 模型：例如 `whisper-1` 或服务实际暴露的模型名
+- API Key：本地服务不校验时可留空；需要占位值时按该服务要求填写
+- 语言/分窗/超时：按模型速度与直播语言调整
+
+兼容性取决于服务实现。LagLingo 发送 multipart WAV、`model`、`language` 与时间戳格式请求，并接受普通 JSON 文本或带 segment 时间的 verbose JSON。短窗请求失败只影响字幕，不会阻塞媒体播放。
+
+示例 `runtime/providers.example.json` 已包含 `local-whisper` 记录。Speaches/faster-whisper-server 通常可直接使用上述本机 URL；Xinference 请把 Base URL 改为其 OpenAI-compatible API 根路径并使用已启动模型的 ID。
+
 ## 安全边界
 
 - Companion 只允许绑定 `127.0.0.1`、`localhost` 或 `::1`。
@@ -136,7 +152,8 @@ powershell -ExecutionPolicy Bypass -File `
 - Cookie 只接受 YouTube/Google/Bilibili 域名；直播页面 URL 也限制为 YouTube/Bilibili HTTPS。
 - YouTube 部分格式可能还要求 PO Token。本原型保留了 `AuthenticationProvider` 边界，但没有伪装已实现 PO Token。
 - 开启云端字幕后，音频会从本机发送到用户配置的 ASR 服务（默认示例为阿里云百炼），源文/上下文会发送到翻译服务。这与 Cookie 只在本机流转是两条不同的数据边界；不开启字幕时不会挂载音频 tee。
-- API Key 只从服务端 `runtime/providers.json` 或环境变量读取；`/api/providers` 永远脱敏，浏览器与扩展不接触密钥。真实 `runtime/providers.json` 应作为本机私有文件保存，不要提交或共享。
+- API Key 从服务端 `runtime/providers.json` 或环境变量读取；普通 `/api/providers`、状态、日志、错误与扩展消息永远脱敏。按产品要求，只有 loopback + same-origin 且 `Cache-Control: no-store` 的「模型设置」路由会把原始 Key 返回给浏览器并在输入框中直接显示，便于检查和替换。
+- **本地屏幕风险：** 打开模型设置时，原始 Key 会对屏幕旁观者、截图、录屏和远程桌面共享可见。不要在共享屏幕时打开该窗口；真实 `runtime/providers.json` 也应作为本机私有文件保存，不要提交或共享。
 
 ## 质量策略
 

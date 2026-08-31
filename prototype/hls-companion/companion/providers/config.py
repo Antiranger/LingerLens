@@ -163,6 +163,11 @@ def validate_config(config: dict[str, Any]) -> None:
         if not isinstance(section, dict) or not isinstance(section.get("providers"), list):
             raise ValueError(f"{section_name}.providers must be a list")
         ids: list[str] = []
+        allowed_kinds = (
+            {"dashscope-qwen-realtime", "dashscope-task-asr", "openai-audio-transcriptions"}
+            if section_name == "asr"
+            else {"openai-compatible", "qwen-mt"}
+        )
         for provider in section["providers"]:
             if not isinstance(provider, dict):
                 raise ValueError(f"{section_name} provider entries must be objects")
@@ -176,6 +181,8 @@ def validate_config(config: dict[str, Any]) -> None:
             if kind not in REGISTRY:
                 available = ", ".join(sorted(REGISTRY))
                 raise ValueError(f"unknown provider kind {kind!r}; available kinds: {available}")
+            if kind not in allowed_kinds:
+                raise ValueError(f"provider kind {kind!r} is not valid for {section_name}")
         if section.get("active") not in ids:
             raise ValueError(f"{section_name}.active must name a configured provider")
         if section_name == "translation":

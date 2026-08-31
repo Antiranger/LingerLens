@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "asr": {
     "active": "bailian-qwen3-realtime",
     "providers": [
@@ -41,6 +41,20 @@
           "hotwordsEnabled": false,
           "contextEnabled": false,
           "startTimeoutSeconds": 10
+        }
+      },
+      {
+        "id": "local-whisper",
+        "label": "本机 OpenAI-compatible Whisper",
+        "kind": "openai-audio-transcriptions",
+        "model": "whisper-1",
+        "baseUrl": "http://127.0.0.1:8000/v1",
+        "apiKey": "",
+        "options": {
+          "language": "ja",
+          "sampleRate": 16000,
+          "windowSeconds": 3,
+          "requestTimeoutSeconds": 20
         }
       },
       {

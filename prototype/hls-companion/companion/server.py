@@ -472,8 +472,11 @@ class CompanionApplication:
         """
         config = load_config(self.providers_path)
         self.providers_config = config
-        asr_id = request.get("asrProviderId") or config["asr"]["active"]
-        translation_id = request.get("translationProviderId") or config["translation"]["active"]
+        # Model settings is the only provider-selection boundary. Start payloads
+        # carry subtitle language/display preferences only; always use the
+        # persisted active catalog records.
+        asr_id = config["asr"]["active"]
+        translation_id = config["translation"]["active"]
         asr_config = self._provider_record(config["asr"], asr_id)
         translation_configs = [self._provider_record(config["translation"], translation_id)]
         translation_configs.extend(

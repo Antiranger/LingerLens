@@ -213,67 +213,29 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertNotIn("visible-only-here", await providers_response.text())
         self.assertNotIn("visible-only-here", await status_response.text())
 
-    async def test_model_settings_persist_asr_and_openai_compatible_translation(self) -> None:
-        response = await self.client.get("/api/model-settings")
-        self.assertEqual(response.status, 200)
-        initial = await response.json()
-        self.assertEqual(initial["asr"]["model"], "qwen3-asr-flash-realtime")
-        self.assertIn("fun-asr-realtime-2026-02-28", [choice["model"] for choice in initial["asr"]["choices"]])
-        self.assertEqual(initial["translation"]["kind"], "openai-compatible")
+    async def test_subtitle_start_uses_active_catalog_records_not_request_overrides(self) -> None:
+        companion = self.app["companion"]
+        catalog = await (await self.client.get("/api/model-settings")).json()
+        catalog["asr"]["active"] = "bailian-paraformer"
+        catalog["translation"]["active"] = "bailian-qwen-mt-flash"
+        catalog["translation"]["fallback"] = []
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
 
-        response = await self.client.post(
-            "/api/model-settings",
-            json={
-                "asr": {"baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", "apiKey": "asr-secret"},
-                "translation": {
-                    "baseUrl": "https://api.openai.com/v1",
-                    "model": "gpt-4.1-mini",
-                    "apiKey": "translation-secret",
-                    "temperature": 0.2,
-                    "maxTokens": 384,
-                    "timeoutSeconds": 8,
-                    "contextPairs": 5,
-                },
-            },
-        )
-        self.assertEqual(response.status, 200)
-        view = await response.json()
-        self.assertTrue(view["asr"]["apiKeyConfigured"])
-        self.assertTrue(view["translation"]["apiKeyConfigured"])
-        self.assertEqual(view["translation"]["model"], "gpt-4.1-mini")
-        rendered = json.dumps(view)
-        self.assertNotIn("asr-secret", rendered)
-        self.assertNotIn("translation-secret", rendered)
-        persisted = json.loads((Path(self.temporary.name) / "providers.json").read_text(encoding="utf-8"))
-        openai = next(item for item in persisted["translation"]["providers"] if item["kind"] == "openai-compatible")
-        self.assertEqual(openai["baseUrl"], "https://api.openai.com/v1")
-        self.assertEqual(openai["model"], "gpt-4.1-mini")
-        self.assertEqual(openai["apiKey"], "translation-secret")
+        selected = []
+        original = companion._provider_record
 
-        # Switching protocol adds the built-in Fun-ASR preset to an old config,
-        # reuses the current DashScope key, and makes it active.
-        response = await self.client.post(
-            "/api/model-settings",
-            json={
-                "asr": {
-                    "providerId": "bailian-fun-asr-2026-02-28",
-                    "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-                },
-                "translation": {
-                    "baseUrl": "https://api.openai.com/v1",
-                    "model": "gpt-4.1-mini",
-                },
-            },
-        )
-        self.assertEqual(response.status, 200)
-        view = await response.json()
-        self.assertEqual(view["asr"]["providerId"], "bailian-fun-asr-2026-02-28")
-        self.assertEqual(view["asr"]["model"], "fun-asr-realtime-2026-02-28")
-        persisted = json.loads((Path(self.temporary.name) / "providers.json").read_text(encoding="utf-8"))
-        fun = next(item for item in persisted["asr"]["providers"] if item["id"] == "bailian-fun-asr-2026-02-28")
-        self.assertEqual(persisted["asr"]["active"], fun["id"])
-        self.assertEqual(fun["kind"], "dashscope-task-asr")
-        self.assertEqual(fun["apiKey"], "asr-secret")
+        def record(section, provider_id):
+            selected.append(provider_id)
+            return original(section, provider_id)
+
+        companion._provider_record = record
+        await companion._prepare_subtitles({}, {
+            "asrProviderId": "bailian-qwen3-realtime",
+            "translationProviderId": "bailian-qwen35-flash",
+        })
+        self.assertEqual(selected[:2], ["bailian-paraformer", "bailian-qwen-mt-flash"])
+        await companion._stop_subtitles()
 
     async def test_cookie_import_filters_domains_and_returns_token(self) -> None:
         lines = (

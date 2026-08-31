@@ -47,11 +47,13 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(js, /renderProviderProfiles/);
   assert.match(js, /openai-audio-transcriptions/);
   assert.match(js, /data-action="delete"/);
-  assert.doesNotMatch(js, /asrProviderId/);
-  assert.doesNotMatch(js, /translationProviderId/);
-  assert.match(html, /data-field="baseUrl"/);
-  assert.match(html, /data-field="model"/);
-  assert.match(html, /data-field="apiKey"/);
+  assert.doesNotMatch(js, /asrProviderId\s*:/);
+  assert.doesNotMatch(js, /translationProviderId\s*:/);
+  assert.match(js, /data-field="baseUrl"/);
+  assert.match(js, /data-field="model"/);
+  assert.match(js, /data-field="apiKey"/);
+  assert.match(js, /type="text" value=.*provider\.apiKey/);
+  assert.match(js, /isActive \|\| group\.providers\.length === 1/);
   assert.match(html, /id="cookieImportDialog"/);
   assert.match(html, /id="cookiePayload"/);
   assert.match(html, /id="openCookieImport"/);

@@ -29,10 +29,16 @@ from companion.providers.mt_openai_compat import OpenAICompatibleTranslationProv
 
 
 class ProviderRegistryTests(unittest.TestCase):
-    def test_all_four_documented_kinds_are_registered_and_typed(self) -> None:
+    def test_all_five_documented_kinds_are_registered_and_typed(self) -> None:
         self.assertEqual(
             set(REGISTRY),
-            {"dashscope-qwen-realtime", "dashscope-task-asr", "openai-compatible", "qwen-mt"},
+            {
+                "dashscope-qwen-realtime",
+                "dashscope-task-asr",
+                "openai-audio-transcriptions",
+                "openai-compatible",
+                "qwen-mt",
+            },
         )
         config = load_config(ROOT / "runtime" / "providers.example.json", env={"DASHSCOPE_API_KEY": "secret"})
         self.assertEqual(create_asr(config["asr"]["providers"][0]).capabilities.stable_prefix, True)
@@ -96,6 +102,16 @@ class ConfigTests(unittest.TestCase):
         config = copy.deepcopy(DEFAULT_CONFIG)
         config["translation"]["active"] = "missing"
         with self.assertRaisesRegex(ValueError, "translation.active"):
+            validate_config(config)
+
+    def test_validation_rejects_provider_kinds_in_the_wrong_catalog(self) -> None:
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["asr"]["providers"][0]["kind"] = "openai-compatible"
+        with self.assertRaisesRegex(ValueError, "not valid for asr"):
+            validate_config(config)
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["translation"]["providers"][0]["kind"] = "openai-audio-transcriptions"
+        with self.assertRaisesRegex(ValueError, "not valid for translation"):
             validate_config(config)
 
     def test_restricted_atomic_update_preserves_provider_records_and_inline_key(self) -> None:
