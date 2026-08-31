@@ -71,7 +71,7 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 1,
+    "version": 2,
     "asr": {
         "active": "bailian-qwen3-realtime",
         "providers": [copy.deepcopy(provider) for provider in BUILTIN_ASR_PROVIDERS],
@@ -140,13 +140,24 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> dict[
         atomic_write_config(path, DEFAULT_CONFIG)
     with path.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
+    if config.get("version") == 1:
+        config = migrate_v1_config(config)
+        atomic_write_config(path, config)
     validate_config(config)
     return resolve_secrets(config, env)
 
 
+def migrate_v1_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade the original provider lists in place without changing records."""
+    migrated = copy.deepcopy(config)
+    migrated["version"] = 2
+    validate_config(migrated)
+    return migrated
+
+
 def validate_config(config: dict[str, Any]) -> None:
-    if config.get("version") != 1:
-        raise ValueError("providers config version must be 1")
+    if config.get("version") != 2:
+        raise ValueError("providers config version must be 2")
     for section_name in ("asr", "translation"):
         section = config.get(section_name)
         if not isinstance(section, dict) or not isinstance(section.get("providers"), list):
@@ -198,23 +209,35 @@ def masked_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_model_settings(path: str | Path, settings: dict[str, Any]) -> dict[str, Any]:
-    """Persist the two user-facing model records from the loopback settings UI.
+    """Persist catalog CRUD from the loopback model-settings boundary.
 
-    Secrets are accepted only by this local POST path, are never returned by GET,
-    and are written to the user-private providers file using the existing atomic
-    0600 writer.
+    A legacy single-record payload is still accepted so existing local clients
+    can upgrade without a flag day. New clients send complete provider lists;
+    replacing the list is the CRUD operation and validation protects active and
+    fallback references as well as the at-least-one-record invariant.
     """
     path = Path(path)
-    if not path.exists():
-        atomic_write_config(path, DEFAULT_CONFIG)
-    with path.open("r", encoding="utf-8") as handle:
-        persisted = json.load(handle)
-    validate_config(persisted)
+    current = load_config(path)
+    persisted = _without_runtime_secrets(current)
 
     asr_settings = settings.get("asr", {})
     translation_settings = settings.get("translation", {})
     if not isinstance(asr_settings, dict) or not isinstance(translation_settings, dict):
         raise ValueError("asr and translation settings must be objects")
+
+    if "providers" in asr_settings or "providers" in translation_settings:
+        if not isinstance(asr_settings.get("providers"), list) or not isinstance(translation_settings.get("providers"), list):
+            raise ValueError("asr.providers and translation.providers must be lists")
+        candidate = {
+            "version": 2,
+            "asr": copy.deepcopy(asr_settings),
+            "translation": copy.deepcopy(translation_settings),
+            "subtitle": copy.deepcopy(settings.get("subtitle", persisted.get("subtitle", {}))),
+        }
+        _preserve_omitted_secrets(candidate, current)
+        validate_config(candidate)
+        atomic_write_config(path, candidate)
+        return load_config(path)
 
     active_asr = _provider_by_id(persisted["asr"], persisted["asr"]["active"])
     provider_id = str(asr_settings.get("providerId") or active_asr["id"])
@@ -264,44 +287,14 @@ def update_model_settings(path: str | Path, settings: dict[str, Any]) -> dict[st
 
 
 def model_settings_view(config: dict[str, Any]) -> dict[str, Any]:
-    asr = _provider_by_id(config["asr"], config["asr"]["active"])
-    translation = _provider_by_kind(config["translation"], "openai-compatible")
-    configured = {provider["id"]: provider for provider in config["asr"].get("providers", [])}
-    shared_asr_key_configured = any(bool(provider.get("_apiKey")) for provider in configured.values())
-    choices: list[dict[str, Any]] = []
-    for preset in BUILTIN_ASR_PROVIDERS:
-        record = configured.get(preset["id"], preset)
-        choices.append({
-            "providerId": preset["id"],
-            "label": preset["label"],
-            "kind": preset["kind"],
-            "model": preset["model"],
-            "baseUrl": record.get("baseUrl", preset["baseUrl"]),
-            "apiKeyConfigured": bool(record.get("_apiKey")) or shared_asr_key_configured,
-        })
-    return {
-        "asr": {
-            "providerId": asr["id"],
-            "label": asr.get("label"),
-            "kind": asr.get("kind"),
-            "model": asr.get("model"),
-            "baseUrl": asr.get("baseUrl"),
-            "apiKeyConfigured": bool(asr.get("_apiKey")),
-            "choices": choices,
-        },
-        "translation": {
-            "providerId": translation["id"],
-            "label": translation.get("label"),
-            "kind": "openai-compatible",
-            "baseUrl": translation.get("baseUrl"),
-            "model": translation.get("model"),
-            "apiKeyConfigured": bool(translation.get("_apiKey")),
-            "temperature": translation.get("options", {}).get("temperature", 0.3),
-            "maxTokens": translation.get("options", {}).get("maxTokens", 256),
-            "timeoutSeconds": translation.get("options", {}).get("timeoutSeconds", 6),
-            "contextPairs": translation.get("options", {}).get("contextPairs", 10),
-        },
-    }
+    """Return the full local catalog including raw keys for explicit editing."""
+    view = _without_runtime_secrets(config)
+    for section_name in ("asr", "translation"):
+        for provider in view[section_name]["providers"]:
+            runtime = _provider_by_id(config[section_name], provider["id"])
+            provider["apiKey"] = runtime.get("_apiKey", "")
+            provider["apiKeyConfigured"] = bool(provider["apiKey"])
+    return view
 
 
 def update_config(path: str | Path, patch: dict[str, Any]) -> dict[str, Any]:
@@ -415,6 +408,19 @@ def _apply_secret(provider: dict[str, Any], settings: dict[str, Any]) -> None:
     provider["apiKey"] = api_key
     # An explicitly entered key takes precedence over an old environment name.
     provider.pop("apiKeyEnv", None)
+
+
+def _preserve_omitted_secrets(candidate: dict[str, Any], current: dict[str, Any]) -> None:
+    for section_name in ("asr", "translation"):
+        current_by_id = {item["id"]: item for item in current[section_name]["providers"]}
+        for provider in candidate[section_name]["providers"]:
+            if "apiKey" in provider:
+                provider.pop("apiKeyEnv", None)
+                continue
+            existing = current_by_id.get(provider.get("id"))
+            if existing and existing.get("_apiKey"):
+                provider["apiKey"] = existing["_apiKey"]
+                provider.pop("apiKeyEnv", None)
 
 
 def _providers(config: dict[str, Any]):

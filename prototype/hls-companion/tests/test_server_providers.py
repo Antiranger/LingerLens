@@ -61,6 +61,158 @@ class ProviderApiTests(AioHTTPTestCase):
         persisted = (Path(self.temporary.name) / "providers.json").read_text(encoding="utf-8")
         self.assertNotIn("leak", persisted)
 
+    async def test_model_settings_catalog_persists_multiple_profiles_and_active_selection(self) -> None:
+        catalog = {
+            "asr": {
+                "active": "local-whisper",
+                "providers": [
+                    {
+                        "id": "cloud-qwen",
+                        "label": "Cloud Qwen",
+                        "kind": "dashscope-qwen-realtime",
+                        "model": "qwen3-asr-flash-realtime",
+                        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+                        "apiKey": "cloud-secret",
+                        "options": {"sampleRate": 16000},
+                    },
+                    {
+                        "id": "local-whisper",
+                        "label": "Local Whisper",
+                        "kind": "openai-audio-transcriptions",
+                        "model": "whisper-1",
+                        "baseUrl": "http://127.0.0.1:8000/v1",
+                        "apiKey": "",
+                        "options": {"windowSeconds": 2.0, "requestTimeoutSeconds": 10},
+                    },
+                ],
+            },
+            "translation": {
+                "active": "local-translation",
+                "fallback": ["cloud-translation"],
+                "providers": [
+                    {
+                        "id": "cloud-translation",
+                        "label": "Cloud Translation",
+                        "kind": "openai-compatible",
+                        "model": "qwen3.5-flash",
+                        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "apiKey": "translation-secret",
+                        "options": {"timeoutSeconds": 6},
+                    },
+                    {
+                        "id": "local-translation",
+                        "label": "Local Translation",
+                        "kind": "openai-compatible",
+                        "model": "local-model",
+                        "baseUrl": "http://127.0.0.1:9000/v1",
+                        "apiKey": "dummy",
+                        "options": {"timeoutSeconds": 4},
+                    },
+                ],
+            },
+        }
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
+        saved = await response.json()
+        self.assertEqual(saved["version"], 2)
+        self.assertEqual(saved["asr"]["active"], "local-whisper")
+        self.assertEqual([item["id"] for item in saved["asr"]["providers"]], ["cloud-qwen", "local-whisper"])
+        self.assertEqual(saved["asr"]["providers"][0]["apiKey"], "cloud-secret")
+        self.assertEqual(saved["translation"]["providers"][1]["apiKey"], "dummy")
+
+        args = argparse.Namespace(
+            runtime_dir=Path(self.temporary.name) / "media2",
+            providers_file=Path(self.temporary.name) / "providers.json",
+            publish_delay=2.0,
+            cookies_from_browser=None,
+        )
+        restarted = CompanionApplication(args)
+        restarted_view = restarted.providers_config
+        self.assertEqual(restarted_view["version"], 2)
+        self.assertEqual(restarted_view["asr"]["active"], "local-whisper")
+        self.assertEqual(restarted_view["translation"]["fallback"], ["cloud-translation"])
+        response = await self.client.get("/api/model-settings")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["translation"]["active"], "local-translation")
+
+    async def test_version_one_catalog_migrates_without_losing_records_or_subtitle_preferences(self) -> None:
+        path = Path(self.temporary.name) / "providers.json"
+        legacy = {
+            "version": 1,
+            "asr": {
+                "active": "legacy-asr",
+                "providers": [{
+                    "id": "legacy-asr", "label": "Legacy ASR", "kind": "dashscope-qwen-realtime",
+                    "model": "qwen3-asr-flash-realtime", "baseUrl": "wss://legacy.example/realtime",
+                    "apiKey": "legacy-asr-key", "options": {"sampleRate": 16000, "turnDetection": {"silenceDurationMs": 321}},
+                }],
+            },
+            "translation": {
+                "active": "legacy-mt", "fallback": ["legacy-fallback"],
+                "providers": [
+                    {"id": "legacy-mt", "label": "Legacy MT", "kind": "openai-compatible", "model": "legacy-model", "baseUrl": "https://legacy.example/v1", "apiKey": "legacy-mt-key", "options": {"contextPairs": 7}},
+                    {"id": "legacy-fallback", "label": "Legacy Qwen MT", "kind": "qwen-mt", "model": "qwen-mt-flash", "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1", "apiKey": "fallback-key", "options": {"tmPairs": 3}},
+                ],
+            },
+            "subtitle": {"sourceLanguage": "ja", "targetLanguage": "zh", "manualOffsetSeconds": 1.25, "bilingual": False},
+        }
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        response = await self.client.get("/api/model-settings")
+        self.assertEqual(response.status, 200)
+        migrated = await response.json()
+        self.assertEqual(migrated["version"], 2)
+        self.assertEqual(migrated["asr"]["active"], "legacy-asr")
+        self.assertEqual(migrated["translation"]["fallback"], ["legacy-fallback"])
+        self.assertEqual(migrated["asr"]["providers"][0]["apiKey"], "legacy-asr-key")
+        self.assertEqual(migrated["translation"]["providers"][0]["model"], "legacy-model")
+        self.assertEqual(migrated["subtitle"]["manualOffsetSeconds"], 1.25)
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["version"], 2)
+        self.assertEqual(persisted["translation"]["providers"][1]["apiKey"], "fallback-key")
+
+    async def test_model_settings_rejects_deleting_active_or_last_profile(self) -> None:
+        initial = await (await self.client.get("/api/model-settings")).json()
+        active_asr = initial["asr"]["active"]
+        remaining_asr = [item for item in initial["asr"]["providers"] if item["id"] != active_asr]
+        response = await self.client.post("/api/model-settings", json={
+            "asr": {"active": active_asr, "providers": remaining_asr},
+            "translation": initial["translation"],
+            "subtitle": initial["subtitle"],
+        })
+        self.assertEqual(response.status, 400)
+        self.assertIn("asr.active", (await response.json())["error"])
+
+        only_translation = initial["translation"]["providers"][0]
+        response = await self.client.post("/api/model-settings", json={
+            "asr": initial["asr"],
+            "translation": {"active": only_translation["id"], "fallback": [], "providers": []},
+            "subtitle": initial["subtitle"],
+        })
+        self.assertEqual(response.status, 400)
+        self.assertIn("translation.active", (await response.json())["error"])
+
+    async def test_raw_keys_are_confined_to_loopback_same_origin_model_settings(self) -> None:
+        response = await self.client.get("/api/model-settings", headers={"Origin": "http://evil.example"})
+        self.assertEqual(response.status, 403)
+        response = await self.client.post(
+            "/api/model-settings",
+            json={},
+            headers={"Origin": "http://evil.example"},
+        )
+        self.assertEqual(response.status, 403)
+
+        settings = await (await self.client.get("/api/model-settings")).json()
+        settings["asr"]["providers"][0]["apiKey"] = "visible-only-here"
+        response = await self.client.post("/api/model-settings", json=settings)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertIn("visible-only-here", await response.text())
+
+        providers_response = await self.client.get("/api/providers")
+        status_response = await self.client.get("/api/status")
+        self.assertNotIn("visible-only-here", await providers_response.text())
+        self.assertNotIn("visible-only-here", await status_response.text())
+
     async def test_model_settings_persist_asr_and_openai_compatible_translation(self) -> None:
         response = await self.client.get("/api/model-settings")
         self.assertEqual(response.status, 200)

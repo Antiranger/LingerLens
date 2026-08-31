@@ -311,11 +311,13 @@ class CompanionApplication:
         if host_name.lower() not in {"127.0.0.1", "localhost", "::1"}:
             raise web.HTTPForbidden(text=json.dumps({"error": "Only loopback requests may import cookies"}), content_type="application/json")
 
-    async def handle_get_model_settings(self, _: web.Request) -> web.Response:
+    async def handle_get_model_settings(self, request: web.Request) -> web.Response:
+        self._require_local_request(request)
         self.providers_config = load_config(self.providers_path)
         return web.json_response(model_settings_view(self.providers_config), headers={"Cache-Control": "no-store"})
 
     async def handle_update_model_settings(self, request: web.Request) -> web.Response:
+        self._require_local_request(request)
         settings = await request.json()
         if not isinstance(settings, dict):
             raise ValueError("model settings must be an object")
