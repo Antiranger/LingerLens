@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
+VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
 SUPPORTED_HOST_SUFFIXES = (
     "youtube.com",
     "youtu.be",
@@ -354,14 +355,17 @@ def normalize_imported_cookies(cookies: list[dict[str, Any]]) -> list[dict[str, 
 
 class YtDlpProbe:
     def __init__(self, yt_dlp: str | None = None):
-        self.yt_dlp = yt_dlp or executable("yt-dlp")
+        if yt_dlp:
+            self.yt_dlp = yt_dlp
+        elif VENDORED_YT_DLP.is_file():
+            self.yt_dlp = str(VENDORED_YT_DLP)
+        else:
+            self.yt_dlp = executable("yt-dlp")
 
     def extract(self, page_url: str, auth: AuthenticationProvider | None = None) -> dict[str, Any]:
         validate_page_url(page_url)
-        current_yt_dlp = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
-        yt_dlp = str(current_yt_dlp) if current_yt_dlp.is_file() else self.yt_dlp
         command = [
-            yt_dlp,
+            self.yt_dlp,
             "--no-config",
             "--no-playlist",
             "--no-warnings",

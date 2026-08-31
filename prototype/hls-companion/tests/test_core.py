@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,20 @@ build_ffmpeg_command = CORE.build_ffmpeg_command
 build_quality_options = CORE.build_quality_options
 select_quality = CORE.select_quality
 validate_page_url = CORE.validate_page_url
+
+
+class ProbeExecutableTests(unittest.TestCase):
+    def test_probe_uses_vendored_yt_dlp_when_path_has_none(self) -> None:
+        vendored = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
+        self.assertTrue(vendored.is_file())
+        with patch.object(CORE.shutil, "which", return_value=None):
+            probe = CORE.YtDlpProbe()
+        self.assertEqual(probe.yt_dlp, str(vendored))
+
+    def test_probe_respects_explicit_executable_override(self) -> None:
+        with patch.object(CORE.shutil, "which", return_value=None):
+            probe = CORE.YtDlpProbe("C:/tools/custom-yt-dlp.exe")
+        self.assertEqual(probe.yt_dlp, "C:/tools/custom-yt-dlp.exe")
 
 
 class FormatSelectionTests(unittest.TestCase):
