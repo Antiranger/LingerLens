@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "LagLingo Live Translator",
+  "version": "0.3.0",
+  "description": "Opens the current YouTube live page in the local LagLingo yt-dlp/CMAF player through Native Messaging.",
+  "permissions": ["activeTab", "cookies", "nativeMessaging"],
+  "host_permissions": [
+    "https://*.youtube.com/*",
+    "https://youtu.be/*",
+    "https://*.google.com/*",
+    "https://*.bilibili.com/*"
+  ],
+  "background": { "service_worker": "service-worker.js" },
+  "action": { "default_title": "Open in LagLingo delayed player" }
+}

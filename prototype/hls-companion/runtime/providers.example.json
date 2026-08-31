@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "asr": {
+    "active": "bailian-qwen3-realtime",
+    "providers": [
+      {
+        "id": "bailian-qwen3-realtime",
+        "label": "百炼 Qwen3-ASR-Flash-Realtime",
+        "kind": "dashscope-qwen-realtime",
+        "model": "qwen3-asr-flash-realtime",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "pricePerSecondCny": 0.00033,
+        "options": {
+          "sampleRate": 16000,
+          "turnDetection": {
+            "type": "server_vad",
+            "threshold": 0.2,
+            "silenceDurationMs": 400
+          }
+        }
+      },
+      {
+        "id": "bailian-fun-asr-2026-02-28",
+        "label": "百炼 Fun-ASR-Realtime 2026-02-28（日/中/英）",
+        "kind": "dashscope-task-asr",
+        "model": "fun-asr-realtime-2026-02-28",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "options": {
+          "sampleRate": 16000,
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "semanticPunctuationEnabled": false,
+          "maxSentenceSilence": 400,
+          "multiThresholdModeEnabled": true,
+          "heartbeat": true,
+          "hotwordsEnabled": false,
+          "contextEnabled": false,
+          "startTimeoutSeconds": 10
+        }
+      },
+      {
+        "id": "bailian-paraformer",
+        "label": "百炼 Paraformer-Realtime-V2（成本基线）",
+        "kind": "dashscope-task-asr",
+        "model": "paraformer-realtime-v2",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "pricePerSecondCny": 0.00024,
+        "options": {
+          "sampleRate": 16000,
+          "semanticPunctuationEnabled": false,
+          "maxSentenceSilence": 800
+        }
+      }
+    ]
+  },
+  "translation": {
+    "active": "bailian-qwen35-flash",
+    "fallback": [
+      "bailian-qwen-mt-flash"
+    ],
+    "providers": [
+      {
+        "id": "bailian-qwen35-flash",
+        "label": "百炼 Qwen3.5-Flash（高质量·带上下文）",
+        "kind": "openai-compatible",
+        "model": "qwen3.5-flash",
+        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 256,
+          "timeoutSeconds": 6,
+          "enableThinking": false,
+          "contextPairs": 10,
+          "contextSeconds": 90
+        }
+      },
+      {
+        "id": "bailian-qwen-mt-flash",
+        "label": "百炼 Qwen-MT-Flash（极速基线）",
+        "kind": "qwen-mt",
+        "model": "qwen-mt-flash",
+        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "options": {
+          "timeoutSeconds": 4,
+          "tmPairs": 4
+        }
+      }
+    ]
+  },
+  "subtitle": {
+    "sourceLanguage": "ja",
+    "targetLanguage": "zh",
+    "anchor": "end",
+    "holdSecondsMin": 1.2,
+    "holdSecondsPerChar": 0.06,
+    "manualOffsetSeconds": 0.0,
+    "bilingual": true
+  }
+}

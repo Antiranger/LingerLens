@@ -1,0 +1,38 @@
+# Python / Node caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Agent/browser working state
+.planning/
+.playwright-cli/
+
+# Generated reports and recordings
+output/
+stream/
+live-delay-*.json
+prototype/hls-companion/.benchmark-data/
+prototype/hls-companion/benchmark-results/
+prototype/hls-companion/runtime-*/
+
+# Companion runtime: credentials, cookies, logs, captures and media
+prototype/hls-companion/runtime/**
+!prototype/hls-companion/runtime/providers.example.json
+
+# Disproved/unused local downloader experiment
+prototype/hls-companion/vendor/n-m3u8dl-re/
+prototype/hls-companion/vendor/models/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.local.json
+*.secret

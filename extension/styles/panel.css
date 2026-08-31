@@ -1,0 +1,109 @@
+#laglingo-delay-spike {
+  --llds-bg: oklch(0.105 0 0);
+  --llds-surface: oklch(0.155 0.008 242);
+  --llds-surface-raised: oklch(0.205 0.012 242);
+  --llds-ink: oklch(0.965 0.006 242);
+  --llds-muted: oklch(0.72 0.018 242);
+  --llds-primary: oklch(0.62 0.15 242);
+  --llds-primary-hover: oklch(0.68 0.14 242);
+  --llds-success: oklch(0.73 0.16 151);
+  --llds-warning: oklch(0.79 0.16 82);
+  --llds-danger: oklch(0.68 0.2 27);
+  position: fixed;
+  inset: 16px 16px auto auto;
+  z-index: 2147483600;
+  width: min(360px, calc(100vw - 32px));
+  color: var(--llds-ink);
+  background: var(--llds-bg);
+  border: 1px solid oklch(0.32 0.018 242);
+  border-radius: 14px;
+  font: 13px/1.4 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 6px 8px oklch(0 0 0 / 0.3);
+  overflow: hidden;
+  color-scheme: dark;
+}
+
+#laglingo-delay-spike, #laglingo-delay-spike * { box-sizing: border-box; }
+#laglingo-delay-spike button, #laglingo-delay-spike select { font: inherit; }
+
+#laglingo-delay-spike .llds-header {
+  min-height: 52px;
+  padding: 10px 10px 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--llds-surface);
+  border-bottom: 1px solid oklch(0.28 0.014 242);
+}
+
+#laglingo-delay-spike .llds-header div { display: grid; gap: 1px; }
+#laglingo-delay-spike .llds-header strong { font-size: 14px; letter-spacing: -0.01em; }
+#laglingo-delay-spike .llds-header span { color: var(--llds-muted); font-size: 11px; }
+#laglingo-delay-spike .llds-header button { width: 30px; padding: 4px 0; }
+#laglingo-delay-spike .llds-body { padding: 14px; }
+#laglingo-delay-spike.is-collapsed .llds-body { display: none; }
+#laglingo-delay-spike.is-collapsed { width: 224px; }
+
+#laglingo-delay-spike .llds-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 12px;
+  color: var(--llds-ink);
+}
+
+#laglingo-delay-spike .llds-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--llds-muted); }
+#laglingo-delay-spike .llds-dot[data-tone="active"] { background: var(--llds-primary); }
+#laglingo-delay-spike .llds-dot[data-tone="stable"] { background: var(--llds-success); }
+#laglingo-delay-spike .llds-dot[data-tone="waiting"] { background: var(--llds-warning); }
+#laglingo-delay-spike .llds-dot[data-tone="error"] { background: var(--llds-danger); }
+#laglingo-delay-spike .llds-role { margin-left: auto; color: var(--llds-muted); }
+
+#laglingo-delay-spike .llds-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+#laglingo-delay-spike label { display: grid; gap: 5px; color: var(--llds-muted); font-size: 11px; }
+#laglingo-delay-spike select, #laglingo-delay-spike button {
+  min-height: 34px;
+  color: var(--llds-ink);
+  background: var(--llds-surface-raised);
+  border: 1px solid oklch(0.34 0.018 242);
+  border-radius: 8px;
+  outline: none;
+}
+
+#laglingo-delay-spike select { width: 100%; padding: 0 9px; }
+#laglingo-delay-spike button { padding: 6px 10px; cursor: pointer; transition: background-color 160ms ease-out, border-color 160ms ease-out; }
+#laglingo-delay-spike button:hover:not(:disabled) { background: oklch(0.26 0.018 242); border-color: oklch(0.46 0.04 242); }
+#laglingo-delay-spike button:focus-visible, #laglingo-delay-spike select:focus-visible { outline: 2px solid var(--llds-primary); outline-offset: 2px; }
+#laglingo-delay-spike button:disabled, #laglingo-delay-spike select:disabled { opacity: 0.45; cursor: not-allowed; }
+#laglingo-delay-spike button.llds-primary { background: var(--llds-primary); border-color: var(--llds-primary); color: oklch(1 0 0); font-weight: 650; }
+#laglingo-delay-spike button.llds-primary:hover:not(:disabled) { background: var(--llds-primary-hover); border-color: var(--llds-primary-hover); }
+
+#laglingo-delay-spike .llds-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 14px; }
+#laglingo-delay-spike .llds-metrics { display: grid; grid-template-columns: 1fr 1fr; margin: 0; border-top: 1px solid oklch(0.27 0.012 242); border-bottom: 1px solid oklch(0.27 0.012 242); }
+#laglingo-delay-spike .llds-metrics div { padding: 9px 0; }
+#laglingo-delay-spike .llds-metrics div:nth-child(odd) { padding-right: 10px; }
+#laglingo-delay-spike .llds-metrics div:nth-child(even) { padding-left: 10px; border-left: 1px solid oklch(0.27 0.012 242); }
+#laglingo-delay-spike dt { margin: 0 0 2px; color: var(--llds-muted); font-size: 10px; }
+#laglingo-delay-spike dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 620; }
+
+#laglingo-delay-spike .llds-counters { display: flex; flex-wrap: wrap; gap: 5px 12px; padding: 10px 0; color: var(--llds-muted); font-size: 11px; }
+#laglingo-delay-spike .llds-counters b { color: var(--llds-ink); font-variant-numeric: tabular-nums; }
+#laglingo-delay-spike .llds-note { min-height: 35px; padding: 9px 10px; color: var(--llds-muted); background: var(--llds-surface); border-radius: 8px; font-size: 11px; }
+#laglingo-delay-spike .llds-export { display: flex; gap: 7px; margin-top: 10px; }
+#laglingo-delay-spike .llds-export button { flex: 1; min-height: 30px; padding-inline: 6px; font-size: 11px; }
+
+@media (max-width: 520px) {
+  #laglingo-delay-spike { inset: 8px 8px auto; width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #laglingo-delay-spike button { transition: none; }
+}

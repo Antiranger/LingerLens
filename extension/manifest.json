@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "LagLingo Live Delay Spike",
+  "version": "0.1.0",
+  "description": "Measure and validate controlled delay behind the live edge on YouTube Live and Bilibili Live.",
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://live.bilibili.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://live.bilibili.com/*"
+      ],
+      "js": [
+        "src/adapters.js",
+        "src/metrics.js",
+        "src/content.js"
+      ],
+      "css": ["styles/panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

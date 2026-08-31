@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LagLingo · 遅延ライブ翻訳</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="ghost" aria-hidden="true">LagLingo</div>
+
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-line">
+          <h1>LagLingo</h1>
+          <span class="brand-jp">ラグリンゴ</span>
+        </div>
+        <p>yt-dlp 下载 · 本地延迟直播 · 云端字幕翻译</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="openCookieImport" class="secondary compact" type="button">导入 Cookie</button>
+        <button id="openModelSettings" class="secondary compact" type="button">模型设置</button>
+        <div class="state" data-tone="idle"><span></span><b id="stateText">未启动</b></div>
+      </div>
+      <div class="slashes" aria-hidden="true"><i class="slash camellia"></i><i class="slash rose"></i></div>
+      <div class="side-note" aria-hidden="true">遅延ライブ翻訳</div>
+    </header>
+
+    <div class="stage-grid">
+      <section class="player-stage" aria-label="延迟直播播放器">
+        <video id="video" controls playsinline muted autoplay></video>
+        <div class="stage-tag" aria-hidden="true">DELAY&nbsp;LIVE&nbsp;·&nbsp;127.0.0.1</div>
+        <div id="emptyState" class="empty-state">
+          <em>先探测直播，再启动 yt-dlp 下载</em>
+          <span>媒体只在本机 127.0.0.1 流转。登录 Cookie 不经过此网页接口。</span>
+        </div>
+        <div id="subtitleLayer" class="subtitle-layer off" data-mode="bilingual" data-size="medium" aria-live="off">
+          <div class="subtitle-zh"></div>
+          <div class="subtitle-src"></div>
+        </div>
+      </section>
+
+      <aside class="now-panel" aria-live="polite">
+        <div class="panel-label"><i></i>NOW · 当前状态</div>
+        <strong id="streamTitle">等待直播地址</strong>
+        <p id="message">推荐先选 1080p AVC/AAC。yt-dlp 负责平台下载，LagLingo 只做本地无损封装、延迟发布和旧分片清理。</p>
+        <button id="applyDelayButton" class="secondary compact warn" hidden type="button">字幕来不及：调高延迟</button>
+        <div class="hero-metric">
+          <div class="hero-metric-head">
+            <span>估计总延迟</span>
+            <small>你看到的画面落后真实直播的秒数</small>
+          </div>
+          <b id="totalDelay">—</b>
+          <small class="hero-metric-formula">= 源站采集 + 下载后隐藏媒体 + 播放器落后</small>
+        </div>
+      </aside>
+    </div>
+
+    <section class="deck" aria-label="直播信号">
+      <div class="deck-head">
+        <span class="deck-num">01</span>
+        <h2>直播信号</h2>
+        <span class="deck-en">SOURCE</span>
+        <i class="deck-rule"></i>
+      </div>
+      <div class="control-strip">
+        <label class="url-field">
+          <span>直播页面</span>
+          <input id="url" type="url" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…">
+        </label>
+        <button id="probe" class="secondary">探测清晰度</button>
+        <label>
+          <span>清晰度</span>
+          <select id="quality" disabled><option value="auto">自动（最高兼容）</option></select>
+        </label>
+        <label>
+          <span>下载后额外延迟</span>
+          <select id="publishDelay">
+            <option value="0">0 秒</option>
+            <option value="2">2 秒</option>
+            <option value="3" selected>3 秒</option>
+            <option value="5">5 秒</option>
+            <option value="8">8 秒</option>
+            <option value="10">10 秒</option>
+            <option value="12">12 秒</option>
+            <option value="15">15 秒</option>
+          </select>
+        </label>
+        <button id="start" class="primary" disabled>启动播放</button>
+        <button id="stop" class="secondary" disabled>停止</button>
+      </div>
+    </section>
+
+    <section class="deck deck-rose" aria-label="字幕设置">
+      <div class="deck-head">
+        <span class="deck-num">02</span>
+        <h2>字幕设置</h2>
+        <span class="deck-en">SUBTITLES</span>
+        <i class="deck-rule rose-rule"></i>
+      </div>
+      <div class="subtitle-controls">
+        <label class="check-field"><input id="subtitlesEnabled" type="checkbox" checked><span>启用云端字幕</span></label>
+        <label><span>显示</span><select id="subtitleMode"><option value="bilingual">中日双语</option><option value="zh">仅中文</option><option value="src">仅原文</option></select></label>
+        <label><span>字号</span><select id="subtitleSize"><option value="small">小</option><option value="medium" selected>中</option><option value="large">大</option></select></label>
+        <label class="offset-field"><span>字幕偏移 <b id="subtitleOffsetValue">0.0s</b></span><input id="subtitleOffset" type="range" min="-3" max="3" step="0.1" value="0"></label>
+        <label><span>ASR</span><select id="asrProvider"></select></label>
+        <label><span>翻译</span><select id="translationProvider"></select></label>
+        <label><span>目标语言</span><select id="targetLanguage"><option value="zh">中文</option><option value="en">English</option></select></label>
+      </div>
+    </section>
+
+    <section class="deck" aria-label="运行数据">
+      <div class="deck-head">
+        <span class="deck-num">03</span>
+        <h2>运行数据</h2>
+        <span class="deck-en">TELEMETRY</span>
+        <i class="deck-rule"></i>
+      </div>
+
+      <div class="telemetry-groups">
+        <div class="tgroup">
+          <h3>延迟构成<small>DELAY</small></h3>
+          <dl>
+            <div>
+              <dt>下载后隐藏媒体<small>服务端为攒够延迟预算、已下载但尚未公开的分片时长</small></dt>
+              <dd id="hiddenDelay">—</dd>
+            </div>
+            <div>
+              <dt>浏览器落后公开边缘<small>播放头距公开直播边缘的距离，也就是实际可攒的前向空间</small></dt>
+              <dd id="playerDelay">—</dd>
+            </div>
+            <div>
+              <dt>缓冲区<small>播放头前方已下载、可立即播放的媒体时长</small></dt>
+              <dd id="buffer">—</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="tgroup">
+          <h3>播放信号<small>SIGNAL</small></h3>
+          <dl>
+            <div>
+              <dt>当前输出<small>正在播放的分辨率与帧率</small></dt>
+              <dd id="resolution">—</dd>
+            </div>
+            <div>
+              <dt>运行时间<small>本次下载管线已连续运行的时长</small></dt>
+              <dd id="uptime">—</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="tgroup tgroup-wide">
+          <h3>字幕管线<small>SUBTITLE PIPELINE</small></h3>
+          <dl>
+            <div>
+              <dt>字幕供应商<small>当前使用的 ASR 识别与翻译服务</small></dt>
+              <dd id="subtitleProviderStatus">—</dd>
+            </div>
+            <div>
+              <dt>ASR 时长 / 费用<small>已识别音频时长与按量估算的人民币费用</small></dt>
+              <dd id="subtitleCost">—</dd>
+            </div>
+            <div>
+              <dt>翻译延迟<small>单句译文从请求到返回的平均耗时</small></dt>
+              <dd id="translationLatency">—</dd>
+            </div>
+            <div>
+              <dt>字幕就绪 p50/p95<small>一句话说完到译文就绪的耗时分位数，决定字幕来不来得及</small></dt>
+              <dd id="subtitleReadyLag">—</dd>
+            </div>
+            <div>
+              <dt>字幕预算余量<small>总延迟 − p95 就绪 − p95 句长；持续为负说明字幕跟不上</small></dt>
+              <dd id="budgetMargin">—</dd>
+            </div>
+            <div>
+              <dt>句长 p50/p95<small>字幕单句时长的分位数，长句需要更多延迟预算</small></dt>
+              <dd id="cueDuration">—</dd>
+            </div>
+            <div>
+              <dt>时间戳来源<small>字幕时间轴来自 ASR 精确时间戳还是本地估算的比例</small></dt>
+              <dd id="timingSources">—</dd>
+            </div>
+            <div>
+              <dt>客户端丢弃<small>因迟到或超时而未能上屏的字幕条数</small></dt>
+              <dd id="schedulerDrops">—</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <footer class="colophon">
+      <span>LagLingo — local delay-live companion</span>
+      <span aria-hidden="true">メディアはローカルのみ · 媒体不出本机</span>
+    </footer>
+  </main>
+
+  <dialog id="modelSettingsDialog" class="settings-dialog" aria-labelledby="modelSettingsTitle">
+    <form id="modelSettingsForm" method="dialog">
+      <header class="settings-header">
+        <div><span>字幕引擎 · ENGINE</span><h2 id="modelSettingsTitle">模型连接设置</h2></div>
+        <button id="closeModelSettings" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <p class="settings-intro">密钥只写入本机私有配置，不会返回浏览器。保存后，下次启动直播生效。</p>
+
+      <section class="settings-section asr-section">
+        <div class="settings-section-heading">
+          <div><span class="step-number">01</span><h3>阿里云百炼实时 ASR</h3></div>
+          <span id="asrKeyStatus" class="key-status">未配置</span>
+        </div>
+        <p class="section-note asr-note">Qwen3 与 Fun-ASR 使用不同的 WebSocket 协议。选择模型后会自动填写正确端点，DashScope Key 可以复用。</p>
+        <div class="settings-grid">
+          <label class="wide"><span>ASR 模型</span><select id="asrModel" required></select><small id="asrProtocolNote">正在读取可用模型…</small></label>
+          <label class="wide"><span>WebSocket 地址</span><input id="asrBaseUrl" type="url" autocomplete="off" spellcheck="false" required><small>北京公共端点；如果使用业务空间专属域名，可在这里替换。</small></label>
+          <label class="wide"><span>DashScope API Key</span><div class="secret-field"><input id="asrApiKey" type="password" autocomplete="new-password" placeholder="留空表示复用当前百炼密钥"><button class="reveal-secret" type="button" data-target="asrApiKey">显示</button></div><small>通常以 sk- 开头；保存在 runtime/providers.json，不会返回浏览器。</small></label>
+        </div>
+      </section>
+
+      <section class="settings-section translation-section">
+        <div class="settings-section-heading">
+          <div><span class="step-number">02</span><h3>OpenAI Compatible 翻译</h3></div>
+          <span id="translationKeyStatus" class="key-status">未配置</span>
+        </div>
+        <p class="section-note">使用标准 <code>POST /chat/completions</code>，支持 OpenAI、代理网关、本地兼容服务。</p>
+        <div class="settings-grid">
+          <label class="wide"><span>Base URL</span><input id="translationBaseUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1" required><small>填到 /v1；系统会自动请求 /chat/completions。</small></label>
+          <label><span>模型名称</span><input id="translationModel" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-4.1-mini" required></label>
+          <label><span>API Key</span><div class="secret-field"><input id="translationApiKey" type="password" autocomplete="new-password" placeholder="留空表示保持现有密钥"><button class="reveal-secret" type="button" data-target="translationApiKey">显示</button></div></label>
+          <label><span>Temperature</span><input id="translationTemperature" type="number" min="0" max="2" step="0.1" value="0.3"></label>
+          <label><span>Max tokens</span><input id="translationMaxTokens" type="number" min="32" max="4096" step="1" value="256"></label>
+          <label><span>超时</span><input id="translationTimeout" type="number" min="1" max="60" step="1" value="6"></label>
+          <label><span>历史句数</span><input id="translationContextPairs" type="number" min="0" max="20" step="1" value="10"></label>
+        </div>
+      </section>
+
+      <div id="modelSettingsFeedback" class="settings-feedback" role="status"></div>
+      <footer class="settings-footer">
+        <button id="cancelModelSettings" class="secondary" type="button">取消</button>
+        <button id="saveModelSettings" class="primary" type="submit">保存模型设置</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="cookieImportDialog" class="settings-dialog compact-dialog" aria-labelledby="cookieImportTitle">
+    <form id="cookieImportForm" method="dialog">
+      <header class="settings-header">
+        <div><span>登录态 · AUTH</span><h2 id="cookieImportTitle">导入登录 Cookie</h2></div>
+        <button id="closeCookieImport" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <p class="settings-intro">在已登录的浏览器里用 Cookie 导出扩展（如 Get cookies.txt LOCALLY）导出 youtube.com 的 Cookie 后粘贴到下面。内容只存本机内存，探测/启动时一次性写入临时文件并立即删除。</p>
+      <section class="settings-section">
+        <div class="settings-grid">
+          <label><span>格式</span><select id="cookieFormat"><option value="lines" selected>名称/值 多行（DevTools 复制行）</option><option value="netscape">Netscape cookies.txt</option><option value="header">请求头 Cookie 串</option></select></label>
+          <label id="cookieDomainField" hidden><span>作用域域名</span><select id="cookieDomain"><option value=".youtube.com" selected>.youtube.com</option><option value=".google.com">.google.com</option><option value=".bilibili.com">.bilibili.com</option></select></label>
+          <label class="wide"><span>粘贴内容</span><textarea id="cookiePayload" rows="10" autocomplete="off" spellcheck="false" placeholder="SID　xxxxxxxx…&#10;HSID　yyyyyyyy…&#10;（直接从 DevTools Cookie 列表全选复制粘贴即可）" required></textarea><small>每行一个 Cookie：名称 + 制表符/空格/等号 + 值；也兼容 cookies.txt 和请求头格式。</small></label>
+        </div>
+      </section>
+      <div id="cookieImportFeedback" class="settings-feedback" role="status"></div>
+      <footer class="settings-footer">
+        <button id="cancelCookieImport" class="secondary" type="button">取消</button>
+        <button id="submitCookieImport" class="primary" type="submit">导入并授权</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="/vendor/hls.min.js"></script>
+  <script src="/subtitle-scheduler.js"></script>
+  <script src="/player.js"></script>
+</body>
+</html>
