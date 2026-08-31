@@ -1,8 +1,11 @@
-# Python / Node caches
+# Python / Node environments and caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
+venv/
 node_modules/
+npm-debug.log*
 
 # IDE / OS
 .DS_Store
@@ -10,29 +13,43 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Agent/browser working state
+# Agent and browser automation state
 .planning/
 .playwright-cli/
+.agent/
+.agents/
 
-# Generated reports and recordings
+# Generated reports, benchmarks, recordings, media and logs
 output/
 stream/
+logs/
+cache/
+captures/
 live-delay-*.json
+*.log
+*.m3u8
+*.m4s
+*.mp4
+*.webm
+*.wav
+*.pcm
 prototype/hls-companion/.benchmark-data/
 prototype/hls-companion/benchmark-results/
 prototype/hls-companion/runtime-*/
 
-# Companion runtime: credentials, cookies, logs, captures and media
+# Companion runtime: provider keys, Cookie snapshots, control secret, media and caches
 prototype/hls-companion/runtime/**
 !prototype/hls-companion/runtime/providers.example.json
 
-# Disproved/unused local downloader experiment
+# Disproved/unused local downloader and model experiments
 prototype/hls-companion/vendor/n-m3u8dl-re/
 prototype/hls-companion/vendor/models/
 
-# Local environment and credentials
+# Local configuration and credentials
 .env
 .env.*
 !.env.example
 *.local.json
 *.secret
+*.cookies
+cookies.txt

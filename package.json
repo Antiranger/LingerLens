@@ -1,11 +1,16 @@
 {
-  "name": "laglingo-live-delay-spike",
+  "name": "laglingo",
   "version": "0.1.0",
   "private": true,
-  "description": "MV3 spike for measuring controlled delay behind YouTube and Bilibili live edges.",
+  "description": "Windows-first local delayed live player with real-time ASR and translated subtitles.",
+  "license": "MIT",
   "scripts": {
     "test": "node --test",
     "test:hls-companion": "python prototype/hls-companion/tests/test_core.py && python prototype/hls-companion/tests/test_ytdlp_ingest.py && python prototype/hls-companion/tests/test_providers.py && python prototype/hls-companion/tests/test_openai_transcriptions_asr.py && python prototype/hls-companion/tests/test_subtitle_text.py && python prototype/hls-companion/tests/test_subtitle_store.py && python prototype/hls-companion/tests/test_context_manager.py && python prototype/hls-companion/tests/test_subtitle_pipeline.py && python prototype/hls-companion/tests/test_server_providers.py && python prototype/hls-companion/tests/test_youtube_fragment_probe.py && node --test prototype/hls-companion/tests/test_web_assets.js prototype/hls-companion/tests/test_cue_scheduler.js prototype/hls-companion/tests/test_subtitle_window_controller.js",
+    "check:python": "python -m compileall -q prototype/hls-companion/companion prototype/hls-companion/scripts prototype/delayed_live_player.py",
+    "check:js": "node --check extension/src/adapters.js && node --check extension/src/content.js && node --check extension/src/metrics.js && node --check prototype/hls-companion/extension/service-worker.js && node --check prototype/hls-companion/web-player/player.js && node --check prototype/hls-companion/web-player/subtitle-scheduler.js && node --check prototype/hls-companion/web-player/subtitle-window-controller.js",
+    "guard:release": "node scripts/release-guard.js",
+    "ci": "npm run guard:release && npm run check:python && npm run check:js && npm run test:hls-companion && npm test",
     "prototype:delay": "python prototype/delayed_live_player.py",
     "prototype:hls": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/hls-companion/scripts/restart-companion.ps1"
   },

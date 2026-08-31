@@ -1,126 +1,68 @@
-# LagLingo Live Delay Platform Spike
+# LagLingo
 
-This repository currently contains a browser-only experiment for validating whether YouTube Live and Bilibili Live can remain intentionally **5 or 10 seconds behind their current playable live edge**.
+LagLingo is a Windows-first local delayed live player for YouTube Live and Bilibili Live. It uses yt-dlp and FFmpeg to publish a controlled local HLS stream, then adds real-time ASR, translated bilingual subtitles, provider usage/cost estimates, stage fullscreen, and a draggable, persistent subtitle window.
 
-It does **not** include ASR, translation, subtitles, audio capture, a backend, or custom stream parsing.
+The repository is still a developer-oriented prototype: it does not bypass DRM, paid access, regional restrictions, or platform anti-bot controls, and real-stream compatibility depends on the source and user authentication.
 
-## Current Prototype 2: localhost HLS/CMAF browser player
+## Quick start (Windows)
 
-`prototype/hls-companion/` is now the active prototype. It probes yt-dlp qualities, supports manually selected browser-compatible 1080p/720p, remuxes with FFmpeg stream copy, delays publication of local fMP4 HLS segments, and plays them in bundled hls.js on Chrome/Edge. It also includes a minimal Native Messaging cookie bridge for the current logged-in tab.
+Requirements are Python **3.11+**, Node.js **18+** with npm, FFmpeg/ffprobe, and Chrome or Edge. From the repository root run the one bootstrap command:
 
-Run it from the repository root:
-
-```bash
-npm run prototype:hls
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
-Then open `http://127.0.0.1:8765/`. See [`prototype/hls-companion/README.md`](prototype/hls-companion/README.md) for login setup, validation commands, security boundaries, and remaining manual tests.
+Or double-click/run `bootstrap.cmd`. Bootstrap checks system tools and official install links, verifies the vendored yt-dlp SHA-256, installs declared Python/Node dependencies, and runs the tracked-file release guard. It is repeatable and does **not** install system browsers/tools or modify credentials. Use `-CheckOnly` for verification without package installation.
 
-The earlier `prototype/delayed_live_player.py` ffplay relay is retained only as the first delay feasibility proof; see [`prototype/README.md`](prototype/README.md).
+Start LagLingo:
 
-## Load the extension
+```powershell
+.\start-laglingo.cmd
+```
 
-1. Open Chrome or Edge.
-2. Visit `chrome://extensions` or `edge://extensions`.
-3. Enable **Developer mode**.
-4. Choose **Load unpacked**.
-5. Select the repository's `extension/` directory.
-6. Open a supported live room:
-   - `https://www.youtube.com/watch?v=...`
-   - `https://live.bilibili.com/<room-id>`
-7. Reload an already-open live page once after installing the extension.
+Then open <http://127.0.0.1:8765/>. Enter a supported live URL, probe qualities, choose a browser-compatible format, and start playback.
 
-A **Live Delay Spike** panel appears at the top-right of the page.
+## Model providers and local Whisper
 
-## Recommended two-tab test
+The player's **Model settings** dialog owns saved ASR/translation profiles and active selection. The sanitized example is [`prototype/hls-companion/runtime/providers.example.json`](prototype/hls-companion/runtime/providers.example.json); the real `runtime/providers.json` is generated locally and ignored by Git.
 
-Open the same live room in two tabs:
+Existing Bailian realtime/task ASR and OpenAI-compatible/Qwen translation are supported. For local ASR, first run your own Speaches, faster-whisper-server, Xinference, LocalAI, or compatible service, then configure an **OpenAI Audio Transcriptions** profile (commonly `http://127.0.0.1:8000/v1`, endpoint `/audio/transcriptions`). LagLingo does not download, start, authenticate, or expose that service. A key may be blank when the local endpoint permits it.
 
-- **Source tab**: select `Source / observe`, keep the player at the live edge, and click **Start observation**.
-- **Viewer tab**: select `Viewer / delayed`, select `5 seconds` or `10 seconds`, then click **Set delay & start**.
+If cloud subtitles are enabled, audio leaves the machine for the selected ASR provider and recognized text/context goes to the translation provider. Provider-returned usage is accumulated. Costs are shown only when both usage and required profile prices are available; unavailable data is not reported as zero.
 
-The Source tab is only a playback/background-tab reference. This spike does not capture its audio.
+## Cookies and supported platforms
 
-## What the panel measures
+- **Manual import:** choose YouTube or Bilibili in the player and paste a supported Cookie header/table/export. Bilibili requires the login-critical `SESSDATA`; other valid Bilibili Cookies are retained without being falsely marked mandatory.
+- **Native Messaging:** load `prototype/hls-companion/extension/` unpacked and use the registration helper documented in the [Companion README](prototype/hls-companion/README.md).
+- **Development fallback:** `npm run prototype:hls -- --cookies-from-browser chrome` (or `edge`) may work but can fail while Chromium locks/encrypts its Cookie database.
 
-Once monitoring starts, the extension logs one observation per second to the page console and stores it for export:
+Platform snapshots are kept separately so importing one platform does not overwrite the other. They are private runtime files and must not be committed.
 
-- `currentTime`, `paused`, `playbackRate`, `readyState`, `networkState`;
-- all seekable ranges and the final range's start/end;
-- `liveEdge` and `actualDelay = liveEdge - currentTime`;
-- seekable-window length and target error;
-- page visibility and video-element generation.
+## Player behavior
 
-It also counts:
+- **Target total delay** defaults to 15 seconds and must be greater than 10 seconds. Measured delay is reported separately; source/network behavior can prevent exact equality.
+- Use LagLingo's **stage fullscreen** button so video and subtitles remain in the same fullscreen element.
+- Drag or keyboard-nudge the subtitle window; position, opacity, size, and source/translation colors persist locally.
+- Stop is idempotent and clears the current media/subtitle session so another URL can be probed immediately.
 
-- drift corrections;
-- likely platform jumps back to the live edge;
-- video replacements/reloads;
-- `waiting`/`stalled` buffering events;
-- likely Source-tab timeline stops.
+## Security boundary
 
-## Control policy
+The Companion binds only to loopback. Cookies are not logged or passed on ordinary command lines. API keys are masked from normal status/provider APIs and logs. By explicit product design, the loopback, same-origin model-settings route returns saved raw API keys with `Cache-Control: no-store` so the local user can inspect them. Opening that dialog exposes keys to nearby viewers, screenshots, screen sharing, remote desktop tools, and browser inspection; do not open it while sharing your screen.
 
-Viewer mode uses deliberately simple hard-seek control:
+Runtime providers, Cookies/auth snapshots, control secrets, media, logs, caches, benchmark output, and agent/browser state are excluded by `.gitignore` and the deterministic tracked-file guard. See [SECURITY.md](SECURITY.md) and [`docs/security.md`](docs/security.md).
 
-- target: 5s or 10s;
-- stable deadband: target ±1s, with no intervention;
-- correction threshold: absolute target error greater than 2s;
-- correction: one seek to `liveEdge - targetDelay`;
-- no playback-rate control and no per-frame seeking.
+## Tests and release checks
 
-If no DVR/seekable range is exposed, or the seekable window is shorter than the target, the panel records an explicit failure reason instead of attempting a more complex controller.
-
-## Exporting evidence
-
-- **Export JSON** includes session metadata, counters, computed summary, event log, and all samples.
-- **Export CSV** includes the per-second samples for spreadsheet analysis.
-
-Keep the JSON for each run because it preserves behavioral events and counters that the CSV does not flatten.
-
-## Required manual matrix
-
-Run at least 30 minutes per combination:
-
-| Platform | Target |
-|---|---:|
-| YouTube Live | 5s |
-| YouTube Live | 10s |
-| Bilibili Live | 5s |
-| Bilibili Live | 10s |
-
-For each run, perform and timestamp these disturbances:
-
-1. uninterrupted playback;
-2. pause for 10 seconds, then resume;
-3. manually click the platform's Live button or drag to the front, then let the extension recover;
-4. change quality once;
-5. leave the Source tab in the background;
-6. inspect `chrome://discards` or `edge://discards` and browser Memory Saver behavior.
-
-Use `docs/live-delay-test-protocol.md` and copy `docs/test-records/result-template.md` for every run.
-
-## Choosing test live rooms
-
-### YouTube
-
-Prefer an actual current livestream rather than a premiere or completed archive. Confirm the player exposes rewindable history by manually dragging backward. Test both:
-
-- an ordinary live stream with DVR enabled;
-- a low-latency or ultra-low-latency stream if its mode is known.
-
-If the broadcaster disabled DVR, keep the exported failure evidence; do not replace it with assumptions about other streams.
-
-### Bilibili
-
-Choose a currently live room with continuous motion/audio. First verify whether the web player exposes any rewindable range. Many room/player modes may expose little or no DVR history; that is itself a result. If possible, test rooms using different quality/latency options.
-
-## Automated verification
-
-From the repository root:
-
-```bash
+```powershell
+npm run test:hls-companion
 npm test
+npm run check:python
+npm run check:js
+npm run guard:release
+# or all established CI-safe checks:
+npm run ci
 ```
 
-These tests validate manifest shape, extension JavaScript syntax, summary statistics, and CSV export behavior. They cannot establish real platform support; the four 30-minute live runs remain required.
+These checks use fake/local fixtures and do not call real livestreams or credentialed provider endpoints. Native fullscreen ownership, long-running stream stability, authenticated/restricted streams, provider billing, and local Whisper deployment remain manual/environment-specific validation.
+
+Architecture: [`docs/architecture.md`](docs/architecture.md). Detailed Companion setup: [`prototype/hls-companion/README.md`](prototype/hls-companion/README.md). Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Third-party licensing: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). LagLingo itself is available under the [MIT License](LICENSE).
