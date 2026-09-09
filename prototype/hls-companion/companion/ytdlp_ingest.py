@@ -376,6 +376,9 @@ class YtDlpLiveIngest:
                     "label": pump.label,
                     "forwardedBytes": current_bytes[index],
                     "bytesPerSecond": round(rate, 1) if rate is not None else None,
+                    "sourcePtsFirst": round(self.source_pts[index][0], 6) if index < len(self.source_pts) and self.source_pts[index] else None,
+                    "sourcePtsLast": round(self.source_pts[index][-1], 6) if index < len(self.source_pts) and self.source_pts[index] else None,
+                    "sourcePtsSamples": len(self.source_pts[index]) if index < len(self.source_pts) else 0,
                 }
             )
         # Only advance the baseline when the clock ticked; a zero-elapsed
