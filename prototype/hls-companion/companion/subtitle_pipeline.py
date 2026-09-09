@@ -1141,7 +1141,7 @@ class SubtitlePipeline:
         """Materialize the current CaptionChunker decision in order."""
         if self.media_epoch is None:
             return []
-        if self.media_anchor is not None and not self.media_anchor.ready:
+        if self.source_pts_mapper is None and self.media_anchor is not None and not self.media_anchor.ready:
             # Audio-leg mode: without a measured offset the cue would land on
             # a meaningless timeline. Hold (not drop) until the anchor
             # converges — typically ~3s after both legs produce media.
@@ -1189,11 +1189,15 @@ class SubtitlePipeline:
                 self.source_pts_mapper(pending.begin_pcm) if pending.begin_pcm is not None else None
             )
             end_mapped = self.source_pts_mapper(pending.end_pcm)
-            # PTS metadata arrives asynchronously. Hold a cue briefly until
-            # both legs have a source clock; fall back to MediaAnchor only
-            # when the source mapper is not configured.
             if end_mapped is None or (pending.begin_pcm is not None and begin_mapped is None):
-                return None
+                # PTS metadata can be absent on a provider. Preserve the
+                # existing measured-anchor fallback instead of dropping cues.
+                if self.media_anchor is None:
+                    return None
+                begin_mapped = self.media_anchor.map_pcm(pending.begin_pcm) if pending.begin_pcm is not None else None
+                end_mapped = self.media_anchor.map_pcm(pending.end_pcm)
+                if end_mapped is None or (pending.begin_pcm is not None and begin_mapped is None):
+                    return None
         elif self.media_anchor is not None:
             begin_mapped = (
                 self.media_anchor.map_pcm(pending.begin_pcm) if pending.begin_pcm is not None else None
