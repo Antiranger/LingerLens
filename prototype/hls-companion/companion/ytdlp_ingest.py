@@ -26,6 +26,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+from .source_timeline import MpegTsPtsProbe
+
 ROOT = Path(__file__).resolve().parents[1]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
 
@@ -41,12 +43,16 @@ class _TcpPump:
         self,
         label: str,
         on_first_byte: Callable[[], None] | None = None,
+        pts_probe: MpegTsPtsProbe | None = None,
+        on_pts: Callable[[list[float]], None] | None = None,
     ):
         self.label = label
         # Fires once, when this leg has produced real media. That is the only
         # log-independent proof that yt-dlp is past extraction and no longer
         # needs the short-lived credential files.
         self._on_first_byte = on_first_byte
+        self._pts_probe = pts_probe
+        self._on_pts = on_pts
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -89,6 +95,10 @@ class _TcpPump:
                     chunk = (read1(65536) if read1 is not None else self._source.read(65536))
                     if not chunk:
                         return
+                    if self._pts_probe is not None:
+                        points = self._pts_probe.feed(chunk)
+                        if points and self._on_pts is not None:
+                            self._on_pts(points)
                     conn.sendall(chunk)
                     self.forwarded_chunks += 1
                     self.forwarded_bytes += len(chunk)
@@ -163,6 +173,7 @@ class YtDlpLiveIngest:
         self._stop_requested = False
         self._lock = threading.Lock()
         self._last_leg_marks: tuple[float, list[int]] | None = None
+        self.source_pts: list[list[float]] = []
 
     @staticmethod
     def _default_executable() -> str:
@@ -266,6 +277,8 @@ class YtDlpLiveIngest:
             _TcpPump(
                 label,
                 on_first_byte=self._leg_reached_download(index),
+                pts_probe=MpegTsPtsProbe(want_audio=label == "audio"),
+                on_pts=self._record_pts(index),
             )
             for index, label in enumerate(("video", "audio")[: len(self.selectors)])
         ]
@@ -287,6 +300,20 @@ class YtDlpLiveIngest:
             self._log_threads.append(log_thread)
             log_thread.start()
             pump.start(process.stdout)
+
+    def _record_pts(self, index: int) -> Callable[[list[float]], None]:
+        while len(self.source_pts) <= index:
+            self.source_pts.append([])
+
+        def record(points: list[float]) -> None:
+            # Keep only a bounded diagnostic history; the media bytes remain
+            # untouched and the hot path does not allocate per TS packet.
+            target = self.source_pts[index]
+            target.extend(points)
+            if len(target) > 128:
+                del target[:-128]
+
+        return record
 
     def stop(self) -> None:
         self._stop_requested = True
