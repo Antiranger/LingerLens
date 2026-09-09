@@ -670,6 +670,7 @@ class CompanionApplication:
                 auth_cleanup=release_start_secrets,
                 info_json_path=probe_snapshot.path,
                 selected_protocol=str(selected_format.get("protocol") or "") or None,
+                leg_role="media",
             )
             if asr_audio_leg and asr_consumer is not None:
                 # P3-B: the ASR leg downloads its own tiny audio-only rendition
@@ -684,6 +685,7 @@ class CompanionApplication:
                     asr_consumer.yt_dlp_args(),
                     auth_cleanup=release_asr_secrets,
                     selected_protocol="m3u8_native",
+                    leg_role="audio",
                 )
             # Both independent legs only spawn their downloader/pump here;
             # start them together so audio extraction never waits for the

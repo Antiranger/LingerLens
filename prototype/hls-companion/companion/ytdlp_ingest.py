@@ -152,6 +152,7 @@ class YtDlpLiveIngest:
         auth_cleanup: Callable[[], None] | None = None,
         info_json_path: str | None = None,
         selected_protocol: str | None = None,
+        leg_role: str = "media",
     ):
         self.page_url = page_url
         # When the caller can hand over a fresh probe result, yt-dlp loads it
@@ -159,6 +160,7 @@ class YtDlpLiveIngest:
         # for during /api/probe (measured: ~8s off the critical path per leg).
         self.info_json_path = info_json_path
         self.selected_protocol = selected_protocol
+        self.leg_role = leg_role
         self.format_selector = format_selector
         self.selectors = [part for part in format_selector.split("+") if part] or [format_selector]
         self.auth_args = list(auth_args)
@@ -278,7 +280,7 @@ class YtDlpLiveIngest:
         self._legs_past_extraction = set()
         self.pumps = [
             _TcpPump(
-                label,
+                label if self.leg_role == "media" else self.leg_role,
                 on_first_byte=self._leg_reached_download(index),
                 pts_probe=MpegTsPtsProbe(want_audio=label == "audio"),
                 on_pts=self._record_pts(index),
