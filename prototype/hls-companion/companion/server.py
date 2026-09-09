@@ -961,8 +961,8 @@ class CompanionApplication:
         """Map ASR PCM time through the shared source PTS clock without waiting."""
         audio = self.asr_audio_ingest.snapshot() if self.asr_audio_ingest else {}
         video = self.source_ingest.snapshot() if self.source_ingest else {}
-        audio_leg = next((x for x in (audio.get("legs") or []) if x.get("label") == "audio"), {})
-        video_leg = next((x for x in (video.get("legs") or []) if x.get("label") == "video"), {})
+        audio_leg = next((x for x in (audio.get("legThroughput") or []) if x.get("label") == "audio"), {})
+        video_leg = next((x for x in (video.get("legThroughput") or []) if x.get("label") == "video"), {})
         audio_first = audio_leg.get("sourcePtsFirst")
         video_first = video_leg.get("sourcePtsFirst")
         if audio_first is None or video_first is None:
