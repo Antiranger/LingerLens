@@ -26,7 +26,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from .source_timeline import MpegTsPtsProbe
+try:
+    from .source_timeline import MpegTsPtsProbe
+except ImportError:  # direct test/module loading
+    from companion.source_timeline import MpegTsPtsProbe  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
