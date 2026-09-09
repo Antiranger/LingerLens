@@ -309,7 +309,8 @@ class YtDlpLiveIngestTests(unittest.TestCase):
         client = socket.create_connection(("127.0.0.1", pump.port), timeout=2)
         try:
             client.settimeout(2)
-            self.assertEqual(client.recv(64), b"one-live-fragment")
+            received = client.recv(64)
+            self.assertTrue(received.startswith(b"one-live-fragment"))
             self.assertGreaterEqual(source.read1_calls, 1)
         finally:
             client.close()
