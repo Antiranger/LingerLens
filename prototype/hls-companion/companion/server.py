@@ -893,10 +893,12 @@ class CompanionApplication:
             ingest_status = lambda: self.asr_audio_ingest.snapshot() if self.asr_audio_ingest else {}  # noqa: E731
             media_anchor: MediaAnchor | None = MediaAnchor()
             anchor_probe = self._current_private_media_seconds
+            source_pts_mapper = self._map_audio_pcm_to_private_media
         else:
             ingest_status = lambda: self.source_ingest.snapshot() if self.source_ingest else {}  # noqa: E731
             media_anchor = None
             anchor_probe = None
+            source_pts_mapper = None
 
         pipeline = SubtitlePipeline(
             asr_provider=asr_provider,
@@ -916,6 +918,7 @@ class CompanionApplication:
             ingest_status=ingest_status,
             media_anchor=media_anchor,
             anchor_probe=anchor_probe,
+            source_pts_mapper=source_pts_mapper,
             hold_minimum=float(subtitle.get("holdSecondsMin", 1.2)),
             hold_maximum=float(subtitle.get("holdSecondsMax", 7.0)),
             hold_seconds_per_char=float(subtitle.get("holdSecondsPerChar", 0.06)),
@@ -951,6 +954,18 @@ class CompanionApplication:
     def _current_private_media_seconds(self) -> float | None:
         publisher = self.session.publisher if self.session else None
         return publisher.private_media_seconds if publisher is not None else None
+
+    def _map_audio_pcm_to_private_media(self, pcm_seconds: float) -> float | None:
+        """Map ASR PCM time through the shared source PTS clock without waiting."""
+        audio = self.asr_audio_ingest.snapshot() if self.asr_audio_ingest else {}
+        video = self.source_ingest.snapshot() if self.source_ingest else {}
+        audio_leg = next((x for x in (audio.get("legs") or []) if x.get("label") == "audio"), {})
+        video_leg = next((x for x in (video.get("legs") or []) if x.get("label") == "video"), {})
+        audio_first = audio_leg.get("sourcePtsFirst")
+        video_first = video_leg.get("sourcePtsFirst")
+        if audio_first is None or video_first is None:
+            return None
+        return float(audio_first) + float(pcm_seconds) - float(video_first)
 
     async def _wait_for_private_hls(self) -> float:
         """Wait for one complete private segment and its authoritative PDT."""

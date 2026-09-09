@@ -249,6 +249,7 @@ class SubtitlePipeline:
         subprocess_factory: Callable[..., Any] = asyncio.create_subprocess_exec,
         media_anchor: MediaAnchor | None = None,
         anchor_probe: Callable[[], float | None] | None = None,
+        source_pts_mapper: Callable[[float], float | None] | None = None,
     ) -> None:
         if pcm_queue_chunks < 1:
             raise ValueError("pcm_queue_chunks must be positive")
@@ -319,6 +320,7 @@ class SubtitlePipeline:
         # leg's media space through the continuously measured anchor.
         self.media_anchor = media_anchor
         self.anchor_probe = anchor_probe
+        self.source_pts_mapper = source_pts_mapper
         self.input_format: str | None = None
         self._pcm_queue: asyncio.Queue[tuple[bytes, float]] | None = None
         self._translation_queue: asyncio.Queue[Cue] = asyncio.Queue()
@@ -1182,7 +1184,17 @@ class SubtitlePipeline:
             # instead of fabricating sub-cue timestamps.
             self.stats.overlong_cues += 1
             hold = max(hold, min(self.hold_maximum, 0.09 * len(pending.text)))
-        if self.media_anchor is not None:
+        if self.source_pts_mapper is not None:
+            begin_mapped = (
+                self.source_pts_mapper(pending.begin_pcm) if pending.begin_pcm is not None else None
+            )
+            end_mapped = self.source_pts_mapper(pending.end_pcm)
+            # PTS metadata arrives asynchronously. Hold a cue briefly until
+            # both legs have a source clock; fall back to MediaAnchor only
+            # when the source mapper is not configured.
+            if end_mapped is None or (pending.begin_pcm is not None and begin_mapped is None):
+                return None
+        elif self.media_anchor is not None:
             begin_mapped = (
                 self.media_anchor.map_pcm(pending.begin_pcm) if pending.begin_pcm is not None else None
             )
