@@ -35,15 +35,11 @@ class _TcpPump:
 
     The pump deliberately does not read stdout until a client (the packaging
     ffmpeg) connects; OS pipe backpressure then naturally throttles yt-dlp.
-    A byte subscriber (tee) is installed at construction time so it observes
-    the very first forwarded byte (redesign Fix A): the moment the packaging
-    ffmpeg connects is the shared byte origin of both legs.
     """
 
     def __init__(
         self,
         label: str,
-        tee: Callable[[bytes], None] | None = None,
         on_first_byte: Callable[[], None] | None = None,
     ):
         self.label = label
@@ -60,13 +56,8 @@ class _TcpPump:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._source: Any = None
-        self._tee: Callable[[bytes], None] | None = tee
-        self.tee_dropped = 0
         self.forwarded_chunks = 0
-
-    def set_tee(self, sink: Callable[[bytes], None] | None) -> None:
-        """Attach a best-effort byte subscriber without affecting playback."""
-        self._tee = sink
+        self.forwarded_bytes = 0
 
     @property
     def url(self) -> str:
@@ -88,24 +79,31 @@ class _TcpPump:
             try:
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 while not self._stop.is_set():
-                    chunk = self._source.read(65536)
+                    # BufferedReader.read(size) is allowed to wait until the
+                    # requested size is filled.  A live audio HLS leg may
+                    # produce only a few kilobytes between segments, so that
+                    # turns a ready-to-decode burst into seconds of latency.
+                    # read1() returns after one underlying read, preserving
+                    # the existing backpressure without waiting for EOF.
+                    read1 = getattr(self._source, "read1", None)
+                    chunk = (read1(65536) if read1 is not None else self._source.read(65536))
                     if not chunk:
                         return
                     conn.sendall(chunk)
                     self.forwarded_chunks += 1
+                    self.forwarded_bytes += len(chunk)
                     if self.forwarded_chunks == 1 and self._on_first_byte:
                         try:
                             self._on_first_byte()
                         except Exception:
                             pass
-                    sink = self._tee
-                    if sink is not None:
-                        try:
-                            sink(chunk)
-                        except Exception:
-                            # Subtitle work is strictly lower priority than the
-                            # packaging path. A broken subscriber is isolated.
-                            self.tee_dropped += 1
+            except ValueError:
+                # Closing a Windows pipe while BufferedReader.read() is pending
+                # can surface as ValueError/PyMemoryView_FromBuffer. It is an
+                # expected shutdown result only after stop() has claimed the pump.
+                if self._stop.is_set():
+                    return
+                raise
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # ffmpeg went away; wait for the next connection.
                 pass
@@ -139,33 +137,32 @@ class YtDlpLiveIngest:
         auth_args: list[str],
         yt_dlp: str | None = None,
         auth_cleanup: Callable[[], None] | None = None,
-        audio_tee: Callable[[bytes], None] | None = None,
         info_json_path: str | None = None,
+        selected_protocol: str | None = None,
     ):
         self.page_url = page_url
         # When the caller can hand over a fresh probe result, yt-dlp loads it
         # instead of re-running the whole YouTube extraction it already paid
         # for during /api/probe (measured: ~8s off the critical path per leg).
         self.info_json_path = info_json_path
+        self.selected_protocol = selected_protocol
         self.format_selector = format_selector
         self.selectors = [part for part in format_selector.split("+") if part] or [format_selector]
         self.auth_args = list(auth_args)
         self.yt_dlp = yt_dlp or self._default_executable()
         self.auth_cleanup = auth_cleanup
-        # Installed on the audio pump at construction so the subtitle leg sees
-        # byte 0 of the stream (redesign Fix A). attach_audio_tee remains for
-        # tests and late subscribers; construction-time is the correct path.
-        self.audio_tee = audio_tee
         self._auth_cleaned = False
         self._legs_past_extraction: set[int] = set()
         self.processes: list[subprocess.Popen[bytes]] = []
         self.pumps: list[_TcpPump] = []
+        self._log_threads: list[threading.Thread] = []
         self.started_at: float | None = None
         self.last_output_at: float | None = None
         self.error: str | None = None
         self.log_tail: deque[str] = deque(maxlen=30)
         self._stop_requested = False
         self._lock = threading.Lock()
+        self._last_leg_marks: tuple[float, list[int]] | None = None
 
     @staticmethod
     def _default_executable() -> str:
@@ -179,41 +176,62 @@ class YtDlpLiveIngest:
     def command(self, selector: str | None = None) -> list[str]:
         proxy = self._environment_proxy()
         proxy_args = ["--proxy", proxy] if proxy else []
-        # Native m3u8 downloads obey yt-dlp's --proxy. Some live formats can
-        # still fall back to yt-dlp's external FFmpeg downloader; FFmpeg does
-        # not honor ALL_PROXY on Windows, so forward the same proxy explicitly.
+        # Live findings 2026-09-09 (docs/subtitle-audio-leg-design-2026-09-09.md):
+        # current yt-dlp ALWAYS delegates is_live HLS to its external ffmpeg
+        # downloader (HlsFD.can_download hard-refuses is_live), so the m3u8
+        # native flags below only cover yt-dlp's own HTTP and non-live paths.
+        # The ffmpeg demuxer is where media bytes actually flow, and it must
+        # NOT go through the HTTP proxy: measured here, proxied ffmpeg loses
+        # connection reuse ("Cannot reuse HTTP connection for different host")
+        # and sags to 0.55x on 1080p60 / 0.8x on 720p60, while direct
+        # googlevideo sustains 1.0x even for 1080p60. googlevideo is directly
+        # reachable on networks where youtube.com is not. Set
+        # LAGLINGO_FFMPEG_PROXY=1 to restore forwarding on networks that need it.
         ffmpeg_proxy_args = (
-            ["--downloader-args", f"ffmpeg_i:-http_proxy {proxy}"] if proxy else []
+            ["--downloader-args", f"ffmpeg_i:-http_proxy {proxy}"]
+            if proxy and os.environ.get("LAGLINGO_FFMPEG_PROXY") == "1"
+            else []
         )
+        # ffmpeg HLS input hardening for live: reconnect quickly instead of
+        # dying on a dropped socket.
+        ffmpeg_live_args = [
+            "--downloader-args",
+            "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 2",
+        ]
+        is_hls = not self.selected_protocol or self.selected_protocol.startswith("m3u8")
+        hls_args = [
+            "--hls-use-mpegts",
+            # NOTE (2026-09-09 live-verified): for is_live formats yt-dlp
+            # delegates to the external ffmpeg downloader regardless of this
+            # flag, so --concurrent-fragments does NOT apply to live HLS.
+            # These flags still cover yt-dlp's own HTTP (manifest refresh,
+            # extraction retries) and any non-live HLS fallback.
+            "--downloader",
+            "m3u8:native",
+            "--fragment-retries",
+            "infinite",
+            # Live is a race against a rolling playlist window: the old
+            # exp=1:20 backoff turned a ~10s network blip into a measured 74s
+            # outage (docs/subtitle-dropout-rootcause-2026-09-08.md). Retry
+            # every second, so a short blip costs seconds, not a minute.
+            "--retry-sleep",
+            "fragment:1",
+            "--retries",
+            "infinite",
+            "--retry-sleep",
+            "http:1",
+            "--concurrent-fragments",
+            "4",
+        ] if is_hls else []
         return [
             self.yt_dlp,
             *proxy_args,
             "--no-config",
             "--no-playlist",
             "--no-live-from-start",
-            "--hls-use-mpegts",
-            # yt-dlp would otherwise hand live HLS to its internal ffmpeg, whose
-            # HLS demuxer fetches one segment at a time on one connection --
-            # and --concurrent-fragments is silently ignored on that path.
-            # Measured on this link: a single connection to googlevideo tops out
-            # near 3.2 Mbps regardless of link capacity (~24 Mbps aggregate), so
-            # a 5.4 Mbps 1080p rendition can never keep up with the live edge and
-            # the player's buffer drains until it stalls. The native downloader
-            # honours --concurrent-fragments, which lifts the ceiling roughly in
-            # proportion to the fragment concurrency below.
-            "--downloader",
-            "m3u8:native",
-            "--fragment-retries",
-            "infinite",
-            "--retry-sleep",
-            "fragment:exp=1:20",
-            "--retries",
-            "infinite",
-            "--retry-sleep",
-            "http:exp=1:20",
-            "--concurrent-fragments",
-            "4",
+            *hls_args,
             *ffmpeg_proxy_args,
+            *ffmpeg_live_args,
             "--no-progress",
             *self.auth_args,
             "-f",
@@ -235,23 +253,6 @@ class YtDlpLiveIngest:
         """Local TCP endpoints (video leg first) for the packaging ffmpeg."""
         return [pump.url for pump in self.pumps]
 
-    def attach_audio_tee(self, sink: Callable[[bytes], None]) -> None:
-        """Tee the audio leg (or the sole muxed leg) to a non-blocking sink."""
-        if not self.pumps:
-            raise RuntimeError("yt-dlp live ingest is not running")
-        self._audio_pump().set_tee(sink)
-
-    def detach_audio_tee(self) -> None:
-        if self.pumps:
-            self._audio_pump().set_tee(None)
-
-    def tee_snapshot(self) -> dict[str, int]:
-        pump = self._audio_pump() if self.pumps else None
-        return {"teeDropped": pump.tee_dropped if pump else 0}
-
-    def _audio_pump(self) -> _TcpPump:
-        return self.pumps[1] if len(self.pumps) > 1 else self.pumps[0]
-
     def start(self) -> None:
         if any(process.poll() is None for process in self.processes):
             raise RuntimeError("yt-dlp live ingest is already running")
@@ -261,11 +262,9 @@ class YtDlpLiveIngest:
         self.started_at = time.monotonic()
         self.last_output_at = self.started_at
         self._legs_past_extraction = set()
-        audio_index = len(self.selectors) - 1  # audio leg, or the sole muxed leg
         self.pumps = [
             _TcpPump(
                 label,
-                tee=self.audio_tee if index == audio_index else None,
                 on_first_byte=self._leg_reached_download(index),
             )
             for index, label in enumerate(("video", "audio")[: len(self.selectors)])
@@ -279,7 +278,14 @@ class YtDlpLiveIngest:
                 text=False,
             )
             self.processes.append(process)
-            threading.Thread(target=self._read_log, args=(process, index), name="yt-dlp-live-log", daemon=True).start()
+            log_thread = threading.Thread(
+                target=self._read_log,
+                args=(process, index),
+                name=f"yt-dlp-live-log-{index}",
+                daemon=True,
+            )
+            self._log_threads.append(log_thread)
+            log_thread.start()
             pump.start(process.stdout)
 
     def stop(self) -> None:
@@ -293,20 +299,60 @@ class YtDlpLiveIngest:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=3)
+
+        # Let process exit/EOF release the stdout and stderr readers before
+        # closing their BufferedReader objects. The previous order closed the
+        # streams first while the pump/log threads were inside read(), producing
+        # the observed ValueError/PyMemoryView_FromBuffer shutdown exceptions.
+        for pump in self.pumps:
+            pump.stop()
+        for thread in self._log_threads:
+            thread.join(timeout=3)
+
+        for process in self.processes:
             for stream in (process.stdout, process.stderr):
                 if stream:
                     try:
                         stream.close()
-                    except OSError:
+                    except (OSError, ValueError):
                         pass
-        self.processes = []
+
+        # A malformed/fake process may not signal EOF after wait(). Closing the
+        # streams above is the final unblock; the readers now recognize it as a
+        # claimed shutdown instead of leaking an exception from daemon threads.
         for pump in self.pumps:
             pump.stop()
+        for thread in self._log_threads:
+            thread.join(timeout=1)
+        self.processes = []
         self.pumps = []
+        self._log_threads = []
         self._cleanup_auth()
 
     def snapshot(self) -> dict[str, Any]:
         running = any(process.poll() is None for process in self.processes)
+        now = time.monotonic()
+        legs: list[dict[str, Any]] = []
+        previous_marks = self._last_leg_marks
+        current_bytes = [pump.forwarded_bytes for pump in self.pumps]
+        for index, pump in enumerate(self.pumps):
+            rate: float | None = None
+            if previous_marks and index < len(previous_marks[1]):
+                elapsed = now - previous_marks[0]
+                if elapsed > 0:
+                    rate = (current_bytes[index] - previous_marks[1][index]) / elapsed
+            legs.append(
+                {
+                    "label": pump.label,
+                    "forwardedBytes": current_bytes[index],
+                    "bytesPerSecond": round(rate, 1) if rate is not None else None,
+                }
+            )
+        # Only advance the baseline when the clock ticked; a zero-elapsed
+        # snapshot keeps the older baseline so the next poll still yields a
+        # rate instead of dividing by zero.
+        if previous_marks is None or now > previous_marks[0]:
+            self._last_leg_marks = (now, current_bytes)
         return {
             "downloader": "yt-dlp",
             "ytDlpVersion": self._version_label(),
@@ -315,7 +361,11 @@ class YtDlpLiveIngest:
             "running": running,
             "sourceIdleSeconds": round(time.monotonic() - self.last_output_at, 1) if running and self.last_output_at else None,
             "sourceError": self.error,
-            **self.tee_snapshot(),
+            "legThroughput": legs,
+            # Last yt-dlp stderr lines (URLs already redacted) so a silently
+            # falling-behind download is diagnosable from /api/status without
+            # shell access to the companion host.
+            "logTail": list(self.log_tail)[-8:],
         }
 
     def _leg_reached_download(self, index: int) -> Callable[[], None]:
@@ -333,11 +383,15 @@ class YtDlpLiveIngest:
     def _read_log(self, process: subprocess.Popen[bytes], index: int) -> None:
         if not process.stderr:
             return
-        for raw_line in process.stderr:
-            clean = raw_line.decode("utf-8", "replace").strip()
-            if clean:
-                self.log_tail.append(self._redact(clean))
-            self.last_output_at = time.monotonic()
+        try:
+            for raw_line in process.stderr:
+                clean = raw_line.decode("utf-8", "replace").strip()
+                if clean:
+                    self.log_tail.append(self._redact(clean))
+                self.last_output_at = time.monotonic()
+        except (OSError, ValueError) as exc:
+            if not self._stop_requested and process.poll() is None and not self.error:
+                self.error = f"yt-dlp log pipe failed: {type(exc).__name__}: {exc}"
         code = process.poll()
         produced_media = index < len(self.pumps) and self.pumps[index].forwarded_chunks > 0
         # A leg that exited can no longer need its credentials. Note this is a

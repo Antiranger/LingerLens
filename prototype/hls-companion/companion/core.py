@@ -18,18 +18,25 @@ from datetime import datetime
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+import sys
+from typing import Any, Callable, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
+_COMPANION_DIR = Path(__file__).resolve().parent
+if str(_COMPANION_DIR) not in sys.path:
+    sys.path.insert(0, str(_COMPANION_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from .capture_clock import CaptureClock  # type: ignore[import-not-found]
+except ImportError:
+    try:
+        from companion.capture_clock import CaptureClock  # type: ignore[import-not-found]
+    except ImportError:
+        from capture_clock import CaptureClock  # type: ignore[import-not-found]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
-SUPPORTED_HOST_SUFFIXES = (
-    "youtube.com",
-    "youtu.be",
-    "googlevideo.com",
-    "bilibili.com",
-    "bilivideo.com",
-)
-SUPPORTED_COOKIE_SUFFIXES = ("youtube.com", "google.com", "bilibili.com")
+SUPPORTED_COOKIE_SUFFIXES = ("youtube.com", "google.com", "bilibili.com", "twitch.tv")
 VIDEO_CODEC_PREFIXES = ("avc1", "avc", "h264")
 AUDIO_CODEC_PREFIXES = ("mp4a", "aac")
 
@@ -44,11 +51,16 @@ def executable(name: str) -> str:
 def validate_page_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
-        raise ValueError("Only HTTPS YouTube/Bilibili page URLs are accepted")
+        raise ValueError("Only HTTPS YouTube/Bilibili/Twitch live page URLs are accepted")
     hostname = parsed.hostname.lower().rstrip(".")
-    if not any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in SUPPORTED_HOST_SUFFIXES):
-        raise ValueError("Only YouTube and Bilibili URLs are accepted by this prototype")
-    return url
+    parts = [part for part in parsed.path.split("/") if part]
+    if hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com"):
+        return url
+    if hostname == "live.bilibili.com" and parts and parts[0].isdigit():
+        return url
+    if hostname in {"twitch.tv", "www.twitch.tv"} and len(parts) == 1 and re.fullmatch(r"[A-Za-z0-9_]+", parts[0]):
+        return url
+    raise ValueError("Only ongoing YouTube lives, Bilibili live rooms, and Twitch channels are accepted")
 
 
 def validate_media_url(url: str) -> str:
@@ -137,7 +149,8 @@ class BrowserCookieSnapshot(AuthenticationProvider):
 
     def __init__(self, cookies: Iterable[dict[str, Any]]):
         self._path: Path | None = None
-        rows = [self._netscape_row(cookie) for cookie in cookies]
+        self.cookies = [dict(cookie) for cookie in cookies]
+        rows = [self._netscape_row(cookie) for cookie in self.cookies]
         rows = [row for row in rows if row]
         if not rows:
             return
@@ -196,14 +209,32 @@ class ProbeInfoSnapshot:
     every leg has reached its download stage.
     """
 
-    def __init__(self, info: dict[str, Any]):
+    def __init__(self, info: dict[str, Any], selected_format_ids: Iterable[str] = ()):
         self._path: Path | None = None
         fd, raw_path = tempfile.mkstemp(prefix="laglingo-info-", suffix=".json")
         self._path = Path(raw_path)
+        selected = {str(value) for value in selected_format_ids}
+        snapshot = info
+        extractor = str(info.get("extractor_key") or info.get("extractor") or "").lower()
+        if extractor == "bililive" and selected:
+            snapshot = dict(info)
+            snapshot["formats"] = [dict(item) for item in info.get("formats") or []]
+            for item in snapshot["formats"]:
+                if (
+                    str(item.get("format_id") or "") in selected
+                    and str(item.get("protocol") or "").startswith("m3u8")
+                    and str(item.get("ext") or "").lower() == "fmp4"
+                ):
+                    # Trusted BiliLive HLS metadata sometimes calls the stream
+                    # extension fmp4. yt-dlp's stdout safety check rejects that
+                    # uncommon extension before --hls-use-mpegts can normalize
+                    # the bytes. Hint only the selected trusted HLS format as mp4;
+                    # the downloader still emits MPEG-TS and unsafe checks remain on.
+                    item["ext"] = "mp4"
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as output:
                 os.chmod(self._path, stat.S_IRUSR | stat.S_IWUSR)
-                json.dump(info, output)
+                json.dump(snapshot, output)
         except BaseException:
             self.close()
             raise
@@ -371,19 +402,23 @@ class YtDlpProbe:
             "--no-warnings",
             "--skip-download",
             "--no-live-from-start",
+            "--socket-timeout",
+            "15",
+            "--retries",
+            "1",
+            "--extractor-retries",
+            "1",
             "-J",
             *([] if auth is None else auth.yt_dlp_args()),
             page_url,
         ]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=90,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=15, check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError("读取直播信息超时：网络或代理未能连接 YouTube。请检查系统代理是否已启动。") from error
         if completed.returncode != 0:
             tail = "\n".join(completed.stderr.strip().splitlines()[-8:])
             raise RuntimeError(f"yt-dlp format probe failed (exit {completed.returncode}): {tail or 'no diagnostic'}")
@@ -391,8 +426,8 @@ class YtDlpProbe:
             info = json.loads(completed.stdout)
         except json.JSONDecodeError as error:
             raise RuntimeError("yt-dlp returned invalid JSON") from error
-        if not info.get("is_live") and info.get("live_status") not in {"is_live", "is_upcoming"}:
-            raise RuntimeError("The URL did not resolve to a current live stream")
+        if info.get("is_live") is not True and info.get("live_status") != "is_live":
+            raise RuntimeError("仅支持正在进行的直播 / Only currently ongoing live streams are supported")
         return info
 
 
@@ -416,6 +451,9 @@ def best_aac_audio(formats: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 def build_quality_options(info: dict[str, Any]) -> list[QualityOption]:
     formats = [item for item in info.get("formats") or [] if item.get("url")]
+    extractor = str(info.get("extractor_key") or info.get("extractor") or "").lower()
+    if extractor in {"bililive", "twitchstream"}:
+        return _build_muxed_live_quality_options(formats, extractor)
     audio = best_aac_audio(formats)
     candidates: list[tuple[QualityOption, dict[str, Any], dict[str, Any] | None]] = []
 
@@ -479,12 +517,70 @@ def build_quality_options(info: dict[str, Any]) -> list[QualityOption]:
     )
 
 
+def _build_muxed_live_quality_options(formats: list[dict[str, Any]], extractor: str) -> list[QualityOption]:
+    candidates: dict[tuple[Any, ...], QualityOption] = {}
+    for item in formats:
+        protocol = str(item.get("protocol") or "").lower()
+        is_hls = protocol.startswith("m3u8")
+        is_flv = extractor == "bililive" and (protocol in {"http", "https"} or str(item.get("ext") or "").lower() == "flv")
+        if not is_hls and not is_flv:
+            continue
+        video_codec = str(item.get("vcodec") or "none")
+        if video_codec.lower() == "none":
+            continue
+        raw_audio_codec = item.get("acodec")
+        audio_known_absent = str(raw_audio_codec or "").lower() == "none"
+        audio_codec = str(raw_audio_codec or "unknown")
+        compatible = compatible_video(video_codec) and not audio_known_absent and (compatible_audio(audio_codec) or audio_codec.lower() in {"", "unknown"})
+        if extractor == "twitchstream" and not is_hls:
+            compatible = False
+        height = int(item["height"]) if item.get("height") else None
+        width = int(item["width"]) if item.get("width") else None
+        fps = safe_float(item.get("fps"))
+        tbr = safe_float(item.get("tbr"))
+        note = str(item.get("format_note") or item.get("quality") or item.get("format_id") or "未知清晰度")
+        resolution = f"{height}p" if height else "未知分辨率"
+        transport = "HLS" if is_hls else "FLV"
+        source = " · Source" if extractor == "twitchstream" and note.lower() in {"source", "chunked"} else ""
+        option = QualityOption(
+            qualityId=f"{extractor}-{item.get('format_id')}",
+            label=f"{note} · {resolution} · {transport}{source} · {'AVC/AAC copy' if compatible else 'incompatible'}",
+            width=width,
+            height=height,
+            fps=fps,
+            videoCodec=video_codec,
+            audioCodec=audio_codec,
+            separateAudio=False,
+            requiresTranscode=not compatible,
+            estimatedBitrate=round(tbr * 1000) if tbr else None,
+            videoFormatId=str(item.get("format_id") or ""),
+            audioFormatId=None,
+        )
+        if extractor == "bililive":
+            key = (item.get("quality") or note, codec_family(video_codec), transport)
+        else:
+            key = (item.get("format_id") or note, codec_family(video_codec), transport)
+        previous = candidates.get(key)
+        if previous is None or (option.estimatedBitrate or 0) > (previous.estimatedBitrate or 0):
+            candidates[key] = option
+    return sorted(candidates.values(), key=lambda option: option.qualityId)
+
+
 def select_quality(options: list[QualityOption], quality_id: str, max_height: int = 1080) -> QualityOption:
     compatible = [option for option in options if not option.requiresTranscode and (option.height or 0) <= max_height]
     if quality_id == "auto":
         if not compatible:
             raise RuntimeError("No browser-compatible H.264/AAC stream-copy quality is available")
-        return max(compatible, key=lambda option: (option.height or 0, option.fps or 0, option.estimatedBitrate or 0))
+        return max(
+            compatible,
+            key=lambda option: (
+                " · Source" in option.label,
+                " · HLS" in option.label,
+                option.height or 0,
+                option.fps or 0,
+                option.estimatedBitrate or 0,
+            ),
+        )
     for option in options:
         if option.qualityId == quality_id:
             if option.requiresTranscode:
@@ -531,11 +627,16 @@ def ffmpeg_headers(headers: dict[str, str]) -> str:
 _VIDEO_SETTS = (
     "setts="
     "dts=if(eq(N\,0)\,DTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)):"
-    "pts=if(eq(N\,0)\,PTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)+PTS-DTS)"
+    "pts=if(eq(N\,0)\,PTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)+PTS-DTS):"
+    # Live-TS discontinuities can yield negative packet durations; the fMP4
+    # muxer treats one as fatal and kills the whole session (2026-09-09:
+    # "Packet duration: -1 ... out of range" at media 57s). Re-stamp them.
+    "duration=if(lt(DURATION\,0)\,PREV_OUTDURATION\,DURATION)"
 )
 _AUDIO_SETTS = (
     "setts="
-    "ts=if(eq(N\,0)\,PTS\,PREV_OUTPTS+if(between(PTS-PREV_INPTS\,1\,3*PREV_OUTDURATION)\,PTS-PREV_INPTS\,PREV_OUTDURATION))"
+    "ts=if(eq(N\,0)\,PTS\,PREV_OUTPTS+if(between(PTS-PREV_INPTS\,1\,3*PREV_OUTDURATION)\,PTS-PREV_INPTS\,PREV_OUTDURATION)):"
+    "duration=if(lt(DURATION\,0)\,PREV_OUTDURATION\,DURATION)"
     ",aac_adtstoasc"
 )
 
@@ -592,13 +693,16 @@ def build_ffmpeg_command(
             "-hls_time",
             "1",  # 1 秒分片；split_by_time 使其真正生效（不再受 GOP 约束）
             "-hls_list_size",
-            "150",
+            # 私有窗口必须装下公开窗口（180s）+ 最大发布延迟（~48s）+ 突发余量
+            "250",
             "-hls_delete_threshold",
             "60",
             "-hls_segment_type",
             "fmp4",
             "-hls_fmp4_init_filename",
-            str(private_dir / "init.mp4"),
+            # Keep EXT-X-MAP relative so the same private playlist can be read
+            # through the Companion's loopback HTTP endpoint on Windows.
+            "init.mp4",
             "-hls_flags",
             "delete_segments+program_date_time+temp_file+split_by_time",
             "-hls_segment_filename",
@@ -623,20 +727,37 @@ class DelayedPlaylistPublisher:
     # player.js) can also stall for a while without the segment it is about to
     # request being trimmed out from under it -- that turns a brief rebuffer
     # into a hard 404 stall.
-    def __init__(self, private_dir: Path, public_dir: Path, publish_delay: float, window_seconds: float = 120):
+    def __init__(
+        self,
+        private_dir: Path,
+        public_dir: Path,
+        publish_delay: float,
+        window_seconds: float = 180,
+        startup_buffer_seconds: float = 12,
+        capture_clock: CaptureClock | None = None,
+    ):
         self.private_dir = private_dir
         self.public_dir = public_dir
+        self.capture_clock = capture_clock or CaptureClock()
         # The release criterion in _tick re-reads this internal allocation on
         # every iteration, so the target-total-delay API can retune it live.
         self.publish_delay = publish_delay
         self.window_seconds = window_seconds
+        # Do not expose a playlist until it contains enough released media for
+        # hls.js to start at its configured distance behind the public edge.
+        # Without this gate a 15s target starts around 3–5s and never corrects
+        # itself, because liveSyncDurationCount cannot seek before sequence 0.
+        self.startup_buffer_seconds = startup_buffer_seconds
         self.pending: dict[str, Segment] = {}
         self.published: deque[Segment] = deque()
         self.seen_names: set[str] = set()
         # Sum of durations of every segment ever seen on the private playlist,
-        # published or not. This is the packaging leg's media position counter
-        # used by the subtitle MediaAnchor (redesign Fix B).
+        # published or not. Live-message capture uses this media position.
         self._media_seconds_total = 0.0
+        # Wall time of the newest segment seen on the private playlist. When
+        # the source stalls this stops advancing: the simplest possible
+        # stall detector, exposed as sourceStallSeconds in snapshot().
+        self._last_new_segment_at = time.monotonic()
         self.target_duration = 1
         self.media_sequence = 0
         self.pdt_epoch: float | None = None
@@ -647,7 +768,8 @@ class DelayedPlaylistPublisher:
     @property
     def private_media_seconds(self) -> float:
         """Media seconds seen on the private playlist (both legs' reference)."""
-        return self._media_seconds_total
+        with self._lock:
+            return self._media_seconds_total
 
     def start(self) -> None:
         self.public_dir.mkdir(parents=True, exist_ok=True)
@@ -667,6 +789,7 @@ class DelayedPlaylistPublisher:
                 "pendingSegments": len(self.pending),
                 "hiddenMediaSeconds": round(sum(segment.duration for segment in self.pending.values()), 3),
                 "privateMediaSeconds": round(self._media_seconds_total, 3),
+                "sourceStallSeconds": round(max(0.0, time.monotonic() - self._last_new_segment_at), 1),
                 "targetDuration": self.target_duration,
                 "playlistReady": (self.public_dir / "live.m3u8").exists(),
                 "pdtEpoch": self.pdt_epoch,
@@ -691,13 +814,31 @@ class DelayedPlaylistPublisher:
         if not parsed:
             return
         now = time.monotonic()
-        for item in parsed:
-            if self.pdt_epoch is None and item.program_date_time:
-                self.pdt_epoch = self._parse_program_date_time(item.program_date_time)
-            if item.name not in self.seen_names:
-                self.seen_names.add(item.name)
-                self.pending[item.name] = Segment(item.name, item.duration, item.program_date_time, now)
-                self._media_seconds_total += item.duration
+        with self._lock:
+            parsed_names = {item.name for item in parsed}
+            for item in parsed:
+                if self.pdt_epoch is None and item.program_date_time:
+                    self.pdt_epoch = self._parse_program_date_time(item.program_date_time)
+                if item.name not in self.seen_names:
+                    self.seen_names.add(item.name)
+                    self.pending[item.name] = Segment(item.name, item.duration, item.program_date_time, now)
+                    self._media_seconds_total += item.duration
+                    self._last_new_segment_at = now
+            # FFmpeg keeps a finite private playlist/window. Once a pending name
+            # has fallen out of that playlist and its file is gone, it can never
+            # be published; retaining it would make every 200ms tick slower.
+            for name in list(self.pending):
+                if name not in parsed_names and not (self.private_dir / name).exists():
+                    self.pending.pop(name, None)
+            retained_names = parsed_names | set(self.pending) | {segment.name for segment in self.published}
+            self.seen_names.intersection_update(retained_names)
+            self.target_duration = max(1, math.ceil(max(item.duration for item in parsed)))
+            self.capture_clock.update(
+                pdt_epoch=self.pdt_epoch,
+                completed_private_media_seconds=self._media_seconds_total,
+                target_duration=self.target_duration,
+                monotonic_time=now,
+            )
         # Keep roughly publish_delay seconds of completed media private. This
         # uses media duration rather than wall-clock file age, so startup and
         # bursty playlist refreshes preserve the intended delay budget.
@@ -713,6 +854,8 @@ class DelayedPlaylistPublisher:
         for segment in releasable:
             source = self.private_dir / segment.name
             if not source.exists():
+                # Keep it only while FFmpeg still advertises it; otherwise the
+                # cleanup above removes the permanently unavailable segment.
                 continue
             self._atomic_copy(source, self.public_dir / segment.name)
             self.published.append(segment)
@@ -720,7 +863,10 @@ class DelayedPlaylistPublisher:
             changed = True
         if changed:
             self._trim_window()
-            self._write_public_playlist()
+            published_duration = sum(segment.duration for segment in self.published)
+            playlist_exists = (self.public_dir / "live.m3u8").exists()
+            if playlist_exists or published_duration >= self.startup_buffer_seconds:
+                self._write_public_playlist()
 
     def _trim_window(self) -> None:
         duration = sum(segment.duration for segment in self.published)
@@ -811,6 +957,7 @@ class LiveSession:
         self.error: str | None = None
         self.ingests: list[Any] = []
         self.source_process: subprocess.Popen[bytes] | None = None
+        self.capture_clock: CaptureClock | None = None
 
     def start(
         self,
@@ -820,6 +967,7 @@ class LiveSession:
         command_override: list[str] | None = None,
         ingests: list[Any] | None = None,
         source_process: subprocess.Popen[bytes] | None = None,
+        capture_clock: CaptureClock | None = None,
     ) -> None:
         previous_source = self.source_process
         if source_process is previous_source:
@@ -832,6 +980,9 @@ class LiveSession:
         stdin_target: Any = subprocess.PIPE if ingests and len(ingests) == 1 else (source_process.stdout if source_process else None)
         process = subprocess.Popen(
             command,
+            # FFmpeg writes a relative hls_fmp4_init_filename against cwd,
+            # while all input URLs and segment/playlist paths remain absolute.
+            cwd=self.private_dir,
             stdin=stdin_target,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -845,7 +996,13 @@ class LiveSession:
         self.started_at = time.monotonic()
         self.error = None
         self.source_process = source_process or previous_source
-        self.publisher = DelayedPlaylistPublisher(self.private_dir, self.public_dir, publish_delay)
+        self.capture_clock = capture_clock or self.capture_clock or CaptureClock()
+        self.publisher = DelayedPlaylistPublisher(
+            self.private_dir,
+            self.public_dir,
+            publish_delay,
+            capture_clock=self.capture_clock,
+        )
         self.publisher.start()
         self.ingests = ingests or []
         if self.ingests:
@@ -890,6 +1047,7 @@ class LiveSession:
             self._log_thread.join(timeout=1)
         self.process = None
         self.source_process = None
+        self.capture_clock = None
         self.quality = None
         self.page_url = None
         self.started_at = None
