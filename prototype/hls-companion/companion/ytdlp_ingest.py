@@ -179,6 +179,7 @@ class YtDlpLiveIngest:
         self._lock = threading.Lock()
         self._last_leg_marks: tuple[float, list[int]] | None = None
         self.source_pts: list[list[float]] = []
+        self.source_pts_first: list[float | None] = []
 
     @staticmethod
     def _default_executable() -> str:
@@ -309,11 +310,14 @@ class YtDlpLiveIngest:
     def _record_pts(self, index: int) -> Callable[[list[float]], None]:
         while len(self.source_pts) <= index:
             self.source_pts.append([])
+            self.source_pts_first.append(None)
 
         def record(points: list[float]) -> None:
             # Keep only a bounded diagnostic history; the media bytes remain
             # untouched and the hot path does not allocate per TS packet.
             target = self.source_pts[index]
+            if self.source_pts_first[index] is None:
+                self.source_pts_first[index] = points[0]
             target.extend(points)
             if len(target) > 128:
                 del target[:-128]
@@ -378,7 +382,7 @@ class YtDlpLiveIngest:
                     "label": pump.label,
                     "forwardedBytes": current_bytes[index],
                     "bytesPerSecond": round(rate, 1) if rate is not None else None,
-                    "sourcePtsFirst": round(self.source_pts[index][0], 6) if index < len(self.source_pts) and self.source_pts[index] else None,
+                    "sourcePtsFirst": round(self.source_pts_first[index], 6) if index < len(self.source_pts_first) and self.source_pts_first[index] is not None else None,
                     "sourcePtsLast": round(self.source_pts[index][-1], 6) if index < len(self.source_pts) and self.source_pts[index] else None,
                     "sourcePtsSamples": len(self.source_pts[index]) if index < len(self.source_pts) else 0,
                 }
