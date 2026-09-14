@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, net, session, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, protocol, net, session, Menu, dialog, shell, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { startBackend } = require('./backend.cjs');
@@ -44,11 +44,28 @@ async function fail(error) {
 
 async function start() {
   Menu.setApplicationMenu(null);
-  window = new BrowserWindow({ width: 1440, height: 920, minWidth: 960, minHeight: 640,
+  // The layout is a three-column desktop board with `body { min-width: 1080px }`
+  // and its own 1240px breakpoint below which the live chat column is hidden.
+  // The previous fixed 1440x920 came out at roughly 960 CSS px on a 150%-scaled
+  // display, so a fresh install could not show all three columns and `minWidth`
+  // let the window shrink far below the layout's own floor.
+  //
+  // Size from the work area (Electron reports it in DIPs, the same unit
+  // BrowserWindow bounds use) and maximise whenever the screen is comfortably
+  // wide enough, which also sidesteps any DPI-unit ambiguity.
+  const { workAreaSize } = screen.getPrimaryDisplay();
+  const fitsBoard = workAreaSize.width >= 1280;
+  window = new BrowserWindow({
+    width: Math.min(workAreaSize.width, 1680),
+    height: Math.min(workAreaSize.height, 1000),
+    minWidth: 1080, minHeight: 700,
     backgroundColor: '#151719', title: 'LagLingo', show: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true,
       webSecurity: true, spellcheck: false } });
-  window.once('ready-to-show', () => window.show());
+  window.once('ready-to-show', () => {
+    if (fitsBoard) window.maximize();
+    window.show();
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//i.test(url)) void shell.openExternal(url);
     return { action: 'deny' };

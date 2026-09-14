@@ -527,6 +527,10 @@ body.is-resizing-panes { user-select: none; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* 没有这行时 .pane-title 的最小宽度被锁死在标题全文上，于是 pane-controls
+     被压到比它的子元素还窄；子元素 flex-shrink:0 且 justify-content:flex-end，
+     多出来的部分就向左溢出，压在徽章和标题上。 */
+  min-width: 0;
 }
 .pane-badge {
   display: grid;
@@ -545,8 +549,15 @@ body.is-resizing-panes { user-select: none; }
   display: flex;
   align-items: center;
   gap: var(--s2);
-  min-width: 0;
   justify-content: flex-end;
+  /* 必须是 0，不能是 auto。写成 auto 时这里的最小宽度会取"内容宽度"，
+     而 #chatStatsIndicator 是不可折行的长文本，于是控件组变得不可压缩：
+     空间不够时腾不出位置，只能由标题让位（标题被省略号吃掉）。
+     写成 0 之后控件组先被压缩，组内的芯片各自再收缩（见它们的 min-width: 0），
+     标题完整保留；唯一的硬底是那枚不可压缩的"跟随"按钮。
+     保证按钮不被压穿靠 PANE_LIMITS.min = 280（构造上需要的下限是 265）。 */
+  min-width: 0;
+  flex-shrink: 999;
 }
 .clock-chip, .chat-target {
   white-space: nowrap;
@@ -557,10 +568,52 @@ body.is-resizing-panes { user-select: none; }
   font-size: 12px;
   font-weight: 700;
 }
-.chat-target { font-size: 11px; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; }
+/* .clock-chip 原本 flex-shrink:0 且没有上限，是头部里唯一不可压缩的文本。
+   实际内容（--:--:-- / 01:54:50）远短于 12ch，所以这条不会截断正常值，
+   只是让它在任何情况下都不至于把头部撑破。#chatStatsIndicator 用 ID 选择器
+   覆盖了 max-width，不受影响。 */
+.clock-chip {
+  min-width: 0;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 目标语言：原型里没有这个元素，12ch 是应用自己加的硬上限。实测连
+   “目标语言 zh-Hans”都放不下（12ch ≈ 78px，需要 107px），所以 560px 宽时
+   也只显示“目标语言 …”——恰恰把唯一有用的信息截掉了。改成随可用空间伸缩，
+   只有真的不够时才省略。 */
+.chat-target {
+  font-size: 11px;
+  min-width: 0;
+  max-width: 26ch;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 聊天统计：player.js 已经把它限成最多两条（异常优先），这里再加一道硬上限，
+   保证任何语言、任何状态组合都不会把这个固定 52px 的头部撑破。省略掉的内容
+   始终可以从 title 悬停查看。 */
+#chatStatsIndicator {
+  min-width: 0;
+  max-width: 30ch;
+  flex-shrink: 999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* 窄栏时隐藏次要指示，保住标题与跟随按钮（原型 464-466） */
-@container (max-width: 330px) {
+@container (max-width: 340px) {
   .clock-chip { display: none; }
+}
+/* 聊天栏头部比字幕栏多一项（目标语言），按重要性依次退让：
+   统计 → 目标语言，跟随按钮永远保留。
+   618px 是"三项都能完整显示"的下界；但把统计直接藏掉比让它省略号更亏，
+   所以阈值取 520——低于此统计只剩不到 130px，显示"未监听…"没有意义；
+   520 以上它按可用空间省略，全文仍在 title 里。 */
+@container (max-width: 519px) {
+  #paneChat #chatStatsIndicator { display: none; }
+}
+@container (max-width: 383px) {
+  #paneChat .chat-target { display: none; }
 }
 
 /* ── 时间轴（原型 468-540） ── */
@@ -1772,7 +1825,5 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
 .role-field, .url-field, .offset-field { min-width: 0; }
 .timeline-author { display: inline-flex; align-items: center; gap: 4px; }
 
-/* 5. 侧栏窄容器收敛：聊天目标语言在窄栏里让位给消息计数 */
-@container (max-width: 360px) {
-  .chat-target { display: none; }
-}
+/* 5. 侧栏窄容器收敛。（目标语言的退让阈值已并入面板头那一组 @container 规则，
+   原来这里的 360px 让语言先于统计消失，优先级是反的。） */

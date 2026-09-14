@@ -84,11 +84,11 @@ function createHarness(options = {}) {
     // 初值照抄 index.html：JS 没跑起来时屏幕阅读器读到的就是这些
     subtitles: createElement({
       dataset: { paneEdge: "subtitles" },
-      attrs: { role: "separator", tabindex: "0", "aria-valuemin": "240", "aria-valuemax": "560", "aria-valuenow": "320" },
+      attrs: { role: "separator", tabindex: "0", "aria-valuemin": "280", "aria-valuemax": "560", "aria-valuenow": "320" },
     }),
     chat: createElement({
       dataset: { paneEdge: "chat" },
-      attrs: { role: "separator", tabindex: "0", "aria-valuemin": "240", "aria-valuemax": "560", "aria-valuenow": "320" },
+      attrs: { role: "separator", tabindex: "0", "aria-valuemin": "280", "aria-valuemax": "560", "aria-valuenow": "320" },
     }),
   };
   const body = { classList: createClassList() };
@@ -114,30 +114,30 @@ function createHarness(options = {}) {
 /* ── 纯函数：夹取、边界、拖动方向、存储解析 ── */
 
 test("clampPaneWidth keeps a width inside its bounds and rounds it", () => {
-  const bounds = { min: 240, max: 560 };
+  const bounds = { min: 280, max: 560 };
   assert.equal(clampPaneWidth(400.6, bounds), 401);
-  assert.equal(clampPaneWidth(100, bounds), 240);
+  assert.equal(clampPaneWidth(100, bounds), 280);
   assert.equal(clampPaneWidth(9000, bounds), 560);
   // 视口太窄时 max 会小于 min，此时以 min 为准而不是把两者对调
-  assert.equal(clampPaneWidth(500, { min: 240, max: 100 }), 240);
-  assert.equal(clampPaneWidth(Number.NaN, bounds), 240);
+  assert.equal(clampPaneWidth(500, { min: 280, max: 100 }), 280);
+  assert.equal(clampPaneWidth(Number.NaN, bounds), 280);
 });
 
 test("paneWidthBounds reserves room for the video before growing a sidebar", () => {
   // 三栏：另一侧也在同一行抢空间
   assert.deepEqual(
     paneWidthBounds({ workbenchWidth: 2000, otherPaneWidth: 320, minStage: 320, maxPane: 560 }),
-    { min: 240, max: 560 },
+    { min: 280, max: 560 },
   );
   // 窄屏：给画面留够 320 之后只剩 400
   assert.deepEqual(
     paneWidthBounds({ workbenchWidth: 1040, otherPaneWidth: 320, minStage: 320, maxPane: 560 }),
-    { min: 240, max: 400 },
+    { min: 280, max: 400 },
   );
   // 单栏视图另一侧隐藏，量到 0
   assert.deepEqual(
     paneWidthBounds({ workbenchWidth: 1000, otherPaneWidth: 0, minStage: 320, maxPane: 560 }),
-    { min: 240, max: 560 },
+    { min: 280, max: 560 },
   );
 });
 
@@ -198,9 +198,11 @@ test("PaneResizer restores a stored width on load", () => {
   const harness = createHarness({ storage });
   createPaneResizer({ ...harness, storage });
   assert.equal(harness.workbench.styles["--pane-left-w"], "420px");
-  assert.equal(harness.workbench.styles["--pane-right-w"], "260px");
+  // 260 是下限提高之前存下的值：载入时必须被抬到当前下限，而不是原样套用。
+  // 低于下限的侧栏装不下自己的面板头（徽章 + 标题 + 跟随按钮）。
+  assert.equal(harness.workbench.styles["--pane-right-w"], "280px");
   assert.equal(harness.handles.subtitles.getAttribute("aria-valuenow"), "420");
-  assert.equal(harness.handles.chat.getAttribute("aria-valuenow"), "260");
+  assert.equal(harness.handles.chat.getAttribute("aria-valuenow"), "280");
 });
 
 test("a drag resizes the pane and persists on release", () => {
@@ -271,7 +273,7 @@ test("keyboard steps follow the pane's own side, and Home/End jump to the limits
   harness.handles.subtitles.dispatch("keydown", { key: "End" });
   assert.equal(harness.workbench.styles["--pane-left-w"], "400px");
   harness.handles.subtitles.dispatch("keydown", { key: "Home" });
-  assert.equal(harness.workbench.styles["--pane-left-w"], "240px");
+  assert.equal(harness.workbench.styles["--pane-left-w"], "280px");
 
   // 右栏在右边：ArrowLeft 变宽
   harness.handles.chat.dispatch("keydown", { key: "ArrowLeft" });
@@ -354,5 +356,5 @@ test("PaneResizer does not fight the default when a pointerdown never moves", ()
   harness.handles.subtitles.dispatch("pointerup", { clientX: 500 });
   // 点了但没拖：不应留下任何内联宽度，也就不会脱离原型默认值
   assert.deepEqual(harness.workbench.styles, {});
-  assert.equal(PANE_WIDTH_LIMITS.min, 240);
+  assert.equal(PANE_WIDTH_LIMITS.min, 280);
 });

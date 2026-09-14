@@ -1509,22 +1509,31 @@
     const stats = data.stats || {};
     const indicator = el("chatStatsIndicator");
     if (indicator) {
-      const parts = [];
+      // 这个芯片是面板头里唯一长度无上限的内容，而面板头固定 52px。把状态词
+      // 一路用 " · " 拼下去实测能到 515px，足以把标题挤没、把徽章盖住。
+      // 所以分两桶：异常优先，常态次之，最多显示两条；被折叠掉的项仍完整
+      // 保留在 title 里，悬停即可看到。
+      const problems = [];
+      const routine = [];
       const receiveState = {
         idle: "未监听", connecting: "正在连接聊天", authenticating: "正在验证聊天连接", reconnecting: "正在重连聊天",
         running: "聊天接收中", polling: "轮询接收中", error: "聊天接收失败", unavailable: "聊天不可用",
       }[stats.state];
-      if (receiveState) parts.push(receiveState);
-      if (data.error || stats.lastError) parts.push(data.error || stats.lastError);
-      if (stats.pendingClock) parts.push(`等待媒体时钟: ${stats.pendingClock}`);
-      if (stats.received !== undefined) parts.push(`收到: ${stats.received}`);
-      if (stats.translated !== undefined) parts.push(`翻译: ${stats.translated}`);
-      if (stats.translationFailed) parts.push(`失败: ${stats.translationFailed}`);
+      const receiveIsProblem = stats.state === "reconnecting" || stats.state === "error" || stats.state === "unavailable";
+      if (receiveState) (receiveIsProblem ? problems : routine).push(receiveState);
+      if (data.error || stats.lastError) problems.push(data.error || stats.lastError);
+      if (stats.pendingClock) problems.push(`等待媒体时钟: ${stats.pendingClock}`);
+      if (stats.received !== undefined) routine.push(`收到: ${stats.received}`);
+      if (stats.translated !== undefined) routine.push(`翻译: ${stats.translated}`);
+      if (stats.translationFailed) problems.push(`失败: ${stats.translationFailed}`);
       const failureLabels = { timeout: "翻译超时", deadline: "翻译预算耗尽", empty: "空译文", json_format: "JSON格式错误", batch_count: "批次数量不符", batch_item: "批次内容或编号异常", batch_ids: "批次编号不符", response_format: "响应格式异常", rate_limit: "翻译限流", authentication: "翻译认证失败", provider_error: "翻译调用失败" };
-      if (stats.translationLastFailure) parts.push(failureLabels[stats.translationLastFailure] || "翻译失败");
-      if (chatOverlay.getStats().dropped) parts.push(`画面省略: ${chatOverlay.getStats().dropped}`);
-      if (stats.translationSkipped) parts.push(`跳过: ${stats.translationSkipped}`);
-      indicator.textContent = parts.length > 0 ? parts.join(" · ") : "聊天室就绪";
+      if (stats.translationLastFailure) problems.push(failureLabels[stats.translationLastFailure] || "翻译失败");
+      if (chatOverlay.getStats().dropped) routine.push(`画面省略: ${chatOverlay.getStats().dropped}`);
+      if (stats.translationSkipped) routine.push(`跳过: ${stats.translationSkipped}`);
+      const everything = [...problems, ...routine];
+      const shown = (problems.length > 0 ? problems : routine).slice(0, 2);
+      indicator.textContent = shown.length > 0 ? shown.join(" · ") : "聊天室就绪";
+      indicator.title = everything.length > shown.length ? everything.join(" · ") : indicator.textContent;
     }
 
     // Toggle sync

@@ -10,7 +10,10 @@
     subtitles: { side: "left", variable: "--pane-left-w", pane: "paneSubtitles", other: "chat" },
     chat: { side: "right", variable: "--pane-right-w", pane: "paneChat", other: "subtitles" },
   };
-  const LIMITS = { min: 240, max: 560, minStage: 320, step: 16, coarseStep: 64 };
+  // min 是构造性下限，不是口味问题：面板头里"徽章 + 标题 + 跟随按钮"这三样
+  // 不可压缩（53 + 8 + 107）再加上内边距与边框 27，需要 265px 才不互相重叠，
+  // 而侧栏本来就不该窄到装不下自己的标题。原型自己的侧栏最窄值也是 280px。
+  const LIMITS = { min: 280, max: 560, minStage: 320, step: 16, coarseStep: 64 };
 
   function clampPaneWidth(value, bounds) {
     const min = bounds.min;
