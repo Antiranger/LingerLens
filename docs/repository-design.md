@@ -75,10 +75,26 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 - `README.md` 的 quick start 必须是新人实际会走的那条路，且必须与 `bootstrap.ps1`、`package.json engines` 三处一致。这三处不一致过一次（README 说 18+、engines 说 22.12+），已在 1edd548 修掉。
 - `CONTEXT.md` 是领域术语表（什么是 Language Tag、Target Language、UI Locale）。改领域概念时同步更新它，不要让术语在代码里各自漂移。
 
+## 不变量
+
+上面所有规则可以压缩成一句可检查的话：
+
+> **仓库里不存在「既没被跟踪、也没被明确忽略」的文件。**
+
+用 `git ls-files --others --exclude-standard` 一查即知，空输出就是健康。这个不变量成立时，「工作区能跑、克隆不能跑」就不可能发生——因为二者内容相同。它是靠 `guard:tracked` 维持的；那个脚本加进来时报了 414 个问题路径。
+
 ## 已知的未决问题
 
-1. **`.scratch/` 里 815 个未跟踪文件**，含调研报告和探针脚本。目前 `.gitignore` 只忽略其中的大块产物（模型、抓包、日志、jsonl/csv），报告和脚本保持可见但未跟踪。这意味着 `rm -rf .scratch` 会永久丢掉这些工程记录。**建议**：把有价值的报告移进 `docs/notes/`，然后整体忽略 `.scratch/`。scratch 就是 scratch，文档就是文档。
-2. **根目录的 `findings.md` / `progress.md` / `task_plan.md`** 是 agent 工作流笔记，已被跟踪，即已公开。开源项目根目录放这三个文件不常见；建议移进 `.planning/`（已忽略）或删掉。
-3. **`.archive/`**（陈旧的源码快照）按设计不跟踪，只留 `README.md` 说明原因。别再往里加东西。
-4. **git 历史曾经有 5.3 GB 垃圾**（106 个中断的 `tmp_obj_*` 写入 + 883 MB 不可达松散对象），来自被中断的大文件 `git add`。已用 `git gc --prune=now` 清到 28.6 MB。注意 `git clone` 的本地硬链接会把这堆垃圾一起复制，所以本地 clone 显示 5.3 GB 而远程 clone 只有 59 MB——**判断「别人克隆要多久」必须用 `git clone --no-local`，或者看 `git count-objects -vH` 的 `size-pack`。**
-5. **日文/俄文的字体**靠系统字体（Yu Gothic / Segoe UI），只打包了 Noto Sans SC。中日双语项目里两种语言的字形来源不一致，值得明确是有意还是遗漏。
+1. **`.archive/`**（陈旧的源码快照）按设计不跟踪，只留 `README.md` 说明原因。别再往里加东西。
+2. **git 历史曾经有 5.3 GB 垃圾**（106 个中断的 `tmp_obj_*` 写入 + 883 MB 不可达松散对象），来自被中断的大文件 `git add`。已用 `git gc --prune=now` 清到 28.6 MB。注意 `git clone` 的本地硬链接会把这堆垃圾一起复制，所以本地 clone 显示 5.3 GB 而远程 clone 只有 59 MB——**判断「别人克隆要多久」必须用 `git clone --no-local`，或者看 `git count-objects -vH` 的 `size-pack`。**
+3. **日文/俄文的字体**靠系统字体（Yu Gothic / Segoe UI），只打包了 Noto Sans SC。中日双语项目里两种语言的字形来源不一致，值得明确是有意还是遗漏。
+4. **`.scratch/` 里 9,500 多个文件仍在磁盘上但已整体忽略**，其中含 486 MB 的模型 checkpoint。它们不会被提交，但也不会被备份。想留着就自己复制出去。
+5. **`docs/notes/` 现在承载了原来散在 `.scratch/` 的 88 份工程记录**（调研报告、spec、逐次会话日志）。它是「工作记录」，不是「设计文档」；`docs/` 根目录才是设计文档。新记录请往 `docs/notes/` 放，不要再开 `.scratch/*.md`。
+
+## 这台机器上的测量陷阱
+
+记在这里，因为已经骗过我两次：
+
+- **OS 级截图不可信。** 这个 Electron 窗口用 `CopyFromScreen` 截出来，凡是 GPU 合成的图层都是黑的——聊天栏整块都在里面。用它判断「某个面板在不在」会得出完全错误的结论。
+- **窗口物理像素 ≠ CSS 像素，而且不是简单的 DPI 倍数。** 这个窗口 `GetWindowRect` = 2575 物理像素，但渲染进程报 `innerWidth` = 2560、`devicePixelRatio` = 1.5。按 1.5 去除会得到 1707 这个错误的 CSS 宽度，进而误判断点。
+- **正确做法**：给应用加 `--remote-debugging-port` 起一个实例，用 CDP 连上真实渲染进程直接问。脚本见 `.scratch/laglingo-audit/inspect-live-window.py`（该目录已忽略；这段方法本身要保留，已记在此处）。

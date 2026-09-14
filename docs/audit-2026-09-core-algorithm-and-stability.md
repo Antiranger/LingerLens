@@ -1,7 +1,7 @@
 # LagLingo 核心算法与长时稳定性审查报告
 
 审查对象：`F:\Projects\LagLingo`，git rev `07dc338`
-审查方式：**只认代码与实跑数据**。仓库内 `README.md` / `docs/*.md` / `findings.md` / `progress.md` 的全部结论一律不作为证据，仅用于"知道该验证什么"。
+审查方式：**只认代码与实跑数据**。仓库内 `README.md` / `docs/*.md` / `docs/notes/findings.md` / `docs/notes/progress.md` 的全部结论一律不作为证据，仅用于"知道该验证什么"。
 本报告分两级标注：**【实测】**＝本次亲自跑出来的数据；**【代码确认】**＝逐行读到、行号可复核但未单独跑复现脚本。
 
 ---

@@ -263,7 +263,7 @@ seg_0=IDR  seg_1=-  seg_2=-  seg_3=-  seg_4=-  seg_5=IDR  ...  seg_10=IDR  seg_1
 | 2 | 删除公开播放列表里的 `#EXT-X-INDEPENDENT-SEGMENTS` | `core.py:522` | 待做（**易漏**） |
 | 3 | `hls_list_size` 45→150、`hls_delete_threshold` 30→60 | `core.py:391-393` | 待做（**同批必改**） |
 | 4 | 更新 `liveSyncDurationCount` 注释的量纲（数值不变） | `player.js:112-116` | 待做 |
-| 5 | 按 §6 复测并记入 `progress.md` | — | 待做 |
+| 5 | 按 §6 复测并记入 `docs/notes/progress.md` | — | 待做 |
 | 6 | 视 §6 冷启动结果决定是否实施 R2 | `core.py` 发布器 | 待定 |
 | 7 | 更正交接文档 §3.②、§5 的 C/D/E 行 | `docs/live-delay-handoff.md` | 待做 |
 | 8 | 修 `sourceDelaySeconds` 硬编码 0.0 或在 UI 标注 | `server.py:109` | 独立项 |

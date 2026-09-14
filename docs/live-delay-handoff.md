@@ -56,7 +56,7 @@ yt-dlp 拿到的"直播边缘"已经是 YouTube 的边缘，不是真实世界�
 
 - yt-dlp 按 YouTube 分片逐片下载，下完一片才有数据，天然落后一个分片级别。
 - 项目额外故意保留 **5 秒源安全库存**，FFmpeg 加 `-re` 按媒体速率消费本地缓存。这是修 403/跨 host 冻结时加的保险：网络抖动、403 重试、CDN 换 host 时管线不会空转卡死。
-- 历史教训（findings.md）：没有这个缓冲时，FFmpeg 9 会因 `Cannot reuse HTTP connection for different host` 在 26–38 秒后冻结。
+- 历史教训（docs/notes/findings.md）：没有这个缓冲时，FFmpeg 9 会因 `Cannot reuse HTTP connection for different host` 在 26–38 秒后冻结。
 
 ### ③ FFmpeg 分片完成时间（0–5s，被源关键帧绑架）
 
@@ -93,7 +93,7 @@ yt-dlp 拿到的"直播边缘"已经是 YouTube 的边缘，不是真实世界�
 
 ## 4. 本次会话修复的两个浏览器播放 bug（延迟话题的直接前因）
 
-这两个 bug 于 2026-08-29 修复，是项目**第一次真实浏览器端到端播放验证**（此前只验证到 API/分片生成层，progress.md 明确记录"30-minute Chrome/Edge playback 未验证"）。
+这两个 bug 于 2026-08-29 修复，是项目**第一次真实浏览器端到端播放验证**（此前只验证到 API/分片生成层，docs/notes/progress.md 明确记录"30-minute Chrome/Edge playback 未验证"）。
 
 ### Bug 1：自动播放被拦截且被静默吞掉（症状：进度条一直加载但永不播放）
 
@@ -134,7 +134,7 @@ yt-dlp 拿到的"直播边缘"已经是 YouTube 的边缘，不是真实世界�
 - 公开窗口 30s 有界、磁盘清理生效、停止后无 yt-dlp 残留进程
 - 静音自动播放成功、播放头稳定、45s 无跳帧无卡顿
 
-**未验证（progress.md 明确记录，新对话可继续）**：
+**未验证（docs/notes/progress.md 明确记录，新对话可继续）**：
 - 30 分钟长时浏览器播放（内存/hls.js 缓冲行为/分片序号回绕）
 - 账号受限直播（会员限定等）的 cookie 全链路
 - Bilibili 直播全链路（代码路径存在但未实测）
@@ -169,8 +169,8 @@ curl http://127.0.0.1:8765/api/status
 | 内容 | 位置 |
 |---|---|
 | 本延迟分析 | `docs/live-delay-handoff.md`（本文件） |
-| 逐次会话工作日志 | `progress.md`（含本次两个 bug 修复记录） |
-| 历史技术结论（403、代理、yt-dlp 选型） | `findings.md` |
+| 逐次会话工作日志 | `docs/notes/progress.md`（含本次两个 bug 修复记录） |
+| 历史技术结论（403、代理、yt-dlp 选型） | `docs/notes/findings.md` |
 | FFmpeg 命令 + 延迟发布器 | `prototype/hls-companion/companion/core.py` |
 | yt-dlp 采集 | `prototype/hls-companion/companion/ytdlp_ingest.py` |
 | HTTP 服务 | `prototype/hls-companion/companion/server.py` |

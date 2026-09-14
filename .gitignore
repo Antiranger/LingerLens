@@ -43,24 +43,15 @@ live-delay-*.json
 *.webm
 *.wav
 *.pcm
-# MPEG-TS captures. Scoped to scratch space on purpose: a bare `*.ts` would also
-# hide a future TypeScript source file, and these captures are what made
-# `npm run guard:release` fail (five committed .ts files from the 2026-09-09
-# startup-sync experiment).
-/.scratch/**/*.ts
-# Bulky generated experiment output. The .scratch/ investigation reports,
-# probe scripts and their JSON results are deliberately left visible — they are
-# engineering records. Only models, captures and logs are ignored, because
-# `git add -A` would otherwise stage ~1.1 GB of checkpoints.
-.scratch/**/*.pt
-.scratch/**/*.onnx
-.scratch/**/*.part
-.scratch/**/*.err
-.scratch/**/*.out
-.scratch/**/*.jsonl
-.scratch/**/*.csv
-.scratch/**/models/
-.scratch/**/backup-*/
+# Scratch space: probe scripts, experiment output, model checkpoints, captures.
+# Nothing here is needed to build or run the project, and it is where the bulk
+# lives (checkpoints alone reached 486 MB). The durable records that used to sit
+# here — investigation reports, specs, the per-session logs — were moved to
+# docs/notes/ so `rm -rf .scratch` cannot lose them.
+#
+# Note this also covers the MPEG-TS captures that once made `guard:release` fail
+# (five committed .ts files from the 2026-09-09 startup-sync experiment).
+/.scratch/
 prototype/hls-companion/.benchmark-data/
 prototype/hls-companion/benchmark-results/
 prototype/hls-companion/runtime-*/
@@ -68,6 +59,12 @@ prototype/hls-companion/runtime-*/
 # Companion runtime: provider keys, Cookie snapshots, control secret, media and caches
 prototype/hls-companion/runtime/**
 !prototype/hls-companion/runtime/providers.example.json
+# Same thing one directory up: `prototype/runtime/providers.json` belongs to the
+# older delayed_live_player entry point and holds this machine's provider
+# selection. Nothing references it any more, and it sat outside the rule above,
+# so it was one `git add -A` away from being published. (Its apiKey field is
+# currently empty and translation uses apiKeyEnv, but that is not a guarantee.)
+prototype/runtime/
 
 # Disproved/unused local downloader and model experiments
 prototype/hls-companion/vendor/n-m3u8dl-re/
