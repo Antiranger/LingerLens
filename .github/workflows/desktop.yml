@@ -1,0 +1,43 @@
+name: Windows desktop build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install build dependencies
+        run: |
+          python -m venv .venv-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv-desktop/Scripts/python.exe -m pip install -r desktop/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --ignore-scripts
+      - name: Build runtime and test desktop contracts
+        run: |
+          npm run desktop:backend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run desktop:test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:LAGLINGO_TEST_BACKEND = "$PWD/build-desktop/backend/laglingo-backend/laglingo-backend.exe"
+          .venv-desktop/Scripts/python.exe -m unittest discover -s desktop/tests -p test_*.py
+      - name: Build unsigned installer without publishing
+        run: npm run desktop:dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laglingo-windows-x64-preview
+          path: release/*-setup.exe
+          if-no-files-found: error

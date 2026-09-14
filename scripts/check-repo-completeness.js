@@ -45,17 +45,31 @@ function read(relative) {
 function collectReferences() {
   const found = [];
 
+  // Path-looking tokens from free text. Skip anything glued to a shell variable
+  // (`"$PWD/build-desktop/..."` is a runtime path, not a repo file) and anything
+  // inside a template placeholder.
+  const pushTokens = (text, source) => {
+    for (const match of text.matchAll(PATH_TOKEN)) {
+      const before = text.slice(Math.max(0, match.index - 1), match.index);
+      if (before === "$" || before === "{" || before === "%") continue;
+      if (text.includes(`{${match[0]}}`)) continue;
+      found.push([normalize(match[0]), source]);
+    }
+  };
+
   const pkg = JSON.parse(read("package.json"));
   for (const [name, command] of Object.entries(pkg.scripts || {})) {
-    for (const token of command.match(PATH_TOKEN) || []) {
-      found.push([normalize(token), `package.json script "${name}"`]);
-    }
+    pushTokens(command, `package.json script "${name}"`);
   }
   if (pkg.main) found.push([normalize(pkg.main), "package.json main"]);
 
-  const workflow = read(".github/workflows/ci.yml");
-  for (const token of workflow.match(PATH_TOKEN) || []) {
-    found.push([normalize(token), ".github/workflows/ci.yml"]);
+  // Every workflow, not just ci.yml: the desktop build workflow references files
+  // that no other source mentions.
+  const workflowDir = path.join(REPO_ROOT, ".github", "workflows");
+  for (const name of fs.existsSync(workflowDir) ? fs.readdirSync(workflowDir) : []) {
+    if (!/\.ya?ml$/.test(name)) continue;
+    const relative = `.github/workflows/${name}`;
+    pushTokens(read(relative), relative);
   }
 
   // Everything the browser loads. A missing <script> is a silently dead feature.
