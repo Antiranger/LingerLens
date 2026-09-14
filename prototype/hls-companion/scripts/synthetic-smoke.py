@@ -29,15 +29,17 @@ def main() -> int:
         quality = QualityOption("synthetic-1080p", "synthetic", 1920, 1080, 30, "avc1", "mp4a", False, False, 2_000_000, "synthetic", None)
         inputs = SelectedInputs(quality, "synthetic", None, {}, {})
         private = runtime / "private"
+        # Packaging flags come from core.hls_output_args so this smoke test
+        # exercises exactly what production produces. It previously hand-rolled
+        # a friendlier list (independent_segments, -g 30, no split_by_time) and
+        # therefore could not detect the mid-GOP segment defect.
         command = [
             executable("ffmpeg"), "-hide_banner", "-loglevel", "warning", "-nostdin", "-re",
             "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30",
             "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
-            "-t", "14", "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
+            "-t", "14", "-c:v", "libx264", "-preset", "veryfast", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k", "-map", "0:v:0", "-map", "1:a:0",
-            "-f", "hls", "-hls_time", "1", "-hls_list_size", "30", "-hls_segment_type", "fmp4",
-            "-hls_fmp4_init_filename", str(private / "init.mp4"), "-hls_flags", "independent_segments+program_date_time+temp_file",
-            "-hls_segment_filename", str(private / "seg_%09d.m4s"), str(private / "live.m3u8"),
+            *CORE.hls_output_args(private),
         ]
         session = LiveSession(runtime)
         session.start("https://www.youtube.com/watch?v=synthetic", inputs, publish_delay=3.0, command_override=command)

@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LagLingo — 新野兽派原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=JetBrains+Mono:wght@500;700;800&family=Noto+Sans:wght@500;700;900&family=Noto+Sans+JP:wght@500;700;900&family=Noto+Sans+KR:wght@500;700;900&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<!-- ══════════════ 顶栏 ══════════════ -->
+<header class="topbar">
+  <div class="brand" aria-label="LagLingo">
+    <span class="brand-mark">LL</span>
+    <span class="brand-word">Lag<em>Lingo</em></span>
+  </div>
+
+  <div class="topbar-status">
+    <span id="stateBadge" class="state-badge" data-tone="idle">
+      <i class="state-dot" aria-hidden="true"></i><b id="stateText">未启动</b>
+    </span>
+    <span class="topbar-clock mono" id="topClock" title="本地时间">--:--:--</span>
+  </div>
+
+  <nav class="topbar-actions" aria-label="全局操作">
+    <label class="locale-switch" aria-label="界面语言 / UI Language">
+      <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.6 3 14.4 0 18-3-3.6-3-14.4 0-18Z"/></svg>
+      <select id="localeSwitch">
+        <option value="zh-CN" selected>简体中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+        <option value="de">Deutsch</option>
+        <option value="ru">Русский</option>
+      </select>
+    </label>
+    <button id="openCookieImport" class="btn btn-secondary btn-compact" type="button">导入 Cookie</button>
+    <button id="openModelSettings" class="btn btn-primary btn-compact" type="button">连接与密钥</button>
+  </nav>
+</header>
+
+<!-- ══════════════ 宣言带 ══════════════ -->
+<section class="hero" aria-label="产品介绍">
+  <div class="hero-left">
+    <p class="hero-kicker mono">LOCAL DELAY × BILINGUAL LIVE</p>
+    <h2 class="hero-title">本地延迟<span class="hero-x">×</span>实时双语字幕</h2>
+    <p class="hero-sub">YouTube · Bilibili · Twitch 直播，先存到本机，再带着识别与翻译一起播放。</p>
+  </div>
+  <div class="hero-right" aria-hidden="true">
+    <div class="hero-chip chip-indigo">ASR</div>
+    <div class="hero-chip chip-lime">翻译</div>
+    <div class="hero-chip chip-yellow">弹幕</div>
+    <div class="hero-chip chip-ink">回放</div>
+  </div>
+</section>
+
+<main class="shell">
+
+  <!-- ══════════════ 01 观看直播 ══════════════ -->
+  <section class="deck deck-wide reveal" aria-label="实时工作台">
+    <header class="deck-head">
+      <div class="deck-head-left">
+        <span class="deck-num">01</span>
+        <h2 class="deck-title">观看直播</h2>
+        <span class="deck-en mono">REALTIME WORKBENCH</span>
+      </div>
+      <div class="deck-head-right">
+        <div class="tabs" role="tablist" aria-label="工作台视图">
+          <button class="tab active" type="button" role="tab" aria-selected="true" data-view="split">左右分栏</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-view="subtitles">实时字幕</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-view="chat">实时聊天</button>
+        </div>
+        <div class="deck-actions">
+          <button id="clearSubtitlesBtn" class="btn btn-ghost btn-compact" type="button" title="清空字幕时间轴">清空字幕</button>
+          <button id="clearChatBtn" class="btn btn-ghost btn-compact" type="button" title="清空聊天时间轴">清空聊天</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="workbench" class="workbench view-split">
+
+      <!-- 字幕栏 -->
+      <section id="paneSubtitles" class="pane" aria-label="实时字幕时间轴">
+        <header class="pane-head">
+          <div class="pane-title">
+            <span class="pane-badge badge-indigo mono">SUBS</span>
+            <h3>实时字幕</h3>
+          </div>
+          <div class="pane-controls">
+            <span id="subtitleClock" class="clock-chip mono" title="当前媒体时间">--:--:--</span>
+            <button id="followSubtitlesBtn" class="btn btn-toggle btn-compact active" type="button" title="自动滚动到底部">跟随</button>
+          </div>
+        </header>
+        <div id="subtitlesTimeline" class="timeline" role="feed" aria-label="实时字幕流">
+          <div class="timeline-empty">等待字幕就绪…</div>
+        </div>
+      </section>
+
+      <!-- 中央：舞台 + 状态 -->
+      <div class="stage-col">
+        <section class="stage" aria-label="延迟直播播放器">
+          <div id="stageVideoMock" class="stage-video-mock" aria-hidden="true">
+            <div class="mock-grid"></div>
+            <div class="mock-scan"></div>
+            <span class="mock-label mono">LAGLINGO · LOCAL HLS</span>
+          </div>
+
+          <div id="danmakuLayer" class="danmaku-layer" aria-hidden="true"></div>
+
+          <div id="stallBanner" class="stall-banner" role="status" hidden>
+            <b>缓冲中</b><span>本地流暂时跟不上，正在追赶…</span>
+          </div>
+
+          <div id="subtitleLayer" class="subtitle-layer" data-mode="bilingual" data-size="medium">
+            <p class="sub-src">字幕会显示在这里</p>
+            <p class="sub-tgt">拖动我试试位置与缩放</p>
+          </div>
+
+          <!-- 空状态：开播设置 -->
+          <div id="emptyState" class="empty-state">
+            <div class="setup-card">
+              <h3 class="setup-title">打开一场直播</h3>
+              <p class="setup-sub">粘贴链接 → 准备 → 选清晰度 → 启动</p>
+              <div class="setup-row">
+                <label class="field field-grow">
+                  <span class="field-label">直播链接</span>
+                  <input id="url" type="url" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…">
+                </label>
+                <button id="probe" class="btn btn-primary" type="button">准备</button>
+              </div>
+              <label class="field">
+                <span class="field-label">外部代理（可选）</span>
+                <input id="proxy" type="url" autocomplete="off" spellcheck="false" placeholder="系统代理；如 http://127.0.0.1:7890">
+              </label>
+              <div id="setupPlayback" class="setup-row setup-playback" hidden>
+                <label class="field field-grow">
+                  <span class="field-label">清晰度</span>
+                  <select id="quality">
+                    <option value="auto">自动（最高兼容）</option>
+                    <option>1080p60</option><option>720p60</option><option>480p</option>
+                  </select>
+                </label>
+                <button id="start" class="btn btn-go" type="button">启动 ▶</button>
+              </div>
+              <p id="setupFeedback" class="setup-feedback" role="status">支持 YouTube、B 站和 Twitch 直播。</p>
+            </div>
+          </div>
+
+          <!-- 加载 -->
+          <div id="mediaLoading" class="media-loading" role="status" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="mediaLoadingText">正在启动直播…</span>
+          </div>
+
+          <!-- 控制条 -->
+          <div class="stage-controls" role="group" aria-label="播放控制">
+            <div class="seek-row">
+              <time class="mono" id="seekStart">--:--:--</time>
+              <input id="seekRail" class="seek-rail" type="range" min="0" max="100" step="0.1" value="86" aria-label="本地回看窗口">
+              <time class="mono" id="seekEnd">--:--:--</time>
+            </div>
+            <div class="controls-row">
+              <button id="playPause" class="ctl-btn" type="button" aria-label="播放/暂停" title="播放/暂停">
+                <svg viewBox="0 0 24 24" class="ic ic-play" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>
+                <svg viewBox="0 0 24 24" class="ic ic-pause" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
+              </button>
+              <div class="ctl-pop-wrap" id="volumeWrap">
+                <button id="muteToggle" class="ctl-btn" type="button" aria-label="静音" title="静音">
+                  <svg viewBox="0 0 24 24" class="ic ic-volume" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1.5a3 3 0 0 1 0 3M19 8a6 6 0 0 1 0 8"/></svg>
+                  <svg viewBox="0 0 24 24" class="ic ic-muted" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Zm14-2-6 6m6 0-6-6"/></svg>
+                </button>
+                <div class="ctl-pop vol-pop" id="volumePop" role="group" aria-label="音量">
+                  <span class="pop-label">音量</span>
+                  <div class="vol-pop-row">
+                    <input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="音量">
+                    <b class="mono" id="volumeValue">100%</b>
+                  </div>
+                </div>
+              </div>
+              <time class="mono wall-clock" id="currentWallTime">--:--:--</time>
+              <span class="live-chip" id="liveChip" hidden><i></i>LIVE</span>
+              <div class="ctl-cluster">
+                <div class="ctl-pop-wrap">
+                  <button id="qualityBtn" class="ctl-btn ctl-text mono" type="button" aria-haspopup="true">自动</button>
+                  <div class="ctl-pop list-pop" id="qualityPop" role="menu" aria-label="清晰度">
+                    <span class="pop-label">清晰度</span>
+                    <button class="pop-item active" type="button" data-quality="auto">自动（最高兼容）</button>
+                    <button class="pop-item" type="button" data-quality="1080p60">1080P 高码率</button>
+                    <button class="pop-item" type="button" data-quality="720p60">720P60</button>
+                    <button class="pop-item" type="button" data-quality="480p">480P</button>
+                  </div>
+                </div>
+                <div class="ctl-pop-wrap">
+                  <button id="subtitleCtlBtn" class="ctl-btn" type="button" aria-label="字幕设置" title="字幕设置" aria-haspopup="true">
+                    <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="0"/><path d="M7 12h4M7 15.5h7M15 12h2"/></svg>
+                  </button>
+                  <div class="ctl-pop" id="subtitlePop" role="group" aria-label="字幕设置">
+                    <span class="pop-label">字幕显示</span>
+                    <div class="seg" id="popSubMode">
+                      <button type="button" data-value="bilingual" class="active">双语</button><button type="button" data-value="zh">译文</button><button type="button" data-value="src">原文</button>
+                    </div>
+                    <span class="pop-label">字号</span>
+                    <div class="seg" id="popSubSize">
+                      <button type="button" data-value="small">小</button><button type="button" data-value="medium" class="active">中</button><button type="button" data-value="large">大</button>
+                    </div>
+                    <label class="pop-slider"><span class="pop-label">透明度</span>
+                      <div class="vol-pop-row"><input id="popSubOpacity" type="range" min="0.2" max="1" step="0.05" value="0.92"><b class="mono" id="popSubOpacityValue">92%</b></div>
+                    </label>
+                  </div>
+                </div>
+                <div class="ctl-pop-wrap">
+                  <button id="danmakuCtlBtn" class="ctl-btn" type="button" aria-label="弹幕设置" title="弹幕设置" aria-haspopup="true">
+                    <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="M3 5h18v11H11l-4 4v-4H3Z"/><path d="M7 9h7M7 12h4"/></svg>
+                  </button>
+                  <div class="ctl-pop" id="danmakuPop" role="group" aria-label="弹幕设置">
+                    <label class="check"><input id="popDmToggle" type="checkbox" checked><span class="box" aria-hidden="true"></span><span class="check-text">画面弹幕</span></label>
+                    <label class="pop-slider"><span class="pop-label">透明度</span>
+                      <div class="vol-pop-row"><input id="popDmOpacity" type="range" min="0.1" max="1" step="0.05" value="0.85"><b class="mono" id="popDmOpacityValue">85%</b></div>
+                    </label>
+                    <label class="pop-slider"><span class="pop-label">大小</span>
+                      <div class="vol-pop-row"><input id="popDmSize" type="range" min="0.75" max="2" step="0.05" value="1"><b class="mono" id="popDmSizeValue">1.00×</b></div>
+                    </label>
+                  </div>
+                </div>
+                <button id="toggleFullscreen" class="ctl-btn" type="button" aria-label="全屏" title="全屏">
+                  <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- NOW 状态条 -->
+        <aside class="now-panel" aria-live="polite">
+          <div class="now-info">
+            <span class="now-label mono"><i class="now-dot"></i>NOW · 当前状态</span>
+            <strong id="streamTitle" class="now-title">等待直播地址</strong>
+            <p id="message" class="now-msg">在画面中输入直播链接即可开始。</p>
+          </div>
+          <div class="now-delay">
+            <label class="delay-field">
+              <span class="field-label">本地目标</span>
+              <span class="delay-input"><input id="targetDelay" type="number" min="11" step="1" value="15"><i>秒</i></span>
+            </label>
+            <div class="delay-est">
+              <span class="field-label">本地估计</span>
+              <b id="totalDelay" class="mono">—</b>
+            </div>
+          </div>
+          <button id="stop" class="btn btn-danger" type="button" disabled>停止 ■</button>
+        </aside>
+      </div>
+
+      <!-- 聊天栏 -->
+      <section id="paneChat" class="pane" aria-label="实时聊天时间轴">
+        <header class="pane-head">
+          <div class="pane-title">
+            <span class="pane-badge badge-lime mono">CHAT</span>
+            <h3>实时聊天</h3>
+          </div>
+          <div class="pane-controls">
+            <span id="chatStats" class="clock-chip mono" title="聊天统计">0 条</span>
+            <button id="followChatBtn" class="btn btn-toggle btn-compact active" type="button" title="自动滚动到底部">跟随</button>
+          </div>
+        </header>
+        <div id="chatTimeline" class="timeline" role="feed" aria-label="实时聊天流">
+          <div class="timeline-empty">等待直播聊天消息…</div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <!-- ══════════════ 02 模型分工 ══════════════ -->
+  <section class="deck reveal" aria-label="模型分工">
+    <header class="deck-head">
+      <div class="deck-head-left">
+        <span class="deck-num">02</span>
+        <h2 class="deck-title">模型分工</h2>
+        <span class="deck-en mono">MODEL ROLES</span>
+      </div>
+      <div class="deck-head-right">
+        <button id="manageModels" class="btn btn-secondary btn-compact" type="button">模型设置</button>
+      </div>
+    </header>
+    <div class="role-grid">
+      <label class="field role-field">
+        <span class="field-label">语音识别</span>
+        <select id="roleAsr"><option>百炼 · paraformer-realtime-v2</option><option>本地 Whisper · faster-whisper</option></select>
+      </label>
+      <label class="field role-field">
+        <span class="field-label">字幕翻译</span>
+        <select id="roleSubtitle"><option>Qwen · qwen-mt-plus</option><option>OpenAI 兼容 · gpt-4o-mini</option></select>
+      </label>
+      <label class="field role-field">
+        <span class="field-label">字幕翻译兜底</span>
+        <select id="roleFallback"><option>不启用</option><option>Qwen · qwen-mt-turbo</option></select>
+      </label>
+      <label class="field role-field">
+        <span class="field-label">弹幕翻译</span>
+        <select id="roleChat"><option>不启用</option><option>Qwen · qwen-mt-turbo</option></select>
+      </label>
+    </div>
+    <p id="roleFeedback" class="deck-feedback" role="status"></p>
+  </section>
+
+  <!-- ══════════════ 03 字幕与弹幕设置 ══════════════ -->
+  <section class="deck reveal" aria-label="字幕与弹幕设置">
+    <header class="deck-head">
+      <div class="deck-head-left">
+        <span class="deck-num">03</span>
+        <h2 class="deck-title">字幕与弹幕设置</h2>
+        <span class="deck-en mono">SUBTITLES &amp; CHAT</span>
+      </div>
+    </header>
+
+    <div class="settings-grid">
+      <div class="sgroup" role="group" aria-label="字幕显示">
+        <h3 class="sgroup-title"><span class="sgroup-tag tag-indigo mono">A</span>字幕显示</h3>
+        <label class="check"><input id="subtitlesEnabled" type="checkbox" checked><span class="box" aria-hidden="true"></span><span class="check-text">启用云端字幕</span></label>
+        <label class="field field-inline"><span class="field-label">显示</span>
+          <select id="subtitleMode"><option value="bilingual">原文+译文</option><option value="zh">仅译文</option><option value="src">仅原文</option></select>
+        </label>
+        <label class="field field-inline"><span class="field-label">字号</span>
+          <select id="subtitleSize"><option value="small">小</option><option value="medium" selected>中</option><option value="large">大</option></select>
+        </label>
+        <label class="field field-inline"><span class="field-label">透明度</span>
+          <input id="subtitleOpacity" type="range" min="0.2" max="1" step="0.05" value="0.92">
+        </label>
+        <label class="field field-inline"><span class="field-label">偏移 <b id="subtitleOffsetValue" class="mono">0.0s</b></span>
+          <input id="subtitleOffset" type="range" min="-3" max="3" step="0.1" value="0">
+        </label>
+        <div class="color-row">
+          <label class="color-field"><span class="field-label">原文</span><input id="subtitleSourceColor" type="color" value="#FFD23F"></label>
+          <label class="color-field"><span class="field-label">译文</span><input id="subtitleTranslationColor" type="color" value="#FFFFFF"></label>
+          <button id="resetSubtitlePosition" class="btn btn-ghost btn-compact" type="button">恢复位置</button>
+        </div>
+      </div>
+
+      <div class="sgroup" role="group" aria-label="画面弹幕">
+        <h3 class="sgroup-title"><span class="sgroup-tag tag-lime mono">B</span>画面弹幕</h3>
+        <label class="check"><input id="chatOverlayToggle" type="checkbox" checked><span class="box" aria-hidden="true"></span><span class="check-text">画面弹幕</span></label>
+        <label class="field field-inline"><span class="field-label">透明度</span>
+          <input id="chatOverlayOpacity" type="range" min="0.1" max="1" step="0.05" value="0.85">
+        </label>
+        <label class="field field-inline"><span class="field-label">大小</span>
+          <input id="chatOverlaySize" type="range" min="0.75" max="2" step="0.05" value="1">
+        </label>
+        <label class="check"><input id="hidePureEmojiToggle" type="checkbox"><span class="box" aria-hidden="true"></span><span class="check-text">屏蔽纯表情</span></label>
+        <label class="check"><input id="chatTranslateToggle" type="checkbox"><span class="box" aria-hidden="true"></span><span class="check-text">翻译聊天</span></label>
+      </div>
+
+      <div class="sgroup" role="group" aria-label="翻译语言">
+        <h3 class="sgroup-title"><span class="sgroup-tag tag-yellow mono">C</span>翻译语言</h3>
+        <label class="field field-inline"><span class="field-label">源语言</span>
+          <select id="sourceLanguageMode"><option value="specified">指定语言</option><option value="detect">自动识别</option></select>
+        </label>
+        <label class="field field-inline"><span class="field-label">指定源语言</span>
+          <select id="sourceLanguage"><option value="ja" selected>日语 · 日本語 · ja</option><option value="zh-Hans">简体中文 · zh-Hans</option><option value="en">英语 · English · en</option><option value="ko">韩语 · 한국어 · ko</option></select>
+        </label>
+        <label class="field field-inline"><span class="field-label">目标语言</span>
+          <select id="targetLanguage"><option value="zh-Hans" selected>简体中文 · zh-Hans</option><option value="zh-Hant">繁体中文 · zh-Hant</option><option value="en">英语 · English · en</option><option value="ja">日语 · 日本語 · ja</option></select>
+        </label>
+        <label class="check"><input id="allowCodeSwitching" type="checkbox"><span class="box" aria-hidden="true"></span><span class="check-text">允许混合语言</span></label>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 04 运行数据 ══════════════ -->
+  <section class="deck reveal" aria-label="运行数据">
+    <header class="deck-head">
+      <div class="deck-head-left">
+        <span class="deck-num">04</span>
+        <h2 class="deck-title">运行数据</h2>
+        <span class="deck-en mono">TELEMETRY</span>
+      </div>
+    </header>
+    <div class="telemetry-grid">
+      <div class="tcard tcard-indigo">
+        <span class="tcard-label">本地暂存音视频</span>
+        <b class="tcard-value mono" id="hiddenDelay">—</b>
+        <span class="tcard-desc">已下载但暂未播放的时长</span>
+      </div>
+      <div class="tcard tcard-lime">
+        <span class="tcard-label">播放器本地落后</span>
+        <b class="tcard-value mono" id="playerDelay">—</b>
+        <span class="tcard-desc">播放头故意落后的时长</span>
+      </div>
+      <div class="tcard">
+        <span class="tcard-label">播放器预存</span>
+        <b class="tcard-value mono" id="buffer">—</b>
+        <span class="tcard-desc">播放头前方可立即播放的时长</span>
+      </div>
+      <div class="tcard">
+        <span class="tcard-label">当前输出</span>
+        <b class="tcard-value mono" id="resolution">—</b>
+        <span class="tcard-desc">分辨率与帧率</span>
+      </div>
+      <div class="tcard">
+        <span class="tcard-label">ASR 用量 / 费用</span>
+        <b class="tcard-value mono" id="asrUsage">—</b>
+        <span class="tcard-desc">识别音频时长与估算费用</span>
+      </div>
+      <div class="tcard">
+        <span class="tcard-label">翻译延迟</span>
+        <b class="tcard-value mono" id="translationLatency">—</b>
+        <span class="tcard-desc">单句请求到返回平均耗时</span>
+      </div>
+      <div class="tcard">
+        <span class="tcard-label">字幕就绪 p50/p95</span>
+        <b class="tcard-value mono" id="subtitleReadyLag">—</b>
+        <span class="tcard-desc">说完到译文就绪的分位数</span>
+      </div>
+      <div class="tcard tcard-yellow">
+        <span class="tcard-label">字幕预算余量</span>
+        <b class="tcard-value mono" id="budgetMargin">—</b>
+        <span class="tcard-desc">持续为负说明字幕跟不上</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ══════════════ 跑马灯 + 页脚 ══════════════ -->
+<div class="marquee" aria-hidden="true">
+  <div class="marquee-track">
+    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+  </div>
+</div>
+<footer class="colophon">
+  <span>LagLingo — local delay-live companion</span>
+  <span class="mono">NEO-BRUTALISM PROTOTYPE v0.1</span>
+</footer>
+
+<!-- ══════════════ 模型设置对话框 ══════════════ -->
+<dialog id="modelSettingsDialog" class="dialog" aria-labelledby="modelSettingsTitle">
+  <form method="dialog">
+    <header class="dialog-head">
+      <div class="dialog-head-left">
+        <span class="dialog-kicker mono">ENGINE · 字幕引擎</span>
+        <h2 id="modelSettingsTitle">模型设置</h2>
+      </div>
+      <button class="dialog-close" type="button" data-close aria-label="关闭">×</button>
+    </header>
+    <nav class="dialog-tabs" aria-label="配置类型">
+      <button class="tab active" type="button">语音识别配置</button>
+      <button class="tab" type="button">翻译配置</button>
+    </nav>
+    <section class="dialog-body">
+      <div class="profile-card">
+        <div class="profile-head"><b>百炼 · paraformer-realtime-v2</b><span class="profile-tag tag-lime mono">使用中</span></div>
+        <p class="mono">wss://dashscope…/realtime · ja/zh/en 检测</p>
+      </div>
+      <div class="profile-card">
+        <div class="profile-head"><b>本地 Whisper · faster-whisper</b><span class="profile-tag mono">备用</span></div>
+        <p class="mono">http://127.0.0.1:8000/v1/audio/transcriptions</p>
+      </div>
+      <button class="btn btn-secondary btn-compact" type="button">＋ 新增配置</button>
+    </section>
+    <footer class="dialog-foot">
+      <button class="btn btn-ghost" type="button" data-close>取消</button>
+      <button class="btn btn-go" type="submit">保存模型设置</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- ══════════════ Cookie 导入对话框 ══════════════ -->
+<dialog id="cookieImportDialog" class="dialog dialog-narrow" aria-labelledby="cookieImportTitle">
+  <form method="dialog">
+    <header class="dialog-head">
+      <div class="dialog-head-left">
+        <span class="dialog-kicker mono">AUTH · 登录态</span>
+        <h2 id="cookieImportTitle">导入登录 Cookie</h2>
+      </div>
+      <button class="dialog-close" type="button" data-close aria-label="关闭">×</button>
+    </header>
+    <section class="dialog-body">
+      <p class="dialog-intro">选择平台后粘贴 Cookie，仅保存在本机。</p>
+      <div class="setup-row">
+        <label class="field field-grow"><span class="field-label">平台</span>
+          <select id="cookiePlatform"><option>YouTube</option><option>Bilibili</option><option>Twitch</option></select>
+        </label>
+        <label class="field field-grow"><span class="field-label">格式</span>
+          <select id="cookieFormat"><option>名称/值 多行</option><option>Netscape cookies.txt</option><option>请求头 Cookie 串</option></select>
+        </label>
+      </div>
+      <label class="field"><span class="field-label">粘贴内容</span>
+        <textarea id="cookiePayload" rows="6" spellcheck="false" placeholder="SID&#9;xxxxxxxx…"></textarea>
+      </label>
+    </section>
+    <footer class="dialog-foot">
+      <button class="btn btn-ghost" type="button" data-close>取消</button>
+      <button class="btn btn-primary" type="submit">导入并授权</button>
+    </footer>
+  </form>
+</dialog>
+
+  <script src="./i18n.js"></script>
+<script src="./prototype.js"></script>
+</body>
+</html>

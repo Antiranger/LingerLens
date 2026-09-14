@@ -41,13 +41,16 @@ test("subtitle window restores safe preferences, clamps position, and persists n
     translationColor: "#00ff66",
   });
   const controller = createSubtitleWindowController({ stage, windowElement, storage });
+  // Defaults are the design prototype's: subtitle window near the bottom of the
+  // frame (prototype/redesign/style.css:625 `bottom: 12%`), source line in the
+  // prototype's #FFD23F, translation line white.
   assert.deepEqual(controller.preferences(), {
     x: 0.5,
-    y: 0.76,
-    opacity: 0.9,
+    y: 0.82,
+    opacity: 0.92,
     scale: 1,
-    sourceColor: "#ffd9e2",
-    translationColor: "#ffffff",
+    sourceColor: "#FFD23F",
+    translationColor: "#FFFFFF",
   });
 
   controller.moveTo(0.95, 0.95);
@@ -63,7 +66,7 @@ test("keyboard movement, reset, opacity, scale, and colors update the public pre
   assert.equal(controller.nudge("ArrowLeft", false), true);
   assert.equal(controller.preferences().x, 0.48);
   assert.equal(controller.nudge("ArrowUp", true), true);
-  assert.equal(controller.preferences().y, 0.66);
+  assert.equal(controller.preferences().y, 0.72);
   assert.equal(controller.nudge("Enter", false), false);
 
   controller.moveTo(0.95, 0.95);
@@ -77,5 +80,5 @@ test("keyboard movement, reset, opacity, scale, and colors update the public pre
 
   controller.reset();
   assert.equal(controller.preferences().x, 0.5);
-  assert.equal(controller.preferences().y, 0.76);
+  assert.equal(controller.preferences().y, 0.82);
 });

@@ -192,10 +192,13 @@ class CompanionApplication:
         app.router.add_get("/quality-preference.js", self.static_file)
         app.router.add_get("/live-messages-client.js", self.static_file)
         app.router.add_get("/workbench-controller.js", self.static_file)
+        app.router.add_get("/pane-resizer.js", self.static_file)
         app.router.add_get("/playback-recovery.js", self.static_file)
         app.router.add_get("/i18n.js", self.static_file)
         app.router.add_get("/control-bar.js", self.static_file)
         app.router.add_get("/style.css", self.static_file)
+        app.router.add_get("/fonts.css", self.static_file)
+        app.router.add_get("/fonts/{slug}/{name}", self.font_file)
         app.router.add_get("/vendor/{name}", self.static_file)
         app.router.add_get("/hls/{name}", self.hls_file)
         app.router.add_get("/_private-hls/{token}/{name}", self.private_hls_file)
@@ -230,6 +233,28 @@ class CompanionApplication:
         base = WEB_PLAYER / "vendor" if request.path.startswith("/vendor/") else WEB_PLAYER
         path = (base / name).resolve()
         if base.resolve() not in path.parents or not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Cache-Control": "no-store, max-age=0"})
+
+    async def font_file(self, request: web.Request) -> web.FileResponse:
+        """Serve the vendored UI webfonts.
+
+        The binaries are produced by scripts/fetch-fonts.py and live under
+        web-player/fonts/<family-slug>/<subset>-<weight>.woff2. Both path
+        segments are validated and the resolved path must stay inside that
+        directory, so the route cannot be used to read anything else.
+        """
+        slug = request.match_info["slug"]
+        name = request.match_info["name"]
+        if (
+            not name.endswith(".woff2")
+            or Path(name).name != name
+            or Path(slug).name != slug
+        ):
+            raise web.HTTPNotFound()
+        base = (WEB_PLAYER / "fonts").resolve()
+        path = (base / slug / name).resolve()
+        if base not in path.parents or not path.is_file():
             raise web.HTTPNotFound()
         return web.FileResponse(path, headers={"Cache-Control": "no-store, max-age=0"})
 
@@ -956,9 +981,6 @@ class CompanionApplication:
             hold_maximum=float(subtitle.get("holdSecondsMax", 7.0)),
             hold_seconds_per_char=float(subtitle.get("holdSecondsPerChar", 0.06)),
             silence_duration_ms=int(asr_config.get("options", {}).get("turnDetection", {}).get("silenceDurationMs", 400)),
-            max_utterance_seconds=float(subtitle.get("maxUtteranceSeconds", 0.0)),
-            prefix_split_enabled=bool(subtitle.get("prefixSplitEnabled", True)),
-            prefix_split_after_seconds=float(subtitle.get("prefixSplitAfterSeconds", 3.0)),
             translation_workers=int(subtitle.get("translationWorkers", 4)),
             translation_timeout_seconds=float(translation_configs[0].get("options", {}).get("timeoutSeconds", 6)),
             context_pairs=int(translation_configs[0].get("options", {}).get("contextPairs", 10)),

@@ -2,7 +2,8 @@
   const el = (id) => document.getElementById(id);
   const video = el("video");
   const stage = document.querySelector(".player-stage");
-  const state = document.querySelector(".state");
+  const state = document.querySelector(".state-badge");
+  const liveChip = el("liveChip");
   let hls = null;
   let lastPlaylistUrl = null;
   let browserLatency = null;
@@ -17,6 +18,11 @@
   let latestLevelDetails = null;
   let sourceWasStalled = false;
   let lastRecoverySeekAt = -Infinity;
+  // Fatal-error recovery attempts since playback last made progress. hls.js's
+  // media-error recovery is a full SourceBuffer rebuild, so an uncapped loop of
+  // them is indistinguishable from "the video keeps stuttering".
+  let mseRecoveryAttempts = 0;
+  let mseRecoveryProgressAt = 0;
   let subtitleCues = new Map();
   let subtitleAfterSeq = 0;
   let subtitleMaxKnownEnd = 0;
@@ -149,6 +155,13 @@
         storage: localStorage,
       })
     : null;
+  const paneResizer = window.createPaneResizer
+    ? window.createPaneResizer({
+        workbench: el("workbenchContainer"),
+        storage: localStorage,
+        panes: { subtitles: el("paneSubtitles"), chat: el("paneChat") },
+      })
+    : null;
   const followSubtitlesController = window.createFollowModeController
     ? window.createFollowModeController({
         container: el("subtitlesTimelineList"),
@@ -190,6 +203,8 @@
   const setState = (text, tone = "idle") => {
     el("stateText").textContent = text;
     state.dataset.tone = tone;
+    // 顶栏 LIVE 徽章跟随会话状态：只有真正在跑直播时才亮。
+    if (liveChip) liveChip.hidden = tone === "idle" || tone === "error";
   };
 
   const seconds = (value) => Number.isFinite(value) ? `${value.toFixed(1)} 秒` : "—";
@@ -388,23 +403,29 @@
     if (window.Hls?.isSupported()) {
       hls = new Hls({
         lowLatencyMode: false,
-        // 分片时长固定为 1 秒（split_by_time），所以这些「个数」等于秒数。
+        // 用「秒」而不是「分片个数」表达延迟。分片时长跟随源 GOP（FFmpeg 不在
+        // 关键帧之间切分），可能是 2s 或 5s；按个数配置会让播放延迟随分片时长
+        // 静默翻倍。hls.js 中 liveSyncDuration 优先于 liveSyncDurationCount
+        // （vendor/hls.min.js: targetLatency = void 0 !== liveSyncDuration
+        //   ? liveSyncDuration : liveSyncDurationCount * targetduration）。
         //
         // 播放头到公开直播边缘的距离 *就是* 浏览器能攒下的前向缓冲：直播流里
         // 边缘之后没有媒体可下。坐在边缘后 3 秒 = 只有 3 秒缓冲，任何一次分片
         // 拉取变慢或解码卡顿都会立刻耗尽它，表现为进度条反复卡住。
         // 加大服务端的 publish delay 救不了这一点 —— 公开边缘会同步前移，
         // 播放头依然只落后边缘 3 秒。缓冲必须在播放器这一侧要。
-        liveSyncDurationCount: 12,
-        // 必须显著大于 liveSyncDurationCount，否则 hls.js 会不停判定「延迟超标」
-        // 并强制前跳，那本身就是卡顿感的来源。200 个分片 ≈ 3 分钟，配合服务端
-        // 180s 公开窗口，用户可以自由回看而不被强拖回直播边缘。
-        liveMaxLatencyDurationCount: 200,
+        // 必须与服务端 PLAYER_LIVE_SYNC_SECONDS 一致（由 test_web_assets.js 断言）。
+        liveSyncDuration: 12,
+        // 必须显著大于 liveSyncDuration，否则 hls.js 会不停判定「延迟超标」
+        // 并强制前跳，那本身就是卡顿感的来源。170s 配合服务端 180s 公开窗口，
+        // 用户可以自由回看而不被强拖回直播边缘。
+        liveMaxLatencyDuration: 170,
         maxBufferLength: 90,
-        // 回拖缓冲 ≈ 3 分钟（180s 公开窗口 + 余量），1s 分片约 170MB 内存。
+        // 回拖缓冲 ≈ 3 分钟（180s 公开窗口 + 余量）。
         backBufferLength: 190,
         enableWorker: true,
       });
+      const player = hls;
       hls.loadSource(`${url}?t=${Date.now()}`);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => attemptAutoplay());
@@ -415,9 +436,32 @@
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else showError(new Error(`hls.js fatal: ${data.details}`));
+        // Ignore errors from a player instance this session has already replaced.
+        if (hls !== player) return;
+        const errorType = data.type === Hls.ErrorTypes.NETWORK_ERROR ? "network"
+          : data.type === Hls.ErrorTypes.MEDIA_ERROR ? "media"
+          : null;
+        if (errorType === null) {
+          showError(new Error(`hls.js fatal: ${data.details}`));
+          return;
+        }
+        const decision = window.decideMseErrorRecovery({
+          errorType,
+          attemptsInWindow: mseRecoveryAttempts,
+        });
+        if (decision.action === "give-up") {
+          showError(new Error(`播放无法恢复：${decision.reason}（${data.details}）`));
+          return;
+        }
+        mseRecoveryAttempts += 1;
+        // Rebuild/reload always costs a rebuffer, so space attempts out instead
+        // of re-entering the failure immediately.
+        window.setTimeout(() => {
+          if (!hls || hls !== player) return;
+          if (decision.action === "recover-media") hls.recoverMediaError();
+          else if (decision.action === "swap-codec") hls.swapAudioCodec();
+          else hls.startLoad();
+        }, decision.delayMs);
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = url;
@@ -446,6 +490,8 @@
     latestLevelDetails = null;
     sourceWasStalled = false;
     lastRecoverySeekAt = -Infinity;
+    mseRecoveryAttempts = 0;
+    mseRecoveryProgressAt = 0;
     video.playbackRate = 1;
     subtitleCues.clear();
     subtitleAfterSeq = 0;
@@ -469,8 +515,11 @@
       lastSessionState = data.state;
       renderSessionControls();
       if (data.playlistUrl) attach(data.playlistUrl);
-      updateStallOverlay(data);
       if (data.state === "error" && sessionAction !== "stopping") {
+        // The error branch throws, so the shared updateStallOverlay() call near
+        // the end of this function never runs. Show the error banner here
+        // rather than relying on a second, unexplained call at the top.
+        updateStallOverlay(data);
         setMediaLoading(false);
         throw new Error(data.error || "FFmpeg failed");
       }
@@ -1217,8 +1266,11 @@
 
     const counts = subtitles.timingSourceCounts || {};
     const total = Object.values(counts).reduce((sum, n) => sum + Number(n || 0), 0);
+    // Only two timing provenances exist: word-level ("asr") and VAD/frontier
+    // ("vad"). A third "approx" state used to be shown here and was always 0,
+    // because CaptionChunk.begin_pcm is a non-optional float.
     el("timingSources").textContent = total
-      ? `asr ${Math.round((100 * Number(counts.asr || 0)) / total)}% · approx ${Number(counts.approx || 0)}`
+      ? `asr ${Math.round((100 * Number(counts.asr || 0)) / total)}% · vad ${Math.round((100 * Number(counts.vad || 0)) / total)}%`
       : "—";
     const scheduler = subtitleScheduler ? subtitleScheduler.stats : null;
     el("schedulerDrops").textContent = scheduler
@@ -1555,7 +1607,7 @@
         row = document.createElement("div");
         row.className = "subtitle-cue-row";
         row.dataset.cueId = id;
-        row.innerHTML = '<div class="subtitle-zh"></div><div class="subtitle-src"></div>';
+        row.innerHTML = '<div class="subtitle-src"></div><div class="subtitle-zh"></div>';
         rowsById.set(id, row);
       }
       // Cue updates advance seq/revision. Include visible fields as a defensive
@@ -1806,6 +1858,15 @@
     setState("延迟播放中", "stable");
     updatePlayerControls();
     schedulePlayerControlsHide();
+  });
+  // Reset the fatal-error budget whenever the playhead actually advances: a
+  // stream that recovers and plays for a while must not be permanently
+  // condemned by earlier failures.
+  video.addEventListener("timeupdate", () => {
+    if (video.currentTime > mseRecoveryProgressAt + 0.5) {
+      mseRecoveryProgressAt = video.currentTime;
+      mseRecoveryAttempts = 0;
+    }
   });
   video.addEventListener("pause", () => { updatePlayerControls(); revealPlayerControls(); });
   video.addEventListener("volumechange", updatePlayerControls);

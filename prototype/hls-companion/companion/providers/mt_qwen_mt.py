@@ -1,18 +1,81 @@
+"""Qwen-MT dedicated translation adapter (kind ``qwen-mt``).
+
+Qwen-MT models are dedicated translation models, not chat models. They take
+their instructions through structured ``translation_options`` (English
+language names, glossary ``terms``, ``tm_list`` translation memory, optional
+``domains``) instead of the shared generic prompt.
+
+Language names are derived from the Ticket 01 canonical catalog
+(``companion/languages.py``); the two entries below are the Provider's own
+protocol vocabulary for languages that have no catalog primary entry. Pairs
+outside the closed contract are rejected BEFORE any HTTP request, so the
+FallbackChain can skip to a provider that can represent the cue.
+"""
+
 from __future__ import annotations
 
 import time
 from typing import Any
 
-import aiohttp
+from ..languages import LanguageNotSupportedError, display_name, primary_language_name, primary_subtag
+from .base import (
+    ProviderRefusalError,
+    TranslationCapabilities,
+    TranslationLanguageCapabilities,
+    TranslationProvider,
+    TranslationRequest,
+    TranslationResult,
+)
+from .http import post_json, request_timeout, require_api_key
 
-from . import register
-from .base import TranslationCapabilities, TranslationProvider, TranslationRequest, TranslationResult
-from .mt_openai_compat import _check_request, _headers, _json_response, _timeout
+# Qwen-MT language-pair contract (provider-claimed preset). Tags are canonical.
+QWEN_MT_LANGUAGE_TAGS: tuple[str, ...] = (
+    "zh-Hans", "zh-Hant", "en", "ja", "ko", "fr", "de", "es",
+    "pt-PT", "ru", "ar", "it", "th", "vi", "id", "ms",
+)
+_QWEN_MT_PRIMARY_LANGUAGES: frozenset[str] = frozenset(primary_subtag(tag) for tag in QWEN_MT_LANGUAGE_TAGS)
 
-_LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese", "en": "English", "ko": "Korean"}
+# Qwen-MT protocol vocabulary for languages with no catalog primary entry
+# (the catalog only carries zh-Hans/zh-Hant and pt-PT/pt-BR). Everything else
+# comes from the canonical catalog's primary-language names.
+_MT_PRIMARY_NAME_OVERRIDES = {"zh": "Chinese", "pt": "Portuguese"}
 
 
-@register("qwen-mt")
+def mt_language_name(tag: str) -> str:
+    """Map a canonical tag to Qwen-MT's English language name at the edge."""
+    primary = primary_subtag(tag)
+    return _MT_PRIMARY_NAME_OVERRIDES.get(primary) or primary_language_name(tag) or display_name(tag)
+
+
+def validate_mt_pair(source_lang: str, target_lang: str) -> None:
+    """Reject a cue the closed pair contract cannot represent, before any request."""
+    if "+" in source_lang:
+        raise LanguageNotSupportedError(
+            f"qwen-mt cannot translate the mixed-language cue {source_lang}; "
+            "a generic LLM provider handles it instead"
+        )
+    if primary_subtag(source_lang) not in _QWEN_MT_PRIMARY_LANGUAGES:
+        raise LanguageNotSupportedError(f"qwen-mt cannot translate {source_lang} -> {target_lang}: unsupported source language")
+    if primary_subtag(target_lang) not in _QWEN_MT_PRIMARY_LANGUAGES:
+        raise LanguageNotSupportedError(f"qwen-mt cannot translate {source_lang} -> {target_lang}: unsupported target language")
+
+
+def build_translation_options(request: TranslationRequest, tm_pairs: int) -> dict[str, Any]:
+    """Structured translation_options for one request (raises on unsupported pairs)."""
+    validate_mt_pair(request.meta.source_lang, request.meta.target_lang)
+    translation_options: dict[str, Any] = {
+        "source_lang": mt_language_name(request.meta.source_lang),
+        "target_lang": mt_language_name(request.meta.target_lang),
+        "terms": [{"source": src, "target": dst} for src, dst in request.glossary],
+        # Dedicated MT requires actual source/target pairs. Do not invent a
+        # translation or send null targets for source-only prompt context.
+        "tm_list": [{"source": src, "target": dst} for src, dst in request.history if dst is not None][-tm_pairs:],
+    }
+    if request.meta.domain:
+        translation_options["domains"] = request.meta.domain
+    return translation_options
+
+
 class QwenMTTranslationProvider(TranslationProvider):
     def __init__(self, config: dict[str, Any]):
         self.id = config["id"]
@@ -28,34 +91,64 @@ class QwenMTTranslationProvider(TranslationProvider):
         # its own shape (``tm_list`` translation memory) rather than as chat
         # history.  Declaring False made the pipeline blank ``request.history``
         # before we got here, so tm_list was always empty.
-        return TranslationCapabilities(True, True, True, False, 32768)
+        return TranslationCapabilities(
+            True, True, True, False, 32768,
+            language=TranslationLanguageCapabilities(
+                source_tags=QWEN_MT_LANGUAGE_TAGS,
+                target_tags=QWEN_MT_LANGUAGE_TAGS,
+                open_world_prompting=False,
+                tier="provider_claimed",
+            ),
+        )
 
-    async def translate(self, request: TranslationRequest) -> TranslationResult:
-        _check_request(self.id, self.api_key, request)
-        started = time.monotonic()
+    def build_payload(self, request: TranslationRequest) -> dict[str, Any]:
         tm_pairs = int(self.options.get("tmPairs", 4))
-        translation_options: dict[str, Any] = {
-            "source_lang": _LANGUAGE_NAMES.get(request.meta.source_lang, request.meta.source_lang),
-            "target_lang": _LANGUAGE_NAMES.get(request.meta.target_lang, request.meta.target_lang),
-            "terms": [{"source": src, "target": dst} for src, dst in request.glossary],
-            "tm_list": [{"source": src, "target": dst} for src, dst in request.history[-tm_pairs:]],
-        }
-        if request.meta.domain:
-            translation_options["domains"] = request.meta.domain
         # translation_options goes at the TOP LEVEL of the request body.
         # ``extra_body`` is an OpenAI *Python SDK* convention: the SDK merges
         # that dict into the top-level body before sending.  We post raw JSON,
         # so nesting it made the server ignore the field entirely -- the model
         # then guessed, and answered in English or replied conversationally
         # instead of translating.
-        payload = {
+        return {
             "model": self.model,
             "messages": [{"role": "user", "content": request.source_text}],
             "stream": False,
-            "translation_options": translation_options,
+            "translation_options": build_translation_options(request, tm_pairs),
         }
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_timeout(self.options, request))) as session:
-            async with session.post(f"{self.base_url}/chat/completions", headers=_headers(self.api_key), json=payload) as response:
-                data = await _json_response(response)
-        text = data["choices"][0]["message"]["content"].strip()
+
+    async def translate(self, request: TranslationRequest) -> TranslationResult:
+        require_api_key(self.id, self.api_key)
+        started = time.monotonic()
+        data = await post_json(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            payload=self.build_payload(request),
+            timeout=request_timeout(self.options, request),
+        )
+        text = _extract_chat_text(data)
+        if not text:
+            raise ProviderRefusalError(f"{self.id} returned an empty translation")
         return TranslationResult(text, self.id, round((time.monotonic() - started) * 1000), data.get("usage"))
+
+
+def _extract_chat_text(data: dict[str, Any]) -> str:
+    """OpenAI chat-completions content, rejecting incomplete completions.
+
+    ``finish_reason`` must be checked: `content_filter` returns text that was
+    partially removed and `length` returns text truncated mid-sentence, and both
+    used to be published as if they were valid subtitles. The sibling adapters
+    already do this (mt_anthropic_messages.py checks ``stop_reason == "refusal"``,
+    mt_google_genai.py checks ``finishReason``); this is the shared extractor for
+    the OpenAI-compatible and Qwen-MT paths, so the check belongs here.
+    """
+    try:
+        choice = data["choices"][0]
+        content = choice["message"].get("content")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return ""
+    finish_reason = choice.get("finish_reason")
+    if finish_reason in {"content_filter", "length"}:
+        raise ProviderRefusalError(
+            f"incomplete translation: finish_reason={finish_reason}"
+        )
+    return str(content or "").strip()

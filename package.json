@@ -6,15 +6,29 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test",
-    "test:hls-companion": "python prototype/hls-companion/tests/test_core.py && python prototype/hls-companion/tests/test_ytdlp_ingest.py && python prototype/hls-companion/tests/test_providers.py && python prototype/hls-companion/tests/test_openai_transcriptions_asr.py && python prototype/hls-companion/tests/test_subtitle_text.py && python prototype/hls-companion/tests/test_subtitle_store.py && python prototype/hls-companion/tests/test_context_manager.py && python prototype/hls-companion/tests/test_subtitle_pipeline.py && python prototype/hls-companion/tests/test_server_providers.py && python prototype/hls-companion/tests/test_youtube_fragment_probe.py && node --test prototype/hls-companion/tests/test_web_assets.js prototype/hls-companion/tests/test_cue_scheduler.js prototype/hls-companion/tests/test_subtitle_window_controller.js",
+    "test:hls-companion": "python scripts/run-hls-tests.py && node scripts/run-hls-js-tests.js",
     "check:python": "python -m compileall -q prototype/hls-companion/companion prototype/hls-companion/scripts prototype/delayed_live_player.py",
-    "check:js": "node --check extension/src/adapters.js && node --check extension/src/content.js && node --check extension/src/metrics.js && node --check prototype/hls-companion/extension/service-worker.js && node --check prototype/hls-companion/web-player/player.js && node --check prototype/hls-companion/web-player/subtitle-scheduler.js && node --check prototype/hls-companion/web-player/subtitle-window-controller.js",
+    "check:js": "node --check extension/src/adapters.js && node --check extension/src/content.js && node --check extension/src/metrics.js && node --check prototype/hls-companion/extension/service-worker.js && node --check prototype/hls-companion/web-player/ui-bootstrap.js && node --check prototype/hls-companion/web-player/player.js && node --check prototype/hls-companion/web-player/language-selector.js && node --check prototype/hls-companion/web-player/subtitle-scheduler.js && node --check prototype/hls-companion/web-player/subtitle-window-controller.js && node --check prototype/hls-companion/web-player/media-clock.js && node --check prototype/hls-companion/web-player/poll-loop.js && node --check prototype/hls-companion/web-player/live-messages-client.js && node --check prototype/hls-companion/web-player/workbench-controller.js && node --check prototype/hls-companion/web-player/pane-resizer.js && node --check prototype/hls-companion/web-player/playback-recovery.js",
     "guard:release": "node scripts/release-guard.js",
-    "ci": "npm run guard:release && npm run check:python && npm run check:js && npm run test:hls-companion && npm test",
+    "guard:tracked": "node scripts/check-repo-completeness.js",
+    "ci": "npm run guard:release && npm run guard:tracked && npm run check:python && npm run check:js && npm run test:hls-companion && npm test",
     "prototype:delay": "python prototype/delayed_live_player.py",
-    "prototype:hls": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/hls-companion/scripts/restart-companion.ps1"
+    "prototype:hls": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/hls-companion/scripts/restart-companion.ps1",
+    "desktop:dev": "build-desktop\\electron\\electron.exe .",
+    "desktop:backend": ".venv-desktop\\Scripts\\python.exe desktop/prepare_backend.py",
+    "desktop:pack": "electron-builder --config desktop/builder.cjs --dir --win --x64",
+    "desktop:refresh": "npm run desktop:backend && npm run desktop:pack",
+    "desktop:sync-ui": "node scripts/sync-web-player.js",
+    "desktop:dist": "electron-builder --config desktop/builder.cjs --win nsis --x64 --publish never",
+    "desktop:test": "node --test tests/desktop.test.js && .venv-desktop\\Scripts\\python.exe -m unittest discover -s desktop/tests -p test_*.py"
   },
   "engines": {
-    "node": ">=18"
-  }
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "main": "desktop/main.cjs",
+  "author": "Antiranger"
 }

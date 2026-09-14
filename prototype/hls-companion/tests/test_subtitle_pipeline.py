@@ -26,7 +26,7 @@ from companion.providers.base import (
 )
 import companion.subtitle_pipeline as pipeline_module
 from companion.subtitle_pipeline import SubtitlePipeline
-from companion.subtitle_store import CueStore
+from companion.subtitle_store import Cue, CueStore
 
 
 class FakeStream(ASRStream):
@@ -100,6 +100,60 @@ class RecordingTranslation(TranslationProvider):
             1,
             self.usage,
         )
+
+
+async def deliver_final(
+    pipeline: SubtitlePipeline,
+    text: str,
+    item_id: str,
+    *,
+    begin: float | None = None,
+    end: float | None = None,
+    language: str | None = "ja",
+    speaker: str | None = None,
+    kind: str = "utterance_final",
+    stable: bool = True,
+) -> list[Cue]:
+    """Deliver a Provider final through the normalized CaptionObservation path.
+
+    Mirrors what every shipped Adapter does, so the test exercises the live
+    segmentation path (``_handle_asr_event`` -> ``_handle_caption_observation``
+    -> ``CaptionChunker``) rather than the deleted ``_handle_final`` fossil.
+
+    ``begin``/``end`` are the timestamps the Provider itself reports for the
+    utterance; when both are given the event also carries one RecognitionToken
+    spanning them, which is the shape token-level Adapters (Soniox, Deepgram)
+    emit and what makes the chunk count as exact ``asr`` timing. Without them
+    the observation is text-only and the pipeline maps it onto the utterance's
+    own VAD span / the audio frontier.
+    """
+    tokens: tuple[RecognitionToken, ...] = ()
+    if begin is not None and end is not None:
+        tokens = (RecognitionToken(text, begin, end, stable, language, speaker),)
+    observation = CaptionObservation(
+        kind,
+        pipeline._generation,
+        item_id,
+        tokens=tokens,
+        stable_text=text,
+        begin_pcm=begin,
+        end_pcm=end,
+        language=language,
+        speaker=speaker,
+    )
+    event = ASREvent(
+        "final",
+        text=text,
+        begin_pcm=begin,
+        end_pcm=end,
+        language=language,
+        item_id=item_id,
+        speaker=speaker,
+        caption_observation=observation,
+    )
+    before = len(pipeline.store)
+    await pipeline._handle_asr_event(event)
+    return list(pipeline.store._cues)[before:]
 
 
 class TranslationMeteringTests(unittest.IsolatedAsyncioTestCase):
@@ -440,9 +494,16 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=5.7, item_id="a"))
         pipeline._last_sent_pcm_offset = 8.0
         await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=7.6, item_id="a"))
-        cues = await pipeline._handle_final(ASREvent("final", text=" ＡＢ。ＣＤＥ ", language="ja", item_id="a"))
+        cues = await deliver_final(pipeline, " ＡＢ。ＣＤＥ ", "a")
         self.assertEqual([cue.src for cue in cues], ["AB。CDE"])
-        self.assertEqual(cues[0].timing_source, "asr")
+        # The final carries no token timestamps, so its boundaries come from its
+        # own item's VAD span and the live path labels that provenance "vad":
+        # ``timing_source`` is "asr" only for chunks whose every unit has exact
+        # token timing (subtitle_pipeline.py ``_queue_caption_chunk``, which
+        # replaced the deleted _handle_final's span-junction labelling). The
+        # boundaries themselves are unchanged and still distinguish the VAD
+        # span from the 8.0s sent-audio frontier.
+        self.assertEqual(cues[0].timing_source, "vad")
         self.assertAlmostEqual(cues[0].t_start, 955.7)
         self.assertAlmostEqual(cues[0].t_end, 957.6)
 
@@ -454,55 +515,81 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=4.0, item_id="a"))
         # Same-millisecond arrival, as observed against the live provider.
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=4.0, item_id="b"))
-        first = await pipeline._handle_final(ASREvent("final", text="さいしょ", item_id="a"))
+        first = await deliver_final(pipeline, "さいしょ", "a")
         await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=9.0, item_id="b"))
-        second = await pipeline._handle_final(ASREvent("final", text="つぎです", item_id="b"))
+        second = await deliver_final(pipeline, "つぎです", "b")
         self.assertEqual((first[0].t_start, first[0].t_end), (951.0, 954.0))
         self.assertEqual((second[0].t_start, second[0].t_end), (954.0, 959.0))
-        self.assertEqual(pipeline.status()["timingSourceCounts"], {"asr": 2, "vad": 0, "approx": 0})
+        # Both finals are text-only, so each cue is timed by its own item's VAD
+        # span and the live path records that provenance as "vad"
+        # (subtitle_pipeline.py ``_queue_caption_chunk``; the deleted
+        # _handle_final labelled the same boundaries "asr").
+        # Only two provenances exist: CaptionChunk.begin_pcm is a non-optional
+        # float, so the former third state "approx" was unreachable and is gone.
+        self.assertEqual(pipeline.status()["timingSourceCounts"], {"asr": 0, "vad": 2})
 
-    async def test_repeated_short_final_is_only_deduped_when_adjacent(self) -> None:
+    async def test_duplicate_final_for_the_same_item_publishes_only_one_cue(self) -> None:
         pipeline = self.make_pipeline()
         self.prime_timeline(pipeline)
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=1.0, item_id="a"))
         await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=2.0, item_id="a"))
         pipeline._last_sent_pcm_offset = 2.0
-        await pipeline._handle_final(ASREvent("final", text="うん。", item_id="a"))
+        first = await deliver_final(pipeline, "うん。", "a")
+        self.assertEqual([cue.src for cue in first], ["うん。"])
 
-        # An immediate resend of the same text is a duplicate.
+        # The live guarantee that replaced the deleted text+recency dedup
+        # (`stats.final_deduplicated`, `_previous_final*`): a Provider resend of
+        # the same final for the SAME item id cannot publish a second cue,
+        # because CaptionChunker closes the item on its `utterance_final`
+        # observation and returns an empty decision for further evidence
+        # (caption_chunker.py ``observe``, the `state.closed` guard).
         pipeline._last_sent_pcm_offset = 2.5
-        self.assertEqual(await pipeline._handle_final(ASREvent("final", text="うん。", item_id="b")), [])
-        self.assertEqual(pipeline.stats.final_deduplicated, 1)
+        self.assertEqual(await deliver_final(pipeline, "うん。", "a"), [])
+        self.assertEqual(len(pipeline.store), 1)
 
-        # The speaker genuinely saying it again later is not.
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=20.0, item_id="c"))
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=21.0, item_id="c"))
+        # A genuinely new utterance that happens to repeat the same words is
+        # not suppressed: the dedup key is the item id, never "same text
+        # recently", so a real second "うん。" still reaches the viewer.
+        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=20.0, item_id="b"))
+        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=21.0, item_id="b"))
         pipeline._last_sent_pcm_offset = 21.0
-        again = await pipeline._handle_final(ASREvent("final", text="うん。", item_id="c"))
+        again = await deliver_final(pipeline, "うん。", "b")
         self.assertEqual([cue.src for cue in again], ["うん。"])
+        self.assertEqual(len(pipeline.store), 2)
 
     async def test_same_short_text_from_different_speakers_is_not_deduplicated(self) -> None:
         pipeline = self.make_pipeline()
         self.prime_timeline(pipeline)
         pipeline._last_sent_pcm_offset = 2.0
-        first = await pipeline._handle_final(ASREvent(
-            "final", text="はい。", item_id="a", speaker="speaker-1",
-        ))
+        first = await deliver_final(pipeline, "はい。", "a", speaker="speaker-1")
         pipeline._last_sent_pcm_offset = 2.4
-        second = await pipeline._handle_final(ASREvent(
-            "final", text="はい。", item_id="b", speaker="speaker-2",
-        ))
+        second = await deliver_final(pipeline, "はい。", "b", speaker="speaker-2")
         self.assertEqual([cue.speaker for cue in first + second], ["speaker-1", "speaker-2"])
-        self.assertEqual(pipeline.stats.final_deduplicated, 0)
+        # `stats.final_deduplicated` was deleted with the legacy text dedup it
+        # counted; the live equivalent guarantee is that both cues reach the
+        # store, since dedup is keyed by item id under CaptionChunker
+        # (caption_chunker.py ``observe``) and never by text or speaker.
+        self.assertEqual(len(pipeline.store), 2)
 
     async def test_final_without_vad_span_falls_back_to_approx(self) -> None:
         pipeline = self.make_pipeline()
         self.prime_timeline(pipeline)
         pipeline._last_sent_pcm_offset = 3.0
-        cues = await pipeline._handle_final(ASREvent("final", text="孤立", item_id="zzz"))
-        self.assertEqual(cues[0].timing_source, "approx")
-        self.assertIsNone(cues[0].t_start)
-        self.assertEqual(pipeline.stats.unjoined_finals, 1)
+        cues = await deliver_final(pipeline, "孤立", "zzz")
+        # The observation was still mapped and published, not dropped as
+        # unmapped evidence (the counter that replaced `stats.unjoined_finals`).
+        self.assertEqual(pipeline.stats.unmapped_observations, 0)
+        self.assertEqual(len(cues), 1)
+        # A final with no VAD span is no longer labelled "approx" (the name is
+        # kept so the deleted mechanism's coverage stays traceable): the live
+        # chunker substitutes the lane's 0.0 origin for a missing unit begin
+        # (caption_chunker.py ``_chunk_times``), so the start is the pipeline
+        # origin and the end is the audio frontier that
+        # ``_map_caption_observation`` used as the fallback end. The deleted
+        # _handle_final left t_start None for this case instead.
+        self.assertEqual(cues[0].timing_source, "vad")
+        self.assertEqual(cues[0].t_start, 950.0)
+        self.assertAlmostEqual(cues[0].t_end, 953.0)
 
     async def test_server_offsets_survive_dropped_pcm(self) -> None:
         """A dropped chunk desynchronises the two clocks; breadcrumbs fix it."""
@@ -521,7 +608,7 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=1.0, item_id="a"))
         await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=2.0, item_id="a"))
         pipeline._last_sent_pcm_offset = 2.0
-        cues = await pipeline._handle_final(ASREvent("final", text="こんにちは", item_id="a"))
+        cues = await deliver_final(pipeline, "こんにちは", "a")
         self.assertEqual(cues, [])
         self.assertEqual(len(pipeline._pending_finals), 1)
         self.assertEqual(len(pipeline.store), 0)
@@ -536,7 +623,11 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         pipeline = self.make_pipeline(ingest_status=lambda: {"sourceError": "expired", "log_tail": []})
         self.prime_timeline(pipeline)
         pipeline._last_sent_pcm_offset = 2.0
-        cues = await pipeline._handle_final(ASREvent("final", text="こんにちは"))
+        # An item id is mandatory on the live path: CaptionChunker keys its
+        # per-utterance lanes by it (caption_chunker.py ``observe``), and every
+        # shipped Adapter supplies one. The deleted _handle_final tolerated a
+        # missing id because it keyed nothing.
+        cues = await deliver_final(pipeline, "こんにちは", "a")
         self.assertEqual(cues, [])
         self.assertEqual(len(pipeline.store), 0)
         self.assertEqual(pipeline.stats.suppressed_by_ingest_error, 1)
@@ -602,32 +693,6 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["translationSuccessReadyLagP95"], 1.0)
         self.assertEqual(status["terminalOutcomeLagP95"], 1.0)
 
-    async def test_manual_commit_hard_caps_active_utterance_when_enabled(self) -> None:
-        pipeline = self.make_pipeline(asr_provider=FakeASR(manual_commit=True), max_utterance_seconds=6.0)
-        stream = FakeStream()
-        pipeline._span_for("a")["start"] = 1.0
-        pipeline._last_sent_pcm_offset = 7.1
-        await pipeline._maybe_force_commit(stream)
-        self.assertEqual(stream.commits, 1)
-        self.assertEqual(pipeline.stats.forced_commits, 1)
-
-    async def test_manual_commit_is_off_by_default(self) -> None:
-        pipeline = self.make_pipeline(asr_provider=FakeASR(manual_commit=True))
-        stream = FakeStream()
-        pipeline._span_for("a")["start"] = 1.0
-        pipeline._last_sent_pcm_offset = 60.0
-        await pipeline._maybe_force_commit(stream)
-        self.assertEqual(stream.commits, 0)
-
-    async def test_manual_commit_ignores_already_closed_utterances(self) -> None:
-        pipeline = self.make_pipeline(asr_provider=FakeASR(manual_commit=True), max_utterance_seconds=6.0)
-        stream = FakeStream()
-        span = pipeline._span_for("a")
-        span["start"], span["end"] = 1.0, 2.0
-        pipeline._last_sent_pcm_offset = 60.0
-        await pipeline._maybe_force_commit(stream)
-        self.assertEqual(stream.commits, 0)
-
     async def test_context_degradation_recovers_after_empty_stability(self) -> None:
         now = [10.0]
         pipeline = self.make_pipeline(monotonic=lambda: now[0], recovery_seconds=30)
@@ -672,11 +737,19 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
             now[0] += 1.0
             anchor.add_sample(video_base + i, audio_base + i)
 
-    async def emit_final(self, pipeline, begin=1.0, end=2.0, text="こんにちは"):
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=begin, item_id="a"))
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=end, item_id="a"))
+    async def emit_final(self, pipeline, begin=1.0, end=2.0, text="こんにちは", item_id="a"):
+        """Deliver one utterance as its VAD span plus its normalized final.
+
+        A second utterance in the same test needs its own ``item_id``: the live
+        CaptionChunker closes an item on its ``utterance_final`` and ignores
+        later evidence for it (caption_chunker.py ``observe``), which is how a
+        Provider's real per-utterance ids behave. The deleted ``_handle_final``
+        accepted a repeated id because it kept no per-item ledger.
+        """
+        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=begin, item_id=item_id))
+        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=end, item_id=item_id))
         pipeline._last_sent_pcm_offset = end
-        return await pipeline._handle_final(ASREvent("final", text=text, item_id="a"))
+        return await deliver_final(pipeline, text, item_id)
 
     async def test_cues_hold_until_anchor_ready_then_map_through_offset(self) -> None:
         from companion.media_anchor import MediaAnchor
@@ -722,7 +795,7 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
             anchor.add_sample(video_now, audio_now)
         self.assertTrue(anchor.ready)
         self.assertAlmostEqual(anchor.offset or 0, 170.0, places=6)
-        second = await self.emit_final(pipeline, begin=10.0, end=11.0, text="つぎ")
+        second = await self.emit_final(pipeline, begin=10.0, end=11.0, text="つぎ", item_id="b")
         self.assertAlmostEqual(second[0].t_end, 950.0 + 11.0 + 170.0)
 
     async def test_status_reports_audio_leg_source_and_anchor_telemetry(self) -> None:
@@ -757,7 +830,7 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pipeline._pending_finals), 0)
         self.assertEqual(len(pipeline.store), 1)
         # A subsequent final materializes immediately through the anchor.
-        second = await self.emit_final(pipeline, begin=3.0, end=4.0, text="つぎ")
+        second = await self.emit_final(pipeline, begin=3.0, end=4.0, text="つぎ", item_id="b")
         self.assertAlmostEqual(second[0].t_end, 950.0 + 4.0 + 40.0)
 
     async def test_audio_leg_input_uses_explicit_format_without_hls_flags(self) -> None:
@@ -812,10 +885,13 @@ class SampleRateTests(unittest.IsolatedAsyncioTestCase):
         pipeline = self.make_pipeline(sample_rate=24000)
         self.assertEqual(pipeline.sample_rate, 24000)
         self.assertEqual(pipeline.pcm_bytes_per_second, 48000)
+        # Production path: the async enqueue owns the PCM clock (the synchronous
+        # _ingest_pcm_chunk, which could accept a chunk with no queue, is gone).
+        pipeline._pcm_queue = asyncio.Queue(maxsize=pipeline.pcm_queue_chunks)
         # 4800 bytes at 24 kHz 16-bit mono is exactly 0.1s of audio.
-        pipeline._ingest_pcm_chunk(b"\x00" * 4800, 0.0)
+        await pipeline._enqueue_pcm_chunk(b"\x00" * 4800, 0.0)
         self.assertAlmostEqual(pipeline._pcm_offset, 0.1)
-        pipeline._ingest_pcm_chunk(b"\x00" * 48000, pipeline._pcm_offset)
+        await pipeline._enqueue_pcm_chunk(b"\x00" * 48000, pipeline._pcm_offset)
         self.assertAlmostEqual(pipeline._pcm_offset, 1.1)
         status = pipeline.status()
         self.assertEqual(status["sampleRate"], 24000)
@@ -842,7 +918,8 @@ class SampleRateTests(unittest.IsolatedAsyncioTestCase):
     async def test_16khz_default_is_unchanged(self) -> None:
         pipeline = self.make_pipeline()
         self.assertEqual(pipeline.pcm_bytes_per_second, 32000)
-        pipeline._ingest_pcm_chunk(b"\x00" * 3200, 0.0)
+        pipeline._pcm_queue = asyncio.Queue(maxsize=pipeline.pcm_queue_chunks)
+        await pipeline._enqueue_pcm_chunk(b"\x00" * 3200, 0.0)
         self.assertAlmostEqual(pipeline._pcm_offset, 0.1)
         self.assertEqual(pipeline.status()["sampleRate"], 16000)
 
@@ -868,7 +945,7 @@ class CueLanguageTests(unittest.IsolatedAsyncioTestCase):
             translation_provider=translation,
         )
         pipeline._last_sent_pcm_offset = 2.0
-        cues = await pipeline._handle_final(ASREvent("final", text="Bonjour le monde", language="fr", item_id="a"))
+        cues = await deliver_final(pipeline, "Bonjour le monde", "a", language="fr")
         self.assertEqual(cues[0].lang, "fr")
 
         pipeline._running = True
@@ -897,20 +974,20 @@ class CueLanguageTests(unittest.IsolatedAsyncioTestCase):
     async def test_reported_language_is_canonicalized_at_the_edge(self) -> None:
         pipeline = self.make_pipeline(source_policy=SourceLanguagePolicy.specified("en"))
         pipeline._last_sent_pcm_offset = 2.0
-        cues = await pipeline._handle_final(ASREvent("final", text="你好", language="zh-TW", item_id="a"))
+        cues = await deliver_final(pipeline, "你好", "a", language="zh-TW")
         self.assertEqual(cues[0].lang, "zh-Hant")
 
     async def test_unreported_language_falls_back_to_specified_or_preferred(self) -> None:
         specified = self.make_pipeline(source_policy=SourceLanguagePolicy.specified("en"))
         specified._last_sent_pcm_offset = 2.0
-        cues = await specified._handle_final(ASREvent("final", text="no report", item_id="a"))
+        cues = await deliver_final(specified, "no report", "a", language=None)
         self.assertEqual(cues[0].lang, "en")
 
         detected = self.make_pipeline(
             source_policy=SourceLanguagePolicy.detect(candidates=("fr", "en"), preferred="fr")
         )
         detected._last_sent_pcm_offset = 2.0
-        cues = await detected._handle_final(ASREvent("final", text="no report", item_id="a"))
+        cues = await deliver_final(detected, "no report", "a", language=None)
         self.assertEqual(cues[0].lang, "fr")
 
     async def test_detect_policy_is_passed_to_the_asr_stream(self) -> None:
@@ -939,173 +1016,6 @@ class CueLanguageTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(task, return_exceptions=True)
         self.assertIs(asr.received["policy"], policy)
         self.assertEqual(asr.received["sample_rate"], 24000)
-
-
-class PrefixSplitTests(unittest.IsolatedAsyncioTestCase):
-    """Long-utterance prefix splitting (redesign Fix F P2 / RC-4).
-
-    Event sequences mirror the captured real-time stream: speech_started,
-    stable-prefix interims growing monotonically, speech_stopped, final.
-    """
-
-    def make_pipeline(self, **changes):
-        arguments: dict[str, Any] = dict(
-            asr_provider=FakeASR(),
-            cue_store=CueStore(),
-            meta=StreamMeta("title", "channel", "gaming", "ja", "zh"),
-            wall_clock=lambda: 1000.0,
-            monotonic=lambda: 50.0,
-            silence_duration_ms=400,
-        )
-        arguments.update(changes)
-        pipeline = SubtitlePipeline(**arguments)
-        pipeline._push_breadcrumbs.append((0.0, 0.0))
-        pipeline.media_epoch = 950.0
-        return pipeline
-
-    @staticmethod
-    def interim(pipeline, item, text, at):
-        pipeline._last_sent_pcm_offset = at
-        pipeline._pcm_offset = at
-        return pipeline._handle_asr_event(ASREvent("interim", text=text, item_id=item))
-
-    async def test_long_utterance_emits_chained_prefix_cues_then_tail(self) -> None:
-        pipeline = self.make_pipeline()
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=40.0, item_id="a"))
-        # First confirmation arrives 6.2s into the utterance (past the 3s cap).
-        await self.interim(pipeline, "a", "待って、何よ。マジは", 46.2)
-        await self.interim(pipeline, "a", "待って、何よ。マジは当たり前のようにね、完璧。", 52.8)
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=58.5, item_id="a"))
-        pipeline._last_sent_pcm_offset = 59.0
-        await pipeline._handle_final(ASREvent(
-            "final", text="待って、何よ。マジは当たり前のようにね、完璧。一旦完璧。", item_id="a"))
-
-        cues = pipeline.store.query(after_seq=0)
-        self.assertEqual([c.src for c in cues], ["待って、何よ。", "マジは当たり前のようにね、完璧。", "一旦完璧。"])
-        # Cue 1 anchors at the exact VAD onset; ends chain forward; the tail
-        # closes at the exact speech_stopped endpoint.
-        self.assertAlmostEqual(cues[0].t_start, 950.0 + 40.0)
-        self.assertAlmostEqual(cues[0].t_end, 950.0 + 46.2)
-        self.assertAlmostEqual(cues[1].t_start, 950.0 + 46.2)
-        self.assertAlmostEqual(cues[1].t_end, 950.0 + 52.8)
-        self.assertEqual(cues[0].timing_source, "vad")
-        self.assertAlmostEqual(cues[2].t_start, 950.0 + 52.8)
-        self.assertAlmostEqual(cues[2].t_end, 950.0 + 58.5)
-        self.assertEqual(cues[2].timing_source, "asr")
-        self.assertEqual(pipeline.stats.prefix_cues, 2)
-        self.assertEqual(pipeline.stats.final_tails, 1)
-        self.assertEqual(pipeline.status()["prefixCues"], 2)
-
-    async def test_short_utterance_keeps_final_only_behaviour(self) -> None:
-        pipeline = self.make_pipeline()
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=1.0, item_id="a"))
-        # Confirmation 1.0s in: below the 3s cap, so nothing is emitted early.
-        await self.interim(pipeline, "a", "はい。", 2.0)
-        self.assertEqual(pipeline.store.query(after_seq=0), [])
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=2.0, item_id="a"))
-        pipeline._last_sent_pcm_offset = 2.3
-        cues = await pipeline._handle_final(ASREvent("final", text="はい。", item_id="a"))
-        self.assertEqual([c.src for c in cues], ["はい。"])
-        self.assertEqual(pipeline.stats.prefix_cues, 0)
-
-    async def test_gated_sentences_flush_together_once_cap_is_passed(self) -> None:
-        pipeline = self.make_pipeline()
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=10.0, item_id="a"))
-        await self.interim(pipeline, "a", "一つ目。二つ目。", 12.0)   # gated: age 2.0
-        self.assertEqual(pipeline.store.query(after_seq=0), [])
-        await self.interim(pipeline, "a", "一つ目。二つ目。三つ目の途中", 14.5)  # age 4.5
-        cues = pipeline.store.query(after_seq=0)
-        self.assertEqual([c.src for c in cues], ["一つ目。二つ目。"])
-        self.assertAlmostEqual(cues[0].t_start, 950.0 + 10.0)
-        self.assertAlmostEqual(cues[0].t_end, 950.0 + 14.5)
-
-    async def test_final_matching_emitted_prefix_is_absorbed(self) -> None:
-        pipeline = self.make_pipeline()
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="a"))
-        await self.interim(pipeline, "a", "はい。そうです。", 5.0)
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=6.0, item_id="a"))
-        pipeline._last_sent_pcm_offset = 6.4
-        cues = await pipeline._handle_final(ASREvent("final", text="はい。そうです。", item_id="a"))
-        self.assertEqual(cues, [])
-        self.assertEqual([c.src for c in pipeline.store.query(after_seq=0)], ["はい。そうです。"])
-        self.assertEqual(pipeline.stats.final_absorbed, 1)
-
-    async def test_conflicting_final_emits_whole_transcript(self) -> None:
-        pipeline = self.make_pipeline()
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="a"))
-        await self.interim(pipeline, "a", "前半。", 5.0)
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=6.0, item_id="a"))
-        pipeline._last_sent_pcm_offset = 6.4
-        cues = await pipeline._handle_final(ASREvent("final", text="全然違う文になりました。", item_id="a"))
-        self.assertEqual([c.src for c in cues], ["全然違う文になりました。"])
-        self.assertEqual(pipeline.stats.split_conflicts, 1)
-
-    async def test_stable_interim_begin_time_can_open_utterance_before_delayed_endpoint(self) -> None:
-        pipeline = self.make_pipeline()
-        pipeline._last_sent_pcm_offset = 5.0
-        pipeline._pcm_offset = 5.0
-        await pipeline._handle_asr_event(ASREvent(
-            "interim",
-            text="対応関係のある interim。",
-            begin_pcm=1.0,
-            end_pcm=4.8,
-            item_id="soniox-1",
-        ))
-        cues = pipeline.store.query(after_seq=0)
-        self.assertEqual([cue.src for cue in cues], ["対応関係のある interim。"])
-        self.assertAlmostEqual(cues[0].t_start, 951.0)
-        self.assertAlmostEqual(cues[0].t_end, 955.0)
-
-    async def test_soniox_speaker_label_is_preserved_across_prefix_and_final_tail(self) -> None:
-        pipeline = self.make_pipeline()
-        pipeline._last_sent_pcm_offset = 5.0
-        pipeline._pcm_offset = 5.0
-        await pipeline._handle_asr_event(ASREvent(
-            "interim",
-            text="一人目の発言。",
-            begin_pcm=1.0,
-            end_pcm=4.8,
-            item_id="soniox-1",
-            speaker="speaker-7",
-        ))
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=6.0, item_id="soniox-1"))
-        pipeline._last_sent_pcm_offset = 6.2
-        await pipeline._handle_final(ASREvent(
-            "final",
-            text="一人目の発言。続きです。",
-            item_id="soniox-1",
-        ))
-        cues = pipeline.store.query(after_seq=0)
-        self.assertEqual([cue.speaker for cue in cues], ["speaker-7", "speaker-7"])
-
-    async def test_interim_without_any_timing_anchor_is_ignored(self) -> None:
-        pipeline = self.make_pipeline()
-        await self.interim(pipeline, "orphan", "対応関係のない interim。", 5.0)
-        self.assertEqual(pipeline.store.query(after_seq=0), [])
-        pipeline._last_sent_pcm_offset = 5.5
-        cues = await pipeline._handle_final(ASREvent("final", text="孤立", item_id="orphan"))
-        self.assertEqual(cues[0].timing_source, "approx")
-
-    async def test_prefix_rewrite_stops_splitting_that_utterance(self) -> None:
-        pipeline = self.make_pipeline()
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="a"))
-        await self.interim(pipeline, "a", "書き換え前。", 5.0)
-        # The "stable" prefix no longer contains what we already emitted.
-        await self.interim(pipeline, "a", "まるで別の話", 6.0)
-        self.assertEqual(pipeline.stats.prefix_rewrites, 1)
-        self.assertEqual(len(pipeline.store.query(after_seq=0)), 1)
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=7.0, item_id="a"))
-        pipeline._last_sent_pcm_offset = 7.4
-        cues = await pipeline._handle_final(ASREvent("final", text="まるで別の話になりました。", item_id="a"))
-        self.assertEqual([c.src for c in cues], ["まるで別の話になりました。"])
-        self.assertEqual(pipeline.stats.split_conflicts, 1)
-
-    async def test_disabled_prefix_split_keeps_old_behaviour(self) -> None:
-        pipeline = self.make_pipeline(prefix_split_enabled=False)
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="a"))
-        await self.interim(pipeline, "a", "長い話の途中。まだ続く。", 8.0)
-        self.assertEqual(pipeline.store.query(after_seq=0), [])
-
 
 
 class TranslationTerminalOutcomeTests(unittest.TestCase):
@@ -1597,9 +1507,9 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c.timing_source for c in cues], ["asr"] * len(cues))
         self.assertEqual(pipeline._flush_caption_session(), [])
 
-    def make_pipeline(self, *, manual_commit: bool = False) -> SubtitlePipeline:
+    def make_pipeline(self) -> SubtitlePipeline:
         pipeline = SubtitlePipeline(
-            asr_provider=FakeASR(manual_commit=manual_commit),
+            asr_provider=FakeASR(),
             cue_store=CueStore(),
             meta=StreamMeta("title", "channel", "gaming", "en", "zh"),
             wall_clock=lambda: 1000.0,
@@ -1708,37 +1618,47 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cues[0].cut_reason, "terminal_punctuation")
 
     async def test_pcm_sender_frontier_never_forces_a_caption_commit(self) -> None:
-        pipeline = self.make_pipeline(manual_commit=True)
+        pipeline = self.make_pipeline()
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="silent-evidence"))
         stream = FakeStream()
         pipeline._stream = stream
-        pipeline._pcm_queue = asyncio.Queue()
+        pipeline._pcm_queue = asyncio.Queue(maxsize=pipeline.pcm_queue_chunks)
         pipeline._running = True
         pipeline._pcm_queue.put_nowait((b"\x00" * (6 * pipeline.pcm_bytes_per_second), 0.0))
         sender = asyncio.create_task(pipeline._pcm_sender())
-        for _ in range(20):
-            if stream.commits:
+        # Wait for the sender to drain the chunk and report the frontier. The
+        # bound keeps a sender that stops advancing the frontier from hanging
+        # the test; the assertions below then fail instead.
+        for _ in range(200):
+            if pipeline.status()["pendingEvidenceOverSoftSpan"]:
                 break
             await asyncio.sleep(0)
         pipeline._running = False
         sender.cancel()
         await asyncio.gather(sender, return_exceptions=True)
+        # Pushing 6s of audio past an open utterance with no lexical evidence
+        # must not ask the Provider for a hard commit, and must not publish a
+        # caption either: the frontier path only reports pending evidence
+        # (SubtitlePipeline._advance_caption_frontier ->
+        # CaptionChunker.advance_audio). The deleted `manualHardCommits` counter
+        # has no live equivalent; the surviving observable is the informational
+        # pending-evidence telemetry that replaced `hardCapPendingEvidence`.
         self.assertEqual(stream.commits, 0)
-        self.assertEqual(pipeline.status()["manualHardCommits"], 0)
+        self.assertEqual(pipeline.store.query(after_seq=0), [])
+        self.assertEqual(pipeline.status()["pendingEvidenceOverSoftSpan"], 1)
 
-        class FailingCommitStream(FakeStream):
+        class CommitRejectingStream(FakeStream):
             async def commit(self) -> None:
                 raise RuntimeError("commit rejected")
 
-        failing_pipeline = self.make_pipeline(manual_commit=True)
-        await failing_pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="u1"))
-        failing_stream = FailingCommitStream()
-        await failing_pipeline._advance_caption_frontier(6.0, failing_stream)
-        self.assertEqual(failing_pipeline.status()["commitFailures"], 0)
-        self.assertTrue(failing_pipeline._manual_commit_ok)
-        await failing_pipeline._advance_caption_frontier(12.0, failing_stream)
-        self.assertEqual(failing_pipeline.status()["commitFailures"], 0)
-        self.assertGreaterEqual(failing_pipeline.status()["hardCapPendingEvidence"], 1)
+        # A Provider that would reject a commit is never asked either, and an
+        # item already counted is not counted twice: advancing the frontier
+        # again changes neither the store nor the commit count.
+        rejecting = CommitRejectingStream()
+        await pipeline._advance_caption_frontier(12.0, rejecting)
+        self.assertEqual(rejecting.commits, 0)
+        self.assertEqual(pipeline.status()["pendingEvidenceOverSoftSpan"], 1)
+        self.assertEqual(pipeline.store.query(after_seq=0), [])
 
     async def test_production_pcm_queue_applies_backpressure_without_dropping(self) -> None:
         pipeline = self.make_pipeline()
@@ -1752,8 +1672,8 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pipeline.stats.pcm_dropped, 0)
         self.assertAlmostEqual(pipeline._pcm_offset, 0.2)
 
-    async def test_normalized_stable_prefix_uses_vad_timing_and_suppresses_legacy_prefix_path(self) -> None:
-        pipeline = self.make_pipeline(manual_commit=True)
+    async def test_normalized_stable_prefix_uses_vad_timing(self) -> None:
+        pipeline = self.make_pipeline()
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=1.0, item_id="prefix"))
         pipeline._last_sent_pcm_offset = 5.0
         observation = CaptionObservation(
@@ -1771,8 +1691,18 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cues = pipeline.store.query(after_seq=0)
         self.assertEqual([cue.src for cue in cues], ["This is confirmed."])
         self.assertEqual(cues[0].timing_source, "vad")
-        self.assertEqual(pipeline.stats.prefix_cues, 0)
-        self.assertEqual(pipeline.status()["manualHardCommits"], 0)
+        # The observation carries no token timestamps, so the chunk is timed by
+        # its VAD onset and by the audio frontier that was current when the
+        # stable prefix arrived (SubtitlePipeline._map_caption_observation),
+        # and it publishes without waiting for an utterance final.
+        self.assertAlmostEqual(cues[0].t_start, 951.0)
+        self.assertAlmostEqual(cues[0].t_end, 955.0)
+        self.assertEqual(pipeline.stats.unmapped_observations, 0)
+        # `stats.prefix_cues` and the `manualHardCommits` status key were deleted
+        # with the legacy prefix-split and manual-commit mechanisms they
+        # counted, so the only assertions that no longer described live
+        # behaviour are those two "this old path stayed at zero" checks; every
+        # other assertion above is unchanged.
 
     async def test_stop_flush_is_idempotent_and_restart_resets_generation_order(self) -> None:
         pipeline = self.make_pipeline()
@@ -1802,29 +1732,6 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         newest = pipeline.store.query(after_seq=0)[-1]
         self.assertEqual(newest.generation, pipeline._generation)
         self.assertEqual(newest.chunk_order, 1)
-
-    async def test_normalized_evidence_disables_legacy_max_utterance_commit_timer(self) -> None:
-        pipeline = self.make_pipeline(manual_commit=True)
-        pipeline.max_utterance_seconds = 6.0
-        await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="local"))
-        await pipeline._handle_asr_event(ASREvent(
-            "interim", text="local stable evidence", item_id="local",
-            caption_observation=CaptionObservation(
-                "stable_token_delta", 0, "local",
-                tokens=(
-                    RecognitionToken("local ", 0.0, 2.0, True, language="en"),
-                    RecognitionToken("stable ", 2.1, 4.0, True, language="en"),
-                    RecognitionToken("evidence", 4.1, 5.9, True, language="en"),
-                ),
-            ),
-        ))
-        stream = FakeStream()
-        pipeline._last_sent_pcm_offset = 6.1
-        await pipeline._advance_caption_frontier(6.1, stream)
-        if not pipeline._caption_evidence_seen:
-            await pipeline._maybe_force_commit(stream)
-        self.assertEqual(stream.commits, 0)
-        self.assertEqual(pipeline.status()["manualHardCommits"], 0)
 
     async def test_chunk_metadata_reaches_existing_translation_request_path(self) -> None:
         provider = RecordingTranslation("translation")

@@ -1,0 +1,13 @@
+{
+  "electron": {
+    "version": "44.2.0",
+    "url": "https://github.com/electron/electron/releases/download/v44.2.0/electron-v44.2.0-win32-x64.zip",
+    "sha256": "4021363e3090d67a144ebedb90765cf193b0e61f300c519c83f0174502a481da"
+  },
+  "ffmpeg": {
+    "version": "9.0.1",
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
+    "sha256": "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9",
+    "release": "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1"
+  }
+}

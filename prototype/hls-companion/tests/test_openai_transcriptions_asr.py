@@ -11,6 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from companion.providers import create_asr
+from companion.providers.base import SourceLanguagePolicy
+
+JA = SourceLanguagePolicy.specified("ja")
+AUTO = SourceLanguagePolicy.detect()
 
 
 class OpenAITranscriptionsTests(unittest.IsolatedAsyncioTestCase):
@@ -61,7 +65,7 @@ class OpenAITranscriptionsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_posts_bounded_wav_multipart_with_optional_authorization_and_segment_timing(self) -> None:
         await self.responses.put((200, {"text": "unused", "segments": [{"start": 0.01, "end": 0.08, "text": "こんにちは"}]}))
-        stream = await self.provider().stream(language="ja", hotwords=[], context=[])
+        stream = await self.provider().stream(policy=JA, sample_rate=16000, hotwords=[], context=[])
         await stream.push_pcm(b"\x01\x00" * 1600, 4.0)
         await stream.flush()
         events = [event async for event in stream]
@@ -78,17 +82,26 @@ class OpenAITranscriptionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(audio["data"]), 44 + 3200)
 
         await self.responses.put((200, {"text": "plain json"}))
-        stream = await self.provider(api_key="").stream(language="ja", hotwords=[], context=[])
+        stream = await self.provider(api_key="").stream(policy=JA, sample_rate=16000, hotwords=[], context=[])
         await stream.push_pcm(b"\x00\x00" * 800, 9.0)
         await stream.flush()
         events = [event async for event in stream]
         self.assertEqual(events[0].text, "plain json")
         self.assertIsNone(self.requests[1]["authorization"])
 
+    async def test_window_seconds_must_be_positive_finite_and_at_most_six(self) -> None:
+        for invalid in (0, -1, 6.01, float("inf"), float("nan"), "bad"):
+            with self.subTest(value=invalid):
+                with self.assertRaises((TypeError, ValueError)):
+                    self.provider(windowSeconds=invalid)
+        provider = self.provider(windowSeconds=6.0)
+        self.assertEqual(provider.capabilities.caption_evidence, frozenset({"utterance_final"}))
+        self.provider(windowSeconds=5.5)
+
     async def test_plain_text_errors_and_close_are_bounded_and_finish_iteration(self) -> None:
         await self.responses.put((200, "plain text transcript"))
         await self.responses.put((503, {"error": {"message": "model unavailable"}}))
-        stream = await self.provider(windowSeconds=0.05, maxPendingWindows=2).stream(language="", hotwords=[], context=[])
+        stream = await self.provider(windowSeconds=0.05, maxPendingWindows=2).stream(policy=AUTO, sample_rate=16000, hotwords=[], context=[])
         await stream.push_pcm(b"\x00\x00" * 800, 0.0)
         await stream.push_pcm(b"\x00\x00" * 800, 0.05)
         await stream.flush()

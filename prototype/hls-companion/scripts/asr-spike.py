@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from companion.providers import create_asr
+from companion.providers.base import SourceLanguagePolicy
 from companion.providers.config import DEFAULT_CONFIG, resolve_secrets
 
 
@@ -55,7 +56,12 @@ async def run(args: argparse.Namespace) -> None:
             chunks.append(chunk)
 
     provider = create_asr(record)
-    stream = await provider.stream(language=args.language, hotwords=[], context=[])
+    stream = await provider.stream(
+        policy=SourceLanguagePolicy.specified(args.language),
+        sample_rate=sample_rate,
+        hotwords=[],
+        context=[],
+    )
     started = time.monotonic()
 
     async def print_events() -> None:

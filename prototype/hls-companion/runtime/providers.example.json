@@ -1,32 +1,15 @@
 {
-  "version": 2,
+  "version": 3,
   "asr": {
-    "active": "bailian-qwen3-realtime",
+    "active": "bailian-fun-asr-2026-02-28",
     "providers": [
-      {
-        "id": "bailian-qwen3-realtime",
-        "label": "百炼 Qwen3-ASR-Flash-Realtime",
-        "kind": "dashscope-qwen-realtime",
-        "model": "qwen3-asr-flash-realtime",
-        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-        "apiKeyEnv": "DASHSCOPE_API_KEY",
-        "pricePerSecondCny": 0.00033,
-        "options": {
-          "sampleRate": 16000,
-          "turnDetection": {
-            "type": "server_vad",
-            "threshold": 0.2,
-            "silenceDurationMs": 400
-          }
-        }
-      },
       {
         "id": "bailian-fun-asr-2026-02-28",
         "label": "百炼 Fun-ASR-Realtime 2026-02-28（日/中/英）",
         "kind": "dashscope-task-asr",
         "model": "fun-asr-realtime-2026-02-28",
         "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "apiKey": "",
         "options": {
           "sampleRate": 16000,
           "languages": [
@@ -44,40 +27,162 @@
         }
       },
       {
-        "id": "local-whisper",
-        "label": "本机 OpenAI-compatible Whisper",
-        "kind": "openai-audio-transcriptions",
-        "model": "whisper-1",
-        "baseUrl": "http://127.0.0.1:8000/v1",
-        "apiKey": "",
+        "id": "deepgram-nova3-multilingual",
+        "label": "Deepgram Nova-3（示例·未验证）",
+        "kind": "deepgram-streaming",
+        "model": "nova-3",
+        "baseUrl": "wss://api.deepgram.com/v1/listen",
+        "apiKeyEnv": "DEEPGRAM_API_KEY",
         "options": {
-          "language": "ja",
-          "sampleRate": 16000,
-          "windowSeconds": 3,
-          "requestTimeoutSeconds": 20
+          "interimResults": true,
+          "smartFormat": true,
+          "endpointingMs": 100,
+          "vadEvents": true,
+          "keepAliveSeconds": 8,
+          "utteranceEndMs": 1000
         }
       },
       {
-        "id": "bailian-paraformer",
-        "label": "百炼 Paraformer-Realtime-V2（成本基线）",
+        "id": "soniox-stt-rt-v5",
+        "label": "Soniox STT RT v5（示例·未验证）",
+        "kind": "soniox-realtime",
+        "model": "stt-rt-v5",
+        "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
+        "apiKeyEnv": "SONIOX_API_KEY",
+        "options": {
+          "enableLanguageIdentification": true,
+          "enableEndpointDetection": true,
+          "maxEndpointDelayMs": 700,
+          "endpointSensitivity": 0.3,
+          "keepAliveSeconds": 5,
+          "enableSpeakerDiarization": true
+        }
+      },
+      {
+        "id": "openai-gpt-live-transcribe",
+        "label": "OpenAI GPT-Live-Transcribe（示例·未验证）",
+        "kind": "openai-realtime-transcription",
+        "model": "gpt-live-transcribe",
+        "baseUrl": "wss://api.openai.com/v1/realtime",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "options": {
+          "delay": "low",
+          "turnDetection": {
+            "type": "server_vad",
+            "threshold": 0.2,
+            "prefixPaddingMs": 300,
+            "silenceDurationMs": 400
+          }
+        }
+      },
+      {
+        "id": "openai-gpt-transcribe",
+        "label": "OpenAI GPT-Transcribe（检测语言·示例·未验证）",
+        "kind": "openai-realtime-transcription",
+        "model": "gpt-transcribe",
+        "baseUrl": "wss://api.openai.com/v1/realtime",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "options": {
+          "turnDetection": {
+            "type": "server_vad",
+            "threshold": 0.2,
+            "prefixPaddingMs": 300,
+            "silenceDurationMs": 400
+          }
+        }
+      },
+      {
+        "id": "assemblyai-universal-3-5-pro",
+        "label": "AssemblyAI Universal-3.5 Pro Realtime（示例·未验证）",
+        "kind": "assemblyai-streaming",
+        "model": "universal-3-5-pro",
+        "baseUrl": "wss://streaming.assemblyai.com/v3/ws",
+        "apiKeyEnv": "ASSEMBLYAI_API_KEY",
+        "options": {
+          "mode": "balanced",
+          "speakerLabels": true,
+          "maxSpeakers": 6
+        }
+      },
+      {
+        "id": "volcengine-bigasr-sauc",
+        "label": "火山引擎豆包大模型流式 ASR（示例·未验证）",
+        "kind": "volcengine-sauc",
+        "model": "bigmodel_async",
+        "baseUrl": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+        "apiKeyEnv": "VOLCENGINE_ACCESS_TOKEN",
+        "options": {
+          "resourceId": "volc.bigasr.sauc.concurrent",
+          "enableItn": true,
+          "endWindowSize": 800
+        }
+      },
+      {
+        "id": "elevenlabs-scribe-v2-rt",
+        "label": "ElevenLabs Scribe v2 Realtime（示例·未验证）",
+        "kind": "elevenlabs-scribe-realtime",
+        "model": "scribe_v2_realtime",
+        "baseUrl": "wss://api.elevenlabs.io/v1/speech-to-text/realtime",
+        "apiKeyEnv": "ELEVENLABS_API_KEY",
+        "options": {
+          "commitStrategy": "manual",
+          "includeLanguageDetection": true
+        }
+      },
+      {
+        "id": "speechmatics-rt-enhanced",
+        "label": "Speechmatics Realtime Enhanced（示例·未验证）",
+        "kind": "speechmatics-realtime",
+        "model": "enhanced",
+        "baseUrl": "wss://global.rt.speechmatics.com/v2/",
+        "apiKeyEnv": "SPEECHMATICS_API_KEY",
+        "options": {
+          "enablePartials": true,
+          "maxDelaySeconds": 4
+        }
+      },
+      {
+        "id": "tencent-asr-v2-speaker",
+        "label": "腾讯云实时 ASR 16k_zh_en_speaker_2.0（示例·未验证）",
+        "kind": "tencent-asr",
+        "model": "16k_zh_en_speaker_2.0",
+        "baseUrl": "wss://asr.cloud.tencent.com/asr/v2/<appid>",
+        "apiKeyEnv": "TENCENT_SECRET_KEY",
+        "options": {
+          "appId": "",
+          "secretId": "",
+          "engineModelType": "16k_zh_en_speaker_2.0",
+          "voiceFormat": 1,
+          "wordInfo": 1,
+          "needvad": 1
+        }
+      },
+      {
+        "id": "bailian-qwen-audio-3.0-asr-streaming",
+        "label": "百炼 Qwen-Audio-3.0-ASR-Flash-Streaming（示例·未验证）",
         "kind": "dashscope-task-asr",
-        "model": "paraformer-realtime-v2",
+        "model": "qwen-audio-3.0-asr-flash-streaming",
         "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
         "apiKeyEnv": "DASHSCOPE_API_KEY",
-        "pricePerSecondCny": 0.00024,
         "options": {
           "sampleRate": 16000,
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
           "semanticPunctuationEnabled": false,
-          "maxSentenceSilence": 800
+          "maxSentenceSilence": 800,
+          "multiThresholdModeEnabled": true,
+          "heartbeat": true,
+          "startTimeoutSeconds": 10
         }
       }
     ]
   },
   "translation": {
     "active": "bailian-qwen35-flash",
-    "fallback": [
-      "bailian-qwen-mt-flash"
-    ],
+    "fallback": [],
     "providers": [
       {
         "id": "bailian-qwen35-flash",
@@ -85,7 +190,7 @@
         "kind": "openai-compatible",
         "model": "qwen3.5-flash",
         "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "apiKey": "",
         "options": {
           "temperature": 0.3,
           "maxTokens": 256,
@@ -96,25 +201,44 @@
         }
       },
       {
-        "id": "bailian-qwen-mt-flash",
-        "label": "百炼 Qwen-MT-Flash（极速基线）",
-        "kind": "qwen-mt",
-        "model": "qwen-mt-flash",
-        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "id": "anthropic-claude-haiku",
+        "label": "Anthropic Claude Haiku（示例·未验证）",
+        "kind": "anthropic-messages",
+        "model": "claude-haiku-4-5",
+        "baseUrl": "https://api.anthropic.com",
+        "apiKeyEnv": "ANTHROPIC_API_KEY",
         "options": {
-          "timeoutSeconds": 4,
-          "tmPairs": 4
+          "temperature": 0.3,
+          "maxTokens": 256,
+          "timeoutSeconds": 6
+        }
+      },
+      {
+        "id": "google-gemini-flash",
+        "label": "Google Gemini Flash（示例·未验证）",
+        "kind": "google-genai",
+        "model": "gemini-2.5-flash",
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+        "apiKeyEnv": "GEMINI_API_KEY",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 256,
+          "timeoutSeconds": 6
         }
       }
     ]
   },
   "subtitle": {
-    "sourceLanguage": "ja",
-    "targetLanguage": "zh",
-    "anchor": "end",
+    "sourceLanguage": {
+      "mode": "specified",
+      "tag": "ja"
+    },
+    "targetLanguage": "zh-Hans",
+    "anchor": "start",
     "holdSecondsMin": 1.2,
+    "holdSecondsMax": 7.0,
     "holdSecondsPerChar": 0.06,
+    "translationWorkers": 4,
     "manualOffsetSeconds": 0.0,
     "bilingual": true
   }

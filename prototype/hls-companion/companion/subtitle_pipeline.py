@@ -46,6 +46,14 @@ PCM_BYTES_PER_SECOND = 16_000 * 2
 PCM_CHUNK_BYTES = 3_200
 PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
 
+# Finals held while the media timeline is unavailable. The count bound protects
+# memory; the grace lets a slightly late cue still be published once the
+# timeline lands, while anything older than the whole delay window is beyond the
+# viewer's playhead and can never be shown.
+_PENDING_FINALS_MAX = 256
+_PENDING_FINAL_GRACE_SECONDS = 10.0
+
+
 def _usage_integer(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -144,19 +152,12 @@ class PipelineStats:
     translation_provider_failures: int = 0
     translation_attempts: int = 0
     asr_reconnects: int = 0
-    final_deduplicated: int = 0
     final_discarded: int = 0
     pcm_dropped: int = 0
-    forced_commits: int = 0
-    commit_failures: int = 0
+    pending_finals_dropped: int = 0
     overlong_cues: int = 0
     source_only_cues: int = 0
-    unjoined_finals: int = 0
-    prefix_cues: int = 0
-    final_tails: int = 0
-    final_absorbed: int = 0
-    split_conflicts: int = 0
-    prefix_rewrites: int = 0
+    unmapped_observations: int = 0
     speaker_revisions: int = 0
     last_error: str | None = None
     last_translation_error: str | None = None
@@ -199,24 +200,6 @@ class _CueLatency:
     audio_pushed: float | None = None
 
 
-@dataclasses.dataclass
-class _SplitState:
-    """Prefix-split bookkeeping for one in-flight utterance (item id keyed).
-
-    ``emitted`` accumulates the raw stable-prefix slices already emitted as
-    cues; ``chain_end`` is the pipeline audio position used as the tEnd of the
-    last emitted slice (and the tStart of the next). The provider's final is
-    reconciled against ``emitted`` so only the un-emitted tail becomes a cue.
-    ``speaker`` remembers Soniox's latest token-level diarization label so a
-    later interim/final can stabilize the identity for subsequent slices.
-    """
-
-    emitted: str = ""
-    chain_end: float | None = None
-    rewritten: bool = False
-    speaker: str | None = None
-
-
 class SubtitlePipeline:
     """Decode private HLS audio into source and translated subtitle cues."""
 
@@ -242,9 +225,6 @@ class SubtitlePipeline:
         hold_maximum: float = 7.0,
         overlong_chars: int = 40,
         silence_duration_ms: int = 400,
-        max_utterance_seconds: float = 0.0,
-        prefix_split_enabled: bool = True,
-        prefix_split_after_seconds: float = 3.0,
         translation_workers: int = 4,
         translation_timeout_seconds: float = 6.0,
         context_pairs: int = 10,
@@ -288,19 +268,6 @@ class SubtitlePipeline:
         self.hold_maximum = hold_maximum
         self.overlong_chars = overlong_chars
         self.silence_duration_seconds = max(0.0, silence_duration_ms / 1000.0)
-        self.max_utterance_seconds = max(0.0, max_utterance_seconds)
-        # Prefix split (redesign Fix F, P2 item): emit confirmed sub-sentences
-        # from the realtime provider's stable prefix while a long utterance is
-        # still being spoken. Measured on the 2026-08-31 countdown live
-        # (JInec6ORhIk): 6 of 21 utterances ran >=9.2s (worst 30.2s) because the
-        # MC never pauses 400ms; waiting for their finals meant the whole
-        # sentence appeared only after it was over (RC-4). Splitting the
-        # confirmed prefix delivered 32 sub-sentences an average 8.4s earlier.
-        # Only Qwen's realtime protocol declares a confirmed monotonic prefix.
-        # Task-ASR providers (Fun-ASR/Paraformer) emit mutable whole-sentence
-        # hypotheses; splitting them as stable text would duplicate/rewrite cues.
-        self.prefix_split_enabled = prefix_split_enabled and asr_provider.capabilities.stable_prefix
-        self.prefix_split_after_seconds = max(0.0, prefix_split_after_seconds)
         self.translation_workers = max(1, int(translation_workers))
         self.translation_timeout_seconds = translation_timeout_seconds
         self.recovery_seconds = recovery_seconds
@@ -316,13 +283,11 @@ class SubtitlePipeline:
         self.subprocess_factory = subprocess_factory
         self.context = RollingContext(context_pairs, context_seconds)
         self.stats = PipelineStats()
-        self._manual_commit_ok = bool(getattr(self.asr_provider.capabilities, "manual_commit", False))
-        self.caption_chunker = CaptionChunker(manual_commit=self._manual_commit_ok, realtime=True)
+        self.caption_chunker = CaptionChunker(realtime=True)
         self._caption_deadline_changed = asyncio.Event()
         self._generation = 0
         self._next_chunk_order = 1
         self._caption_exact_timing: dict[str, bool] = {}
-        self._caption_evidence_seen = False
         self._begin_generation()
 
         self.media_epoch: float | None = None
@@ -351,23 +316,16 @@ class SubtitlePipeline:
         # previous utterance's final, so the slots get clobbered before the
         # final that owns them is handled.
         self._vad_spans: "OrderedDict[str, dict[str, float]]" = OrderedDict()
-        # Prefix-split state per utterance; reset alongside the VAD spans
-        # whenever a new ASR session restarts the provider's audio clock.
-        self._split_state: "OrderedDict[str, _SplitState]" = OrderedDict()
         # Breadcrumbs mapping the ASR session's audio clock onto our pcm clock;
         # see _server_to_pipeline. Reset whenever a new ASR session starts.
         self._push_breadcrumbs: deque[tuple[float, float]] = deque(maxlen=1200)
         self._audio_push_times: deque[tuple[float, float]] = deque(maxlen=1200)
         self._evidence_times: deque[tuple[float, float]] = deque(maxlen=1200)
         self._stream_pushed_seconds = 0.0
-        self._previous_final: str | None = None
-        self._previous_final_end: float | None = None
-        self._previous_final_speaker: str | None = None
         self._degrade_level = 0
         self._empty_since: float | None = None
         self._active_translation_provider_id: str | None = None
         self._translation_usage_by_provider: dict[str, dict[str, Any]] = {}
-        self._last_forced_commit_at: float | None = None
         # CaptionChunker may emit several chunks in one decision; stage them
         # briefly so the existing materialization path preserves their order.
         self._pending_finals: deque[_PendingFinal] = deque()
@@ -388,7 +346,7 @@ class SubtitlePipeline:
         self._latency_unknown = 0
         self._latency_unknown_reasons: dict[str, int] = {}
         self._latency_last_sample_at: float | None = None
-        self._timing_source_counts = {"asr": 0, "vad": 0, "approx": 0}
+        self._timing_source_counts = {"asr": 0, "vad": 0}
 
     @property
     def running(self) -> bool:
@@ -410,8 +368,6 @@ class SubtitlePipeline:
         self._generation += 1
         self._next_chunk_order = 1
         self._caption_exact_timing.clear()
-        self._caption_evidence_seen = False
-        self.caption_chunker.manual_commit = self._manual_commit_ok
         self.caption_chunker.reset(self._generation)
         self._caption_deadline_changed.set()
 
@@ -568,22 +524,6 @@ class SubtitlePipeline:
                         await process.wait()
         self._stopping = False
 
-    def _ingest_pcm_chunk(self, chunk: bytes, chunk_start: float) -> None:
-        """Advance the PCM clock and dispatch one complete chunk."""
-        self._pcm_offset = max(
-            self._pcm_offset,
-            chunk_start + len(chunk) / self.pcm_bytes_per_second,
-        )
-        queue = self._pcm_queue
-        if queue is None:
-            return
-        item = (chunk, chunk_start)
-        if queue.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                queue.get_nowait()
-            self.stats.pcm_dropped += 1
-        queue.put_nowait(item)
-
     async def _enqueue_pcm_chunk(self, chunk: bytes, chunk_start: float) -> None:
         """Queue decoded PCM with bounded backpressure for the production reader."""
         self._pcm_offset = max(
@@ -661,54 +601,13 @@ class SubtitlePipeline:
                 with contextlib.suppress(Exception):
                     await stream.aclose()
                 continue
-            requested_commit = await self._advance_caption_frontier(self._last_sent_pcm_offset, stream)
-            # Compatibility safety cap remains opt-in only for providers/events
-            # that have not entered the normalized evidence path. This avoids a
-            # second timer commit after the shared CaptionChunker already made
-            # a local cut or hard-deadline decision.
-            if not requested_commit and not self._caption_evidence_seen:
-                await self._maybe_force_commit(stream)
-
-    def _open_utterance_start(self) -> float | None:
-        """Start offset of the utterance the provider is still accumulating."""
-        for span in reversed(self._vad_spans.values()):
-            if "start" in span and "end" not in span:
-                return span["start"]
-        return None
-
-    async def _maybe_force_commit(self, stream: ASRStream) -> None:
-        """Hard-cap utterance length. Disabled by default (max_utterance_seconds=0).
-
-        Measured on real audio, forcing a commit mid-speech cuts inside words
-        (producing fragments like a lone "お。"), and the final it triggers
-        arrives with no preceding speech_stopped, so the cue loses its end
-        boundary. Server VAD at 400ms already segments into 1.6s median units,
-        which is why this is off unless explicitly configured.
-        """
-        if not self._manual_commit_ok or self.max_utterance_seconds <= 0:
-            return
-        open_start = self._open_utterance_start()
-        if open_start is None:
-            return
-        if self._last_sent_pcm_offset - open_start <= self.max_utterance_seconds:
-            return
-        now = self.monotonic()
-        cooldown = self.max_utterance_seconds / 2.0
-        if self._last_forced_commit_at is not None and now - self._last_forced_commit_at < cooldown:
-            return
-        self._last_forced_commit_at = now
-        try:
-            await stream.commit()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            # Provider does not accept manual commits under server_vad (known
-            # open question, redesign Fix J): degrade to VAD-only segmentation.
-            self._manual_commit_ok = False
-            self.stats.commit_failures += 1
-            self._record_error(exc)
-        else:
-            self.stats.forced_commits += 1
+            # Cut decisions belong to the shared CaptionChunker alone. The
+            # former second timer commit here (legacy max-utterance cap) was
+            # disabled twice over -- max_utterance_seconds defaulted to 0.0 and
+            # _caption_evidence_seen killed it after the first observation -- and
+            # has been removed, so no path can cut a caption behind the
+            # chunker's back.
+            await self._advance_caption_frontier(self._last_sent_pcm_offset, stream)
 
     async def _asr_manager(self) -> None:
         backoff = 0.5
@@ -733,7 +632,6 @@ class SubtitlePipeline:
                 self._push_breadcrumbs.clear()
                 self._stream_pushed_seconds = 0.0
                 self._vad_spans.clear()
-                self._split_state.clear()
                 self._begin_generation()
                 self._stream = stream
                 backoff = 0.5
@@ -801,10 +699,18 @@ class SubtitlePipeline:
             observation_handled = await self._handle_caption_observation(event.caption_observation, event)
         if event.type == "interim":
             if not observation_handled:
-                self._handle_interim(event)
+                # Every shipped Adapter attaches a CaptionObservation to its
+                # interim/final events (verified across all 12 asr_*.py
+                # adapters), so this means the evidence could not be mapped onto
+                # the pipeline audio clock -- malformed token timestamps, or a
+                # third-party Adapter that predates the normalized contract.
+                # Count it and drop it rather than falling through to a second
+                # segmentation mechanism whose cues never entered translation
+                # context.
+                self.stats.unmapped_observations += 1
         elif event.type == "final":
             if not observation_handled:
-                await self._handle_final(event)
+                self.stats.unmapped_observations += 1
         elif event.type == "speaker_revision":
             # Backend-owned diarization revision (e.g. AssemblyAI
             # SpeakerRevision): the adapter reports the corrected label for an
@@ -820,7 +726,15 @@ class SubtitlePipeline:
         interpolated. Text/final evidence can then use the authoritative VAD
         start and current audio frontier without claiming word-level timing.
         """
-        item_id = observation.item_id
+        # An Adapter that leaves item_id None must not take the session down:
+        # CaptionChunker builds its lane key as "item:" + item_id, and a raise
+        # here propagates through _consume_asr_events into _asr_manager's
+        # except Exception, i.e. a full ASR reconnect -- forever, if the
+        # Provider keeps doing it. Every shipped Adapter already normalizes with
+        # str(item_id or "0"); enforce the same contract at this boundary rather
+        # than trusting it.
+        item_id = str(observation.item_id or "0")
+        observation = dataclasses.replace(observation, item_id=item_id)
         span = self._vad_spans.get(item_id, {})
         mapped_begin = self._server_to_pipeline(observation.begin_pcm)
         mapped_end = self._server_to_pipeline(observation.end_pcm)
@@ -860,7 +774,6 @@ class SubtitlePipeline:
         mapped = self._map_caption_observation(observation)
         if mapped is None:
             return False
-        self._caption_evidence_seen = True
         token_timing = bool(mapped.tokens) and all(
             token.begin_pcm is not None and token.end_pcm is not None
             for token in mapped.tokens
@@ -909,21 +822,16 @@ class SubtitlePipeline:
                     pass
             self._materialize_caption_decision(self.caption_chunker.expire(self.monotonic()))
 
-    async def _advance_caption_frontier(self, frontier_pcm: float, stream: ASRStream) -> bool:
-        decision = self.caption_chunker.advance_audio(frontier_pcm)
-        self._materialize_caption_decision(decision)
-        if not decision.request_hard_commit:
-            return False
-        try:
-            await stream.commit()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._manual_commit_ok = False
-            self.caption_chunker.disable_manual_commit()
-            self.stats.commit_failures += 1
-            self._record_error(exc)
-        return True
+    async def _advance_caption_frontier(self, frontier_pcm: float, stream: ASRStream) -> None:
+        """Report the audio frontier so the chunker can count pending evidence.
+
+        This deliberately never asks the Provider for a commit. Advancing audio
+        cannot make a lexical boundary linguistically safe, and the branch that
+        used to do so was unreachable: it was gated on
+        ``decision.request_hard_commit``, which no code path ever set true.
+        """
+        del stream
+        self._materialize_caption_decision(self.caption_chunker.advance_audio(frontier_pcm))
 
     def _flush_caption_session(self) -> list[Cue]:
         decision = self.caption_chunker.flush_utterance(None)
@@ -960,9 +868,13 @@ class SubtitlePipeline:
             return
         # A caption can contain evidence from several ASR items or be emitted
         # by a later speaker's event. Its own units own timing provenance.
-        timing_source: TimingSource = "asr" if chunk.exact_timing else (
-            "vad" if chunk.begin_pcm is not None else "approx"
-        )
+        #
+        # There is no third case: CaptionChunk.begin_pcm is a non-optional float
+        # (_chunk_times substitutes state.begin_pcm or 0.0), so the old
+        # `"vad" if chunk.begin_pcm is not None else "approx"` was a tautology
+        # and "approx" was unreachable. The UI displayed that permanently-zero
+        # counter as if it meant something.
+        timing_source: TimingSource = "asr" if chunk.exact_timing else "vad"
         emitted_at = self.monotonic()
         pending = _PendingFinal(
             text=cleaned,
@@ -982,173 +894,14 @@ class SubtitlePipeline:
         )
         self._next_chunk_order += 1
         self._pending_finals.append(pending)
-
-    def _split_state_for(self, item_id: str) -> _SplitState:
-        """Get (creating if needed) the prefix-split state for an utterance."""
-        state = self._split_state.get(item_id)
-        if state is None:
-            state = _SplitState()
-            self._split_state[item_id] = state
-            while len(self._split_state) > 64:
-                self._split_state.popitem(last=False)
-        return state
-
-    def _handle_interim(self, event: ASREvent) -> None:
-        """Emit confirmed sub-sentences while a long utterance is still open.
-
-        The provider's stable prefix (``text``) is confirmed wording that grows
-        monotonically during the utterance; the ``stash`` tail may be rewritten
-        and is never emitted here. Timing chains off an authoritative provider
-        onset: normally ``speech_started``, or the interim's own begin timestamp
-        when providers such as Soniox report endpoint events only at utterance
-        completion. The first slice's tStart is that exact speech onset; every
-        slice's tEnd is the audio position at the moment its closing boundary
-        was confirmed, and the next slice starts where the previous ended.
-        Errors do not accumulate because each tEnd re-anchors to the audio clock
-        instead of adding a guessed duration; the final's exact speech_stopped
-        endpoint later closes the last gap (the tail cue).
-        """
-        if not self.prefix_split_enabled:
-            return
-        item = event.item_id
-        text = event.text or ""
-        if not item or not text:
-            return
-        span = self._span_for(item)
-        if "start" not in span:
-            interim_start = self._server_to_pipeline(event.begin_pcm)
-            if interim_start is not None:
-                span["start"] = max(0.0, interim_start)
-        if "start" not in span:
-            # No authoritative audio anchor: keep the utterance final-only
-            # rather than fabricate a chain origin from event arrival time.
-            return
-        state = self._split_state_for(item)
-        if event.speaker is not None:
-            state.speaker = event.speaker
-        if state.rewritten or (state.emitted and not text.startswith(state.emitted)):
-            # The "stable" prefix rewrote text we already emitted. Stop
-            # splitting this utterance; the final reconciles as best it can.
-            if not state.rewritten:
-                state.rewritten = True
-                self.stats.prefix_rewrites += 1
-            return
-        newly = newly_confirmed_sentences(text, state.emitted)
-        if newly is None:
-            return
-        confirm_position = self._last_sent_pcm_offset
-        begin = state.chain_end if state.chain_end is not None else span["start"]
-        if state.chain_end is None and confirm_position - span["start"] < self.prefix_split_after_seconds:
-            # Utterances shorter than the cap keep today's final-only
-            # behaviour; on real audio the prefix of a short utterance is
-            # confirmed at/after the final anyway (measured gain: 0.00s).
-            return
-        end = max(begin, confirm_position)
-        cleaned = clean_subtitle_text(newly)
-        state.emitted += newly
-        state.chain_end = end
-        if cleaned is None:
-            self.stats.final_discarded += 1
-            return
-        if self._ingest_is_unhealthy():
-            self.stats.suppressed_by_ingest_error += 1
-            return
-        pending = _PendingFinal(
-            text=cleaned,
-            begin_pcm=begin,
-            end_pcm=end,
-            timing_source="vad",
-            lang=event.language,
-            audio_end_wall=self.wall_clock() - max(0.0, self._pcm_offset - end),
-            speaker=state.speaker or event.speaker,
-        )
-        self._pending_finals.append(pending)
-        self.stats.prefix_cues += 1
-        self._flush_pending_finals()
-
-    async def _handle_final(self, event: ASREvent) -> list[Cue]:
-        cleaned = clean_subtitle_text(event.text)
-        if cleaned is None:
-            self.stats.final_discarded += 1
-            return []
-        # Only treat a repeat as a resend when it follows closely. At 400ms
-        # segmentation a speaker genuinely repeating a short interjection
-        # ("うん。" twice in a row) is common, and dropping the second one
-        # silently deletes real speech.
-        near_in_time = (
-            self._previous_final_end is not None
-            and self._last_sent_pcm_offset - self._previous_final_end < 1.0
-        )
-        same_speaker = (
-            event.speaker is None
-            or self._previous_final_speaker is None
-            or event.speaker == self._previous_final_speaker
-        )
-        if near_in_time and same_speaker and is_duplicate_final(cleaned, self._previous_final):
-            self.stats.final_deduplicated += 1
-            return []
-        self._previous_final = cleaned
-        self._previous_final_end = self._last_sent_pcm_offset
-        self._previous_final_speaker = event.speaker
-        if self._ingest_is_unhealthy():
-            self.stats.suppressed_by_ingest_error += 1
-            return []
-
-        # Join this transcript to its own VAD boundaries by the provider's item
-        # id, so interleaved events cannot mispair them.
-        span = self._vad_spans.pop(event.item_id or "", {})
-        begin_pcm = span.get("start")
-        end_pcm = span.get("end")
-        if begin_pcm is not None and end_pcm is not None:
-            timing_source = "asr"
-        elif begin_pcm is not None:
-            # Utterance ended without a speech_stopped (manual commit, or the
-            # session closing). The start is still authoritative.
-            end_pcm, timing_source = self._last_sent_pcm_offset, "approx"
-        else:
-            begin_pcm, end_pcm, timing_source = None, self._last_sent_pcm_offset, "approx"
-            self.stats.unjoined_finals += 1
-        end_pcm = max(end_pcm, begin_pcm if begin_pcm is not None else 0.0)
-
-        # Reconcile against sub-sentences already emitted from the stable
-        # prefix: the final must contribute only text that has not been shown.
-        text_for_cue = cleaned
-        state = self._split_state.pop(event.item_id or "", None) if event.item_id else None
-        speaker = event.speaker or (state.speaker if state is not None else None)
-        if state is not None and state.emitted:
-            if event.text.startswith(state.emitted):
-                remainder = clean_subtitle_text(event.text[len(state.emitted):])
-                if remainder is None:
-                    # Everything the final adds was already displayed as
-                    # prefix cues; nothing left to schedule.
-                    self.stats.final_absorbed += 1
-                    return []
-                text_for_cue = remainder
-                if state.chain_end is not None:
-                    begin_pcm = state.chain_end
-                    end_pcm = max(end_pcm, begin_pcm)
-                self.stats.final_tails += 1
-            else:
-                # The final disagrees with the confirmed prefix we already
-                # emitted (contract violation upstream). Show the whole final
-                # rather than lose content; count it for diagnosis.
-                self.stats.split_conflicts += 1
-
-        # Steady-state estimate of when this sentence's audio end entered the
-        # pipeline; used for readyLag (redesign Fix E).
-        audio_end_wall = self.wall_clock() - max(0.0, self._pcm_offset - max(end_pcm, 0.0))
-
-        pending = _PendingFinal(
-            text=text_for_cue,
-            begin_pcm=begin_pcm,
-            end_pcm=end_pcm,
-            timing_source=timing_source,
-            lang=event.language,
-            audio_end_wall=audio_end_wall,
-            speaker=speaker,
-        )
-        self._pending_finals.append(pending)
-        return self._flush_pending_finals()
+        # A held final is only useful while the timeline it belongs to can still
+        # be reached. In audio-leg mode the flush waits for the media anchor to
+        # converge; if that never happens the deque used to grow without bound
+        # while nothing was published at all. Bound it and count what is lost so
+        # the condition is visible instead of silent.
+        while len(self._pending_finals) > _PENDING_FINALS_MAX:
+            self._pending_finals.popleft()
+            self.stats.pending_finals_dropped += 1
 
     def _flush_pending_finals(self) -> list[Cue]:
         """Materialize the current CaptionChunker decision in order."""
@@ -1158,6 +911,11 @@ class SubtitlePipeline:
             # Audio-leg mode: without a measured offset the cue would land on
             # a meaningless timeline. Hold (not drop) until the anchor
             # converges — typically ~3s after both legs produce media.
+            #
+            # Holding is bounded by time as well as by count: a cue still held
+            # long after its audio finished can never be displayed on the
+            # delayed player anyway, so keeping it only delays every later cue.
+            self._drop_stale_pending_finals()
             return []
         cues: list[Cue] = []
         while self._pending_finals:
@@ -1170,6 +928,22 @@ class SubtitlePipeline:
                 break
             cues.append(cue)
         return cues
+
+    def _drop_stale_pending_finals(self) -> None:
+        """Discard held finals that can no longer be displayed.
+
+        Called only while the flush is blocked on a non-converged anchor. The
+        cue's own audio finished at ``audio_end_wall``; once that is further back
+        than the whole playback delay window, publishing it would place a
+        subtitle behind the viewer's playhead, so it is resolved terminally
+        instead of accumulating.
+        """
+        if self.playback_delay_seconds is None:
+            return
+        horizon = self.wall_clock() - max(0.0, float(self.playback_delay_seconds())) - _PENDING_FINAL_GRACE_SECONDS
+        while self._pending_finals and self._pending_finals[0].audio_end_wall < horizon:
+            self._pending_finals.popleft()
+            self.stats.pending_finals_dropped += 1
 
     @staticmethod
     def _frontier_time(samples: deque[tuple[float, float]], position: float) -> float | None:
@@ -1338,6 +1112,14 @@ class SubtitlePipeline:
                 if self._degrade_level >= 2 and self.fallback_translation_provider is not None:
                     provider = self.fallback_translation_provider
                 if provider is None:
+                    # A runtime provider hot-swap (server.py:551-553 sets both
+                    # providers to None) can leave a cue queued with no provider
+                    # to serve it. Falling straight through to task_done() left
+                    # the cue in state "src" forever and retained its
+                    # _cue_latencies and _audio_end_walls entries, because only
+                    # _record_ready_lag ever pops those. Resolve it terminally
+                    # instead.
+                    self._drop_translation_cue(cue)
                     continue  # the finally below still runs task_done()
                 budget = self._translation_budgets.get(cue.id)
                 if budget is None:
@@ -1690,6 +1472,7 @@ class SubtitlePipeline:
                 else None
             ),
             "pendingFinals": len(self._pending_finals),
+            "pendingFinalsDropped": self.stats.pending_finals_dropped,
             "pcmOffset": round(self._pcm_offset, 3),
             "asrSeconds": round(self._pcm_offset, 3),
             "asrUsage": {"seconds": round(self._pcm_offset, 3)},
@@ -1702,32 +1485,25 @@ class SubtitlePipeline:
             "totalEstimateReason": total_reason,
             "estimatedCostCny": asr_cost,
             "pcmDropped": self.stats.pcm_dropped,
-            "forcedCommits": self.stats.forced_commits,
-            "commitFailures": self.stats.commit_failures,
             "captionChunks": chunker.caption_chunks,
             "chunkSpanP50": round(chunker.chunk_span_p50, 3),
             "chunkSpanP95": round(chunker.chunk_span_p95, 3),
             "chunkSpanMax": round(chunker.chunk_span_max, 3),
             "chunkCutReasons": dict(chunker.chunk_cut_reasons),
-            "hardCapCuts": chunker.hard_cap_cuts,
-            "hardCapOvershoots": chunker.hard_cap_overshoots,
-            "hardCapPendingEvidence": chunker.hard_cap_pending_evidence,
+            # Informational only: no timer force-cuts a caption, so a non-zero
+            # value means an utterance stayed open past the soft 6s reference
+            # without a safe boundary -- not that a cap was violated.
+            "pendingEvidenceOverSoftSpan": chunker.pending_evidence_over_soft_span,
+            "spanOverSoftTarget": chunker.span_over_soft_target,
             "localAgreementCommits": chunker.local_agreement_commits,
             "localAgreementRewrites": chunker.local_agreement_rewrites,
-            "manualHardCommits": chunker.manual_hard_commits,
             "residualFlushes": chunker.residual_flushes,
             "finalReconciliationConflicts": chunker.final_reconciliation_conflicts,
             "translationContextMissingImmediatePredecessor": self.stats.translation_context_missing_immediate_predecessor,
             "overlongCues": self.stats.overlong_cues,
             "sourceOnlyCues": self.stats.source_only_cues,
-            "unjoinedFinals": self.stats.unjoined_finals,
-            "prefixCues": self.stats.prefix_cues,
-            "finalTails": self.stats.final_tails,
-            "finalAbsorbed": self.stats.final_absorbed,
-            "splitConflicts": self.stats.split_conflicts,
-            "prefixRewrites": self.stats.prefix_rewrites,
+            "unmappedObservations": self.stats.unmapped_observations,
             "finalDiscarded": self.stats.final_discarded,
-            "finalDeduplicated": self.stats.final_deduplicated,
             "speakerRevisions": self.stats.speaker_revisions,
             "timingSourceCounts": dict(self._timing_source_counts),
             "readyLagP50": terminal_ready_p50,

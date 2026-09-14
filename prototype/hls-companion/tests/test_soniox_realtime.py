@@ -228,12 +228,12 @@ class SonioxRealtimeTests(unittest.IsolatedAsyncioTestCase):
         # evidence instead of forcing a protocol finalize in mid-speech.
         from companion.caption_chunker import CaptionChunker
 
-        chunker = CaptionChunker(manual_commit=provider.capabilities.manual_commit)
+        chunker = CaptionChunker(realtime=True)
         chunker.reset(1)
         chunker.open_item("japanese", 0.0)
         decision = chunker.advance_audio(6.1)
-        self.assertFalse(decision.request_hard_commit)
         self.assertTrue(decision.pending_evidence)
+        self.assertEqual(decision.chunks, ())
 
     async def test_subword_tokens_are_normalized_to_lexical_tokens_before_chunking(self) -> None:
         stream = await self.provider().stream(

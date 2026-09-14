@@ -22,6 +22,58 @@
     return Number.isFinite(Number(value)) ? Number(value) : fallback;
   }
 
+  /*
+   * Bounded recovery for fatal hls.js errors.
+   *
+   * The previous handler called `hls.recoverMediaError()` for every fatal
+   * MEDIA_ERROR and `hls.startLoad()` for every NETWORK_ERROR, unconditionally.
+   * In this bundled hls.js `recoverMediaError()` is a full
+   * detachMedia() + attachMedia() + startLoad() rebuild: it discards the whole
+   * SourceBuffer, so it always causes a visible rebuffer. With no attempt cap
+   * and no backoff, a stream that keeps producing media errors re-enters the
+   * rebuild forever -- "video is stuttery" was largely this loop feeding itself.
+   *
+   * Escalation ladder, reset whenever playback actually makes progress:
+   *   media  #1-#2 -> recover-media   (cheapest rebuild)
+   *   media  #3    -> swap-codec      (different failure mode, no rebuild)
+   *   media  #4+   -> reload          (full manifest reload)
+   *   network      -> reload
+   *   attempts >= MSE_RECOVERY_MAX_ATTEMPTS within the window -> give-up
+   *
+   * Returning an action instead of performing it keeps the policy testable
+   * without a browser or a live stream.
+   */
+  const MSE_RECOVERY_MAX_ATTEMPTS = 5;
+  const MSE_RECOVERY_BASE_DELAY_MS = 500;
+  const MSE_RECOVERY_MAX_DELAY_MS = 8000;
+
+  function mseRecoveryBackoffMs(attempts) {
+    const exponent = Math.max(0, finiteOr(attempts, 0));
+    return Math.min(MSE_RECOVERY_MAX_DELAY_MS, MSE_RECOVERY_BASE_DELAY_MS * Math.pow(2, exponent));
+  }
+
+  function decideMseErrorRecovery({ errorType, attemptsInWindow = 0 } = {}) {
+    const attempts = Math.max(0, finiteOr(attemptsInWindow, 0));
+    const delayMs = mseRecoveryBackoffMs(attempts);
+    if (attempts >= MSE_RECOVERY_MAX_ATTEMPTS) {
+      return {
+        action: "give-up",
+        delayMs: 0,
+        attempts,
+        reason: `${attempts} consecutive fatal ${errorType || "unknown"} errors; refusing to rebuild again`,
+      };
+    }
+    if (errorType === "network") {
+      return { action: "reload", delayMs, attempts, reason: "network error" };
+    }
+    if (errorType === "media") {
+      if (attempts <= 1) return { action: "recover-media", delayMs, attempts, reason: "media error" };
+      if (attempts === 2) return { action: "swap-codec", delayMs, attempts, reason: "media error repeated" };
+      return { action: "reload", delayMs, attempts, reason: "media error persisted" };
+    }
+    return { action: "give-up", delayMs: 0, attempts, reason: `unrecoverable error type: ${errorType}` };
+  }
+
   /**
    * Classify why the local live playlist stopped advancing.
    *
@@ -107,7 +159,7 @@
     return { action: "normal", desiredDelay, playbackRate: 1 };
   }
 
-  const exported = { decidePlaybackRecovery, classifySourceHealth };
+  const exported = { decidePlaybackRecovery, classifySourceHealth, decideMseErrorRecovery, MSE_RECOVERY_MAX_ATTEMPTS };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = exported;
   } else {

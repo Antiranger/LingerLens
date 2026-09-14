@@ -26,6 +26,7 @@ if (filesFrom) {
 }
 
 const forbiddenPaths = [
+  /^(?:build-desktop|release|\.venv-desktop)(\/|$)/i,
   /(^|\/)runtime\/(?!providers\.example\.json$)/i,
   /(^|\/)(?:output|stream|logs?|cache|captures?)(\/|$)/i,
   /(^|\/)\.playwright-cli(\/|$)/i,
@@ -40,7 +41,7 @@ const forbiddenPaths = [
 ];
 
 const textExtensions = new Set([
-  ".cmd", ".css", ".html", ".ini", ".js", ".json", ".md", ".ps1", ".py", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
+  ".cmd", ".cjs", ".css", ".html", ".ini", ".js", ".json", ".md", ".ps1", ".py", ".spec", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
 ]);
 const credentialPatterns = [
   { name: "credential material", regex: /["']?(?:api[_-]?key|access[_-]?token|client[_-]?secret|control[_-]?secret|password)["']?\s*[:=]\s*["'][^"'\r\n]{8,}["']/i },

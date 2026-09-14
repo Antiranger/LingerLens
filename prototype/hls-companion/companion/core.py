@@ -414,7 +414,10 @@ class YtDlpProbe:
         ]
         try:
             completed = subprocess.run(
-                command, capture_output=True, text=True, encoding="utf-8",
+                # The desktop entry keeps its own stdin open for the stop
+                # control pipe. yt-dlp never needs stdin; do not let it
+                # inherit that pipe or compete with the parent reader.
+                command, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=15, check=False,
             )
         except subprocess.TimeoutExpired as error:
@@ -641,6 +644,62 @@ _AUDIO_SETTS = (
 )
 
 
+# Private-window list size: must hold the public window (180s) plus the largest
+# publish delay (~48s) plus burst headroom.
+PRIVATE_HLS_LIST_SIZE = 250
+PRIVATE_HLS_DELETE_THRESHOLD = 60
+
+
+def hls_output_args(private_dir: Path, list_size: int = PRIVATE_HLS_LIST_SIZE) -> list[str]:
+    """The single source of truth for how LagLingo packages its private HLS.
+
+    Every packager -- production, the synthetic smoke test, and the subtitle
+    alignment smoke test -- must call this. They previously hand-rolled their
+    own argument lists, which is exactly how the smoke test came to package a
+    friendlier stream than production (``independent_segments`` and no
+    ``split_by_time``) and therefore could never observe the mid-GOP segment
+    defect that made live playback stutter.
+
+    The caller MUST run FFmpeg with ``cwd=private_dir``: ``init.mp4`` is a
+    relative name, and FFmpeg resolves it against the process working
+    directory, not against the playlist path.
+    """
+    return [
+        "-f",
+        "hls",
+        "-hls_time",
+        # A lower bound only. FFmpeg refuses to cut between keyframes, so the
+        # delivered segment length is the source GOP length whenever the GOP is
+        # longer than this. `split_by_time` used to force a 1s cut and therefore
+        # produced segments that began mid-GOP, which no MSE player can decode
+        # until the next keyframe -- measured on a 2s-GOP source as 20 segments
+        # instead of 10, i.e. roughly half of them undecodable. Segment length
+        # now follows the GOP, and the player's delay is expressed in seconds
+        # rather than segment counts, so a longer segment cannot silently
+        # multiply playback latency.
+        "1",
+        "-hls_list_size",
+        str(list_size),
+        "-hls_delete_threshold",
+        str(PRIVATE_HLS_DELETE_THRESHOLD),
+        "-hls_segment_type",
+        "fmp4",
+        "-hls_fmp4_init_filename",
+        # Keep the name relative so EXT-X-MAP stays relative and the same private
+        # playlist can be read through the Companion's loopback HTTP endpoint on
+        # Windows.
+        "init.mp4",
+        "-hls_flags",
+        # independent_segments is advertised because the publisher now only ever
+        # cuts on keyframes; the previous flags cut mid-GOP while omitting the
+        # tag, so the playlist described a stream that did not exist.
+        "delete_segments+program_date_time+temp_file+independent_segments",
+        "-hls_segment_filename",
+        str(private_dir / "seg_%09d.m4s"),
+        str(private_dir / "live.m3u8"),
+    ]
+
+
 def build_ffmpeg_command(
     inputs: SelectedInputs,
     private_dir: Path,
@@ -688,28 +747,9 @@ def build_ffmpeg_command(
             _AUDIO_SETTS,
             "-max_interleave_delta",
             "0",
-            "-f",
-            "hls",
-            "-hls_time",
-            "1",  # 1 秒分片；split_by_time 使其真正生效（不再受 GOP 约束）
-            "-hls_list_size",
-            # 私有窗口必须装下公开窗口（180s）+ 最大发布延迟（~48s）+ 突发余量
-            "250",
-            "-hls_delete_threshold",
-            "60",
-            "-hls_segment_type",
-            "fmp4",
-            "-hls_fmp4_init_filename",
-            # Keep EXT-X-MAP relative so the same private playlist can be read
-            # through the Companion's loopback HTTP endpoint on Windows.
-            "init.mp4",
-            "-hls_flags",
-            "delete_segments+program_date_time+temp_file+split_by_time",
-            "-hls_segment_filename",
-            str(private_dir / "seg_%09d.m4s"),
-            str(private_dir / "live.m3u8"),
         ]
     )
+    command.extend(hls_output_args(private_dir))
     return command
 
 
@@ -723,7 +763,7 @@ class Segment:
 
 class DelayedPlaylistPublisher:
     # The public playlist must stay long enough that a player deliberately
-    # sitting well behind the live edge (see liveSyncDurationCount in
+    # sitting well behind the live edge (see liveSyncDuration in
     # player.js) can also stall for a while without the segment it is about to
     # request being trimmed out from under it -- that turns a brief rebuffer
     # into a hard 404 stall.
@@ -746,7 +786,7 @@ class DelayedPlaylistPublisher:
         # Do not expose a playlist until it contains enough released media for
         # hls.js to start at its configured distance behind the public edge.
         # Without this gate a 15s target starts around 3–5s and never corrects
-        # itself, because liveSyncDurationCount cannot seek before sequence 0.
+        # itself, because a count-based live edge cannot seek before sequence 0.
         self.startup_buffer_seconds = startup_buffer_seconds
         self.pending: dict[str, Segment] = {}
         self.published: deque[Segment] = deque()
@@ -944,9 +984,14 @@ class DelayedPlaylistPublisher:
 
 class LiveSession:
     def __init__(self, runtime_dir: Path):
-        self.runtime_dir = runtime_dir
-        self.private_dir = runtime_dir / "private"
-        self.public_dir = runtime_dir / "public"
+        # FFmpeg runs with ``cwd`` set to the private output directory so its
+        # relative init filename is resolved alongside the HLS segments. Keep
+        # the entire output tree absolute; a relative ``--runtime-dir`` would
+        # otherwise be resolved a second time under that cwd and make FFmpeg
+        # fail with "No such file or directory" before the first segment.
+        self.runtime_dir = Path(runtime_dir).expanduser().resolve()
+        self.private_dir = self.runtime_dir / "private"
+        self.public_dir = self.runtime_dir / "public"
         self.process: subprocess.Popen[bytes] | None = None
         self.publisher: DelayedPlaylistPublisher | None = None
         self.quality: QualityOption | None = None
@@ -955,6 +1000,9 @@ class LiveSession:
         self.log_tail: deque[str] = deque(maxlen=30)
         self._log_thread: threading.Thread | None = None
         self.error: str | None = None
+        # Distinguish an expected child-process exit during stop/cleanup from
+        # an FFmpeg failure while the live session is still active.
+        self._stop_requested = False
         self.ingests: list[Any] = []
         self.source_process: subprocess.Popen[bytes] | None = None
         self.capture_clock: CaptureClock | None = None
@@ -976,6 +1024,7 @@ class LiveSession:
         shutil.rmtree(self.runtime_dir, ignore_errors=True)
         self.private_dir.mkdir(parents=True, exist_ok=True)
         self.public_dir.mkdir(parents=True, exist_ok=True)
+        self._stop_requested = False
         command = command_override or build_ffmpeg_command(inputs, self.private_dir)
         stdin_target: Any = subprocess.PIPE if ingests and len(ingests) == 1 else (source_process.stdout if source_process else None)
         process = subprocess.Popen(
@@ -1020,14 +1069,25 @@ class LiveSession:
             if clean:
                 self.log_tail.append(clean)
         code = self.process.poll()
-        if code is not None:
+        if code is not None and not self._stop_requested:
             detail = self.log_tail[-1] if self.log_tail else "no FFmpeg diagnostic"
             if code == 0:
                 self.error = f"FFmpeg stopped unexpectedly before the live session ended: {detail}"
             else:
                 self.error = f"FFmpeg exited with code {code}: {detail}"
 
+    def request_stop(self) -> None:
+        """Mark the packaging child as intentionally stopping before inputs close.
+
+        The server owns the yt-dlp input legs separately from this session.  It
+        must be able to claim the stop before closing those legs; otherwise
+        their EOF can make FFmpeg exit cleanly and look like a live failure to
+        a concurrent status poll.
+        """
+        self._stop_requested = True
+
     def stop(self) -> None:
+        self.request_stop()
         for ingest in self.ingests:
             ingest.stop()
         self.ingests = []
@@ -1059,7 +1119,7 @@ class LiveSession:
     def status(self) -> dict[str, Any]:
         exit_code = self.process.poll() if self.process else None
         running = bool(self.process and exit_code is None)
-        if self.process and exit_code is not None and not self.error:
+        if self.process and exit_code is not None and not self.error and not self._stop_requested:
             detail = self.log_tail[-1] if self.log_tail else "no FFmpeg diagnostic"
             self.error = (
                 f"FFmpeg stopped unexpectedly before the live session ended: {detail}"

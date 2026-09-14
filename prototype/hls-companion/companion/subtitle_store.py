@@ -16,6 +16,12 @@ from typing import Literal
 CueState = Literal["src", "translating", "done", "failed"]
 TimingSource = Literal["asr", "vad", "approx"]
 
+_IMMUTABLE_AFTER_ADD = {
+    "t_start", "t_end", "src", "lang", "timing_source", "speaker",
+    "generation", "chunk_order", "starts_mid_sentence", "ends_mid_sentence", "cut_reason",
+}
+_TERMINAL_STATES = {"done", "failed"}
+
 
 @dataclasses.dataclass
 class Cue:
@@ -30,6 +36,16 @@ class Cue:
     lang: str
     timing_source: TimingSource
     revision: int = 1
+    speaker: str | None = None
+    generation: int | None = None
+    chunk_order: int | None = None
+    starts_mid_sentence: bool | None = None
+    ends_mid_sentence: bool | None = None
+    cut_reason: str | None = None
+    """Provider-reported diarization label for this utterance (Ticket 02).
+
+    Backend-owned metadata only: serialized for future UI use, never rendered
+    today, and None for Providers without realtime speaker output."""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -44,13 +60,19 @@ class Cue:
             "lang": self.lang,
             "timingSource": self.timing_source,
             "revision": self.revision,
+            "speaker": self.speaker,
+            "generation": self.generation,
+            "chunkOrder": self.chunk_order,
+            "startsMidSentence": self.starts_mid_sentence,
+            "endsMidSentence": self.ends_mid_sentence,
+            "cutReason": self.cut_reason,
         }
 
 
 class CueStore:
     """Keep recent cues, support in-place revision updates and seq polling."""
 
-    def __init__(self, retention_seconds: float = 120.0, max_cues: int = 4096) -> None:
+    def __init__(self, retention_seconds: float = 600.0, max_cues: int = 4096) -> None:
         if retention_seconds <= 0:
             raise ValueError("retention_seconds must be positive")
         if max_cues <= 0:
@@ -91,6 +113,12 @@ class CueStore:
         state: CueState = "src",
         lang: str,
         timing_source: TimingSource,
+        speaker: str | None = None,
+        generation: int | None = None,
+        chunk_order: int | None = None,
+        starts_mid_sentence: bool | None = None,
+        ends_mid_sentence: bool | None = None,
+        cut_reason: str | None = None,
     ) -> Cue:
         cue = Cue(
             id=self._next_id,
@@ -103,6 +131,12 @@ class CueStore:
             state=state,
             lang=lang,
             timing_source=timing_source,
+            speaker=speaker,
+            generation=generation,
+            chunk_order=chunk_order,
+            starts_mid_sentence=starts_mid_sentence,
+            ends_mid_sentence=ends_mid_sentence,
+            cut_reason=cut_reason,
         )
         self._next_id += 1
         self._cues.append(cue)
@@ -114,10 +148,29 @@ class CueStore:
         cue = self._by_id.get(cue_id)
         if cue is None:
             raise KeyError(cue_id)
-        allowed = {field.name for field in dataclasses.fields(Cue)} - {"id", "revision", "seq"}
+        allowed = {"state", "zh", "hold"}
         unknown = set(changes) - allowed
         if unknown:
-            raise ValueError(f"unknown or immutable cue fields: {sorted(unknown)}")
+            immutable = set(changes) & _IMMUTABLE_AFTER_ADD
+            label = "immutable cue fields" if immutable else "unknown cue fields"
+            raise ValueError(f"{label}: {sorted(unknown)}")
+        if not changes:
+            return cue
+        if cue.state in _TERMINAL_STATES:
+            raise ValueError(f"cue {cue_id} translation is already terminal: {cue.state}")
+        next_state = changes.get("state", cue.state)
+        if next_state not in {"src", "translating", "done", "failed"}:
+            raise ValueError(f"invalid cue state: {next_state!r}")
+        if cue.state == "src" and next_state not in {"src", "translating", "done", "failed"}:
+            raise ValueError(f"invalid cue state transition: {cue.state} -> {next_state}")
+        if cue.state == "translating" and next_state not in {"translating", "done", "failed"}:
+            raise ValueError(f"invalid cue state transition: {cue.state} -> {next_state}")
+        if cue.state == "src" and next_state == "done" and not (changes.get("zh") or cue.zh):
+            raise ValueError("direct done cue requires a translation")
+        if next_state == "done" and not (changes.get("zh") or cue.zh):
+            raise ValueError("done cue requires a translation")
+        if next_state == "failed" and "zh" in changes and changes["zh"] is not None:
+            raise ValueError("failed cue cannot publish a translation")
         for name, value in changes.items():
             setattr(cue, name, value)
         cue.revision += 1

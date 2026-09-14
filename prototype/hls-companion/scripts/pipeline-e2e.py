@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """End-to-end SubtitlePipeline run against the real ASR and translation models.
 
-Feeds a real MPEG-TS audio clip through the actual pipeline (tee sink -> ffmpeg
--> PCM -> Qwen realtime -> translation workers -> CueStore) at realtime pace,
+Reads a private HLS playlist through the actual pipeline (HLS -> PCM -> Qwen
+realtime -> translation workers -> CueStore),
 then prints every cue with its timing source and checks the invariants the live
 player depends on:
 
@@ -12,7 +12,7 @@ player depends on:
   * cues reach a terminal state ("done" with zh, or "failed")
 
 Usage:
-  python scripts/pipeline-e2e.py --audio clip.ts [--seconds 60]
+  python scripts/pipeline-e2e.py --playlist private/live.m3u8 [--seconds 60]
 """
 from __future__ import annotations
 
@@ -26,20 +26,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from companion.providers import create_asr, create_translation
-from companion.providers.base import StreamMeta
+from companion.providers.base import SourceLanguagePolicy, StreamMeta
 from companion.providers.config import load_config
 from companion.subtitle_pipeline import SubtitlePipeline
 from companion.subtitle_store import CueStore
 
 CFG = ROOT / "runtime" / "providers.json"
 PDT0 = 1_700_000_000.0
-TARGET_DURATION = 1.0
-CHUNK = 16384
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--audio", required=True, type=Path, help="MPEG-TS file with an audio track")
+    parser.add_argument("--playlist", required=True, help="private HLS playlist URL or local path")
     parser.add_argument("--seconds", type=float, default=0.0, help="stop after this much wall time")
     args = parser.parse_args()
 
@@ -49,10 +47,7 @@ async def main() -> int:
     subtitle = config.get("subtitle", {})
     print(f"ASR : {asr_record['model']}  silence_ms="
           f"{asr_record.get('options', {}).get('turnDetection', {}).get('silenceDurationMs')}")
-    print(f"MT  : {mt_record['model']}  workers={subtitle.get('translationWorkers', 4)}")
-    print(f"maxUtteranceSeconds={subtitle.get('maxUtteranceSeconds')}  "
-          f"prefixSplit={subtitle.get('prefixSplitEnabled', True)} "
-          f"after={subtitle.get('prefixSplitAfterSeconds', 3.0)}s\n")
+    print(f"MT  : {mt_record['model']}  workers={subtitle.get('translationWorkers', 4)}\n")
 
     started = time.monotonic()
     store = CueStore()
@@ -60,53 +55,28 @@ async def main() -> int:
         asr_provider=create_asr(asr_record),
         translation_provider=create_translation(mt_record),
         cue_store=store,
-        meta=StreamMeta("ゲーム実況", "テスト", None, "ja", "zh"),
-        source_language="ja",
-        # Stand-in for the packaging leg: it advances in real time, exactly as
-        # the publisher's private_media_seconds does during a live session.
-        pdt_epoch=lambda: PDT0,
-        media_clock=lambda: (time.monotonic() - started, TARGET_DURATION),
+        meta=StreamMeta("ゲーム実況", "テスト", None, "ja", "zh-Hans"),
+        source_policy=SourceLanguagePolicy.specified("ja"),
         silence_duration_ms=int(
             asr_record.get("options", {}).get("turnDetection", {}).get("silenceDurationMs", 400)
         ),
-        max_utterance_seconds=float(subtitle.get("maxUtteranceSeconds", 0.0)),
         translation_workers=int(subtitle.get("translationWorkers", 4)),
         translation_timeout_seconds=float(mt_record.get("options", {}).get("timeoutSeconds", 8)),
-        anchor_freeze_samples=5,
     )
 
-    sink = await pipeline.start()
-    data = args.audio.read_bytes()
-    # Realtime pacing: an MPEG-TS second is ~what the live tee delivers.
-    bytes_per_second = len(data) / max(1.0, _duration_of(args.audio))
-    sent = 0
+    playlist = args.playlist
+    if "://" not in playlist:
+        playlist = Path(playlist).resolve().as_uri()
+    await pipeline.start(playlist, PDT0)
     try:
-        while sent < len(data):
-            sink(data[sent:sent + CHUNK])
-            sent += CHUNK
-            await asyncio.sleep(CHUNK / bytes_per_second)
-            if args.seconds and time.monotonic() - started > args.seconds:
-                break
-        print(f"[fed {sent} bytes in {time.monotonic()-started:.1f}s; draining]")
+        await asyncio.sleep(args.seconds or 60.0)
+        print(f"[read private HLS for {time.monotonic()-started:.1f}s; draining]")
         await asyncio.sleep(8)
     finally:
         status = pipeline.status()
         await pipeline.stop()
 
     return report(store, status)
-
-
-def _duration_of(path: Path) -> float:
-    import subprocess
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True,
-    )
-    try:
-        return float(out.stdout.strip())
-    except ValueError:
-        return 60.0
 
 
 def report(store: CueStore, status: dict) -> int:
@@ -127,8 +97,8 @@ def report(store: CueStore, status: dict) -> int:
                 "translationAttempts", "translationFailures", "translationWorkers",
                 "translationWorkersAlive", "translationBacklog", "avgTranslationLatencyMs",
                 "readyLagP50", "readyLagP95", "finalDiscarded", "finalDeduplicated",
-                "suppressedByIngestError", "pcmDropped", "teeDropped", "asrReconnects",
-                "mediaAnchorC", "mediaAnchorFrozen", "lastTranslationError", "lastError"):
+                "suppressedByIngestError", "pcmDropped", "asrReconnects",
+                "timelineSource", "lastTranslationError", "lastError"):
         if key in status:
             print(f"  {key} = {status[key]}")
 
@@ -167,8 +137,8 @@ def report(store: CueStore, status: dict) -> int:
     counts = status.get("timingSourceCounts", {})
     total = sum(counts.values()) or 1
     # Prefix-split cues are timing_source="vad": begin from the server VAD
-    # span, end estimated at the confirmation position. "approx" (no anchor
-    # at all) is the only red flag.
+    # span, end estimated at the confirmation position. "approx" (no provider
+    # timing evidence at all) is the only red flag.
     anchored_share = (counts.get("asr", 0) + counts.get("vad", 0)) / total
     check("timingSource=asr|vad for >95% of cues", anchored_share > 0.95,
           f"only {anchored_share:.0%} ({counts})")

@@ -25,3 +25,7 @@ class RecoveryPolicyTests(unittest.TestCase):
     def test_process_error_wins(self):
         decision = self.policy.decide(stall_seconds=0.0, process_running=True, source_error="I/O error")
         self.assertEqual((decision.state, decision.action), ("failed", "report"))
+
+
+if __name__ == "__main__":
+    unittest.main()

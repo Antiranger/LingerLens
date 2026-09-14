@@ -1,0 +1,1016 @@
+{
+ "version": 1,
+ "cldrVersion": "1.4.0",
+ "langcodesVersion": "3.5.1",
+ "languages": [
+  {
+   "tag": "af",
+   "englishName": "Afrikaans",
+   "autonym": "Afrikaans",
+   "language": "af",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "am",
+   "englishName": "Amharic",
+   "autonym": "አማርኛ",
+   "language": "am",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ar",
+   "englishName": "Arabic",
+   "autonym": "العربية",
+   "language": "ar",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "az",
+   "englishName": "Azerbaijani",
+   "autonym": "azərbaycan",
+   "language": "az",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "bg",
+   "englishName": "Bulgarian",
+   "autonym": "български",
+   "language": "bg",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "bn",
+   "englishName": "Bangla",
+   "autonym": "বাংলা",
+   "language": "bn",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "bs",
+   "englishName": "Bosnian",
+   "autonym": "bosanski",
+   "language": "bs",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ca",
+   "englishName": "Catalan",
+   "autonym": "català",
+   "language": "ca",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ceb",
+   "englishName": "Cebuano",
+   "autonym": "Cebuano",
+   "language": "ceb",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ckb",
+   "englishName": "Central Kurdish",
+   "autonym": "کوردیی ناوەندی",
+   "language": "ckb",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "cs",
+   "englishName": "Czech",
+   "autonym": "čeština",
+   "language": "cs",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "cy",
+   "englishName": "Welsh",
+   "autonym": "Cymraeg",
+   "language": "cy",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "da",
+   "englishName": "Danish",
+   "autonym": "dansk",
+   "language": "da",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "de",
+   "englishName": "German",
+   "autonym": "Deutsch",
+   "language": "de",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "dv",
+   "englishName": "Divehi",
+   "autonym": "Divehi",
+   "language": "dv",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "el",
+   "englishName": "Greek",
+   "autonym": "Ελληνικά",
+   "language": "el",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "en",
+   "englishName": "English",
+   "autonym": "English",
+   "language": "en",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "eo",
+   "englishName": "Esperanto",
+   "autonym": "Esperanto",
+   "language": "eo",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "es",
+   "englishName": "Spanish",
+   "autonym": "español",
+   "language": "es",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "es-419",
+   "englishName": "Spanish (Latin America)",
+   "autonym": "español (Latinoamérica)",
+   "language": "es",
+   "script": null,
+   "region": "419",
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "et",
+   "englishName": "Estonian",
+   "autonym": "eesti",
+   "language": "et",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "eu",
+   "englishName": "Basque",
+   "autonym": "euskara",
+   "language": "eu",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "fa",
+   "englishName": "Persian",
+   "autonym": "فارسی",
+   "language": "fa",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "fi",
+   "englishName": "Finnish",
+   "autonym": "suomi",
+   "language": "fi",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "fr",
+   "englishName": "French",
+   "autonym": "français",
+   "language": "fr",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "fy",
+   "englishName": "Western Frisian",
+   "autonym": "Frysk",
+   "language": "fy",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ga",
+   "englishName": "Irish",
+   "autonym": "Gaeilge",
+   "language": "ga",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "gl",
+   "englishName": "Galician",
+   "autonym": "galego",
+   "language": "gl",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "gu",
+   "englishName": "Gujarati",
+   "autonym": "ગુજરાતી",
+   "language": "gu",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ha",
+   "englishName": "Hausa",
+   "autonym": "Hausa",
+   "language": "ha",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "haw",
+   "englishName": "Hawaiian",
+   "autonym": "ʻŌlelo Hawaiʻi",
+   "language": "haw",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "he",
+   "englishName": "Hebrew",
+   "autonym": "עברית",
+   "language": "he",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": [
+    "iw"
+   ]
+  },
+  {
+   "tag": "hi",
+   "englishName": "Hindi",
+   "autonym": "हिन्दी",
+   "language": "hi",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "hr",
+   "englishName": "Croatian",
+   "autonym": "hrvatski",
+   "language": "hr",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "hu",
+   "englishName": "Hungarian",
+   "autonym": "magyar",
+   "language": "hu",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "hy",
+   "englishName": "Armenian",
+   "autonym": "հայերեն",
+   "language": "hy",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "id",
+   "englishName": "Indonesian",
+   "autonym": "bahasa Indonesia",
+   "language": "id",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": [
+    "in"
+   ]
+  },
+  {
+   "tag": "ig",
+   "englishName": "Igbo",
+   "autonym": "Igbo",
+   "language": "ig",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "is",
+   "englishName": "Icelandic",
+   "autonym": "íslenska",
+   "language": "is",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "it",
+   "englishName": "Italian",
+   "autonym": "italiano",
+   "language": "it",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ja",
+   "englishName": "Japanese",
+   "autonym": "日本語",
+   "language": "ja",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "jv",
+   "englishName": "Javanese",
+   "autonym": "Jawa",
+   "language": "jv",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ka",
+   "englishName": "Georgian",
+   "autonym": "ქართული",
+   "language": "ka",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "kk",
+   "englishName": "Kazakh",
+   "autonym": "қазақ тілі",
+   "language": "kk",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "km",
+   "englishName": "Khmer",
+   "autonym": "ខ្មែរ",
+   "language": "km",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "kn",
+   "englishName": "Kannada",
+   "autonym": "ಕನ್ನಡ",
+   "language": "kn",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ko",
+   "englishName": "Korean",
+   "autonym": "한국어",
+   "language": "ko",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ku",
+   "englishName": "Kurdish",
+   "autonym": "kurdî (kurmancî)",
+   "language": "ku",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "la",
+   "englishName": "Latin",
+   "autonym": "Lingua latina",
+   "language": "la",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "lb",
+   "englishName": "Luxembourgish",
+   "autonym": "Lëtzebuergesch",
+   "language": "lb",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "lo",
+   "englishName": "Lao",
+   "autonym": "ລາວ",
+   "language": "lo",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "lt",
+   "englishName": "Lithuanian",
+   "autonym": "lietuvių",
+   "language": "lt",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "lv",
+   "englishName": "Latvian",
+   "autonym": "latviešu",
+   "language": "lv",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "mi",
+   "englishName": "Māori",
+   "autonym": "Māori",
+   "language": "mi",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "mk",
+   "englishName": "Macedonian",
+   "autonym": "македонски",
+   "language": "mk",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ml",
+   "englishName": "Malayalam",
+   "autonym": "മലയാളം",
+   "language": "ml",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "mn",
+   "englishName": "Mongolian",
+   "autonym": "монгол",
+   "language": "mn",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "mr",
+   "englishName": "Marathi",
+   "autonym": "मराठी",
+   "language": "mr",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ms",
+   "englishName": "Malay",
+   "autonym": "bahasa Malaysia",
+   "language": "ms",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "mt",
+   "englishName": "Maltese",
+   "autonym": "Malti",
+   "language": "mt",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "my",
+   "englishName": "Burmese",
+   "autonym": "မြန်မာ",
+   "language": "my",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "nb",
+   "englishName": "Norwegian Bokmål",
+   "autonym": "norsk bokmål",
+   "language": "nb",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": [
+    "no"
+   ]
+  },
+  {
+   "tag": "ne",
+   "englishName": "Nepali",
+   "autonym": "नेपाली",
+   "language": "ne",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "nl",
+   "englishName": "Dutch",
+   "autonym": "Nederlands",
+   "language": "nl",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "pa",
+   "englishName": "Punjabi",
+   "autonym": "ਪੰਜਾਬੀ",
+   "language": "pa",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "pl",
+   "englishName": "Polish",
+   "autonym": "polski",
+   "language": "pl",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ps",
+   "englishName": "Pashto",
+   "autonym": "پښتو",
+   "language": "ps",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "pt-BR",
+   "englishName": "Portuguese (Brazil)",
+   "autonym": "português (Brasil)",
+   "language": "pt",
+   "script": null,
+   "region": "BR",
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "pt-PT",
+   "englishName": "Portuguese (Portugal)",
+   "autonym": "português (Portugal)",
+   "language": "pt",
+   "script": null,
+   "region": "PT",
+   "direction": "ltr",
+   "aliases": [
+    "pt"
+   ]
+  },
+  {
+   "tag": "ro",
+   "englishName": "Romanian",
+   "autonym": "română",
+   "language": "ro",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ru",
+   "englishName": "Russian",
+   "autonym": "русский",
+   "language": "ru",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sd",
+   "englishName": "Sindhi",
+   "autonym": "سنڌي",
+   "language": "sd",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "si",
+   "englishName": "Sinhala",
+   "autonym": "සිංහල",
+   "language": "si",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sk",
+   "englishName": "Slovak",
+   "autonym": "slovenčina",
+   "language": "sk",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sl",
+   "englishName": "Slovenian",
+   "autonym": "slovenščina",
+   "language": "sl",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "so",
+   "englishName": "Somali",
+   "autonym": "Soomaali",
+   "language": "so",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sq",
+   "englishName": "Albanian",
+   "autonym": "shqip",
+   "language": "sq",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sr-Cyrl",
+   "englishName": "Serbian (Cyrillic)",
+   "autonym": "српски (ћирилица)",
+   "language": "sr",
+   "script": "Cyrl",
+   "region": null,
+   "direction": "ltr",
+   "aliases": [
+    "sr"
+   ]
+  },
+  {
+   "tag": "sr-Latn",
+   "englishName": "Serbian (Latin)",
+   "autonym": "srpski (latinica)",
+   "language": "sr",
+   "script": "Latn",
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "su",
+   "englishName": "Sundanese",
+   "autonym": "Basa Sunda",
+   "language": "su",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sv",
+   "englishName": "Swedish",
+   "autonym": "svenska",
+   "language": "sv",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "sw",
+   "englishName": "Swahili",
+   "autonym": "Kiswahili",
+   "language": "sw",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ta",
+   "englishName": "Tamil",
+   "autonym": "தமிழ்",
+   "language": "ta",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "te",
+   "englishName": "Telugu",
+   "autonym": "తెలుగు",
+   "language": "te",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "th",
+   "englishName": "Thai",
+   "autonym": "ไทย",
+   "language": "th",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "tl",
+   "englishName": "Filipino",
+   "autonym": "Filipino",
+   "language": "fil",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "tr",
+   "englishName": "Turkish",
+   "autonym": "Türkçe",
+   "language": "tr",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ug",
+   "englishName": "Uyghur",
+   "autonym": "ئۇيغۇرچە",
+   "language": "ug",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "uk",
+   "englishName": "Ukrainian",
+   "autonym": "українська",
+   "language": "uk",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "ur",
+   "englishName": "Urdu",
+   "autonym": "اردو",
+   "language": "ur",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": []
+  },
+  {
+   "tag": "uz",
+   "englishName": "Uzbek",
+   "autonym": "o‘zbek",
+   "language": "uz",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "vi",
+   "englishName": "Vietnamese",
+   "autonym": "Tiếng Việt",
+   "language": "vi",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "xh",
+   "englishName": "Xhosa",
+   "autonym": "IsiXhosa",
+   "language": "xh",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "yi",
+   "englishName": "Yiddish",
+   "autonym": "ייִדיש",
+   "language": "yi",
+   "script": null,
+   "region": null,
+   "direction": "rtl",
+   "aliases": [
+    "ji"
+   ]
+  },
+  {
+   "tag": "yo",
+   "englishName": "Yoruba",
+   "autonym": "Èdè Yorùbá",
+   "language": "yo",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "yue",
+   "englishName": "Cantonese",
+   "autonym": "粵語",
+   "language": "yue",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  },
+  {
+   "tag": "zh-Hans",
+   "englishName": "Chinese (Simplified)",
+   "autonym": "中文（简体）",
+   "language": "zh",
+   "script": "Hans",
+   "region": null,
+   "direction": "ltr",
+   "aliases": [
+    "zh-CN",
+    "zh-SG"
+   ]
+  },
+  {
+   "tag": "zh-Hant",
+   "englishName": "Chinese (Traditional)",
+   "autonym": "中文（繁體）",
+   "language": "zh",
+   "script": "Hant",
+   "region": null,
+   "direction": "ltr",
+   "aliases": [
+    "zh-HK",
+    "zh-MO",
+    "zh-TW"
+   ]
+  },
+  {
+   "tag": "zu",
+   "englishName": "Zulu",
+   "autonym": "isiZulu",
+   "language": "zu",
+   "script": null,
+   "region": null,
+   "direction": "ltr",
+   "aliases": []
+  }
+ ]
+}

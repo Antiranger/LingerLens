@@ -14,43 +14,97 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RollingContextTests(unittest.TestCase):
-    def test_trims_by_age_and_pair_count_oldest_first(self) -> None:
-        context = MODULE.RollingContext(context_pairs=3, context_seconds=90)
-        for index, timestamp in enumerate((1, 20, 40, 80, 100)):
-            context.add(f"s{index}", f"z{index}", timestamp)
-        self.assertEqual(context.history(100), [("s2", "z2"), ("s3", "z3"), ("s4", "z4")])
-        self.assertEqual(context.history(100, pair_limit=2), [("s3", "z3"), ("s4", "z4")])
-        context.trim(100)
-        self.assertEqual(context.history(100, pair_limit=10), [("s2", "z2"), ("s3", "z3"), ("s4", "z4")])
+    def test_pending_source_is_usable_then_upgraded_without_mutating_old_request(self) -> None:
+        context = MODULE.RollingContext()
+        context.add("前文", None, generation=1, chunk_order=1, media_t_end=2)
+        self.assertFalse(context.contains(generation=1, chunk_order=1))
+        snapshot = context.history(generation=1, before_order=2, at_media_time=3, include_untranslated=True)
+        self.assertEqual(snapshot, [("前文", None)])
+        self.assertEqual(context.history(generation=1, before_order=2, at_media_time=3), [])
+        context.add("前文", "previous", generation=1, chunk_order=1, media_t_end=2)
+        self.assertEqual(snapshot, [("前文", None)])
+        self.assertEqual(context.history(generation=1, before_order=2, at_media_time=3, include_untranslated=True), [("前文", "previous")])
+        self.assertFalse(context.add("前文", None, generation=1, chunk_order=1, media_t_end=2))
+        self.assertTrue(context.contains(generation=1, chunk_order=1))
 
-    def test_exact_prompt_structure_and_glossary_limit(self) -> None:
-        meta = MODULE.StreamMeta("船长直播", "Marine", "游戏", "ja", "zh")
-        glossary = [(f"term{i}", f"target{i}") for i in range(31)]
-        system, user = MODULE.build_prompt(
-            "今から始めます",
-            meta,
-            [("前の文", "上一句"), ("次の文", "下一句")],
-            glossary,
-        )
-        expected_prefix = (
-            "你是直播字幕翻译器。把 CURRENT 从日语译成中文。\n"
-            "规则：\n"
-            "1. 只输出 CURRENT 的译文，不要输出解释、不要重复 HISTORY。\n"
-            "2. HISTORY 只用于理解指代、省略主语和话题，不要翻译它。\n"
-            "3. 译文要像直播字幕：简洁、口语、可一眼读完。\n"
-            "4. 不要补全说话人没说完的内容，不要添加未表达的事实。\n"
-            "5. 人名/专有名词严格遵循术语表。\n"
-            "6. 只输出译文本身，不加引号、不加前缀。\n"
-            "直播信息：船长直播 / Marine / 领域：游戏\n"
-            "术语表：\n"
-        )
-        self.assertTrue(system.startswith(expected_prefix))
-        self.assertIn("term29 => target29", system)
-        self.assertNotIn("term30 => target30", system)
-        self.assertEqual(user, "HISTORY:\n前の文 -> 上一句\n次の文 -> 下一句\nCURRENT:\n今から始めます")
+    def test_source_only_context_excludes_future_and_is_limited_and_expired(self) -> None:
+        context = MODULE.RollingContext(context_pairs=2, context_seconds=3)
+        for order in range(1, 7):
+            context.add(str(order), None, generation=1, chunk_order=order, media_t_end=order)
+        context.add("other", None, generation=2, chunk_order=1, media_t_end=4)
+        self.assertEqual(context.history(generation=1, before_order=5, at_media_time=5, include_untranslated=True), [("3", None), ("4", None)])
+        context.trim(generation=1, at_media_time=7)
+        self.assertEqual(context.orders(1), (4, 5, 6))
 
-    def test_empty_history_keeps_exact_history_and_current_blocks(self) -> None:
-        self.assertEqual(MODULE.build_user_prompt("現在", []), "HISTORY:\n\nCURRENT:\n現在")
+    def test_completion_order_is_reassembled_in_source_order(self) -> None:
+        context = MODULE.RollingContext(context_pairs=6, context_seconds=90)
+        context.add("s3", "z3", generation=7, chunk_order=3, media_t_end=13.0)
+        context.add("s1", "z1", generation=7, chunk_order=1, media_t_end=5.0)
+        context.add("s2", "z2", generation=7, chunk_order=2, media_t_end=9.0)
+        self.assertEqual(
+            context.history(generation=7, before_order=4, at_media_time=14.0),
+            [("s1", "z1"), ("s2", "z2"), ("s3", "z3")],
+        )
+
+    def test_excludes_current_future_other_generation_and_media_future(self) -> None:
+        context = MODULE.RollingContext(context_pairs=10, context_seconds=90)
+        context.add("previous", "prev", generation=1, chunk_order=1, media_t_end=5.0)
+        context.add("current", "now", generation=1, chunk_order=2, media_t_end=8.0)
+        context.add("future-order", "later", generation=1, chunk_order=3, media_t_end=7.0)
+        context.add("future-time", "clock", generation=1, chunk_order=4, media_t_end=10.0)
+        context.add("old-generation", "old", generation=0, chunk_order=1, media_t_end=4.0)
+        self.assertEqual(
+            context.history(generation=1, before_order=2, at_media_time=8.0),
+            [("previous", "prev")],
+        )
+
+    def test_context_seconds_uses_media_time_not_translation_completion_time(self) -> None:
+        context = MODULE.RollingContext(context_pairs=6, context_seconds=10)
+        # Added in the reverse wall/completion order on purpose. Only media time matters.
+        context.add("too-old", "old", generation=1, chunk_order=1, media_t_end=9.9)
+        context.add("kept", "new", generation=1, chunk_order=2, media_t_end=10.0)
+        self.assertEqual(
+            context.history(generation=1, before_order=3, at_media_time=20.0),
+            [("kept", "new")],
+        )
+        context.trim(generation=1, at_media_time=20.0)
+        self.assertEqual(context.orders(1), (2,))
+
+    def test_pair_limit_keeps_most_recent_source_order_pairs(self) -> None:
+        context = MODULE.RollingContext(context_pairs=4, context_seconds=90)
+        for order in range(1, 7):
+            context.add(f"s{order}", f"z{order}", generation=3, chunk_order=order, media_t_end=float(order))
+        self.assertEqual(
+            context.history(generation=3, before_order=7, at_media_time=7.0),
+            [("s3", "z3"), ("s4", "z4"), ("s5", "z5"), ("s6", "z6")],
+        )
+        self.assertEqual(
+            context.history(generation=3, before_order=7, at_media_time=7.0, pair_limit=2),
+            [("s5", "z5"), ("s6", "z6")],
+        )
+
+    def test_duplicate_generation_order_is_rejected_even_if_text_differs(self) -> None:
+        context = MODULE.RollingContext()
+        context.add("source", "translation", generation=4, chunk_order=2, media_t_end=3.0)
+        with self.assertRaisesRegex(ValueError, "duplicate context chunk order"):
+            context.add("other", "different", generation=4, chunk_order=2, media_t_end=4.0)
+        # The same order is valid in a new generation.
+        context.add("new", "generation", generation=5, chunk_order=2, media_t_end=1.0)
+
+    def test_contains_is_generation_local(self) -> None:
+        context = MODULE.RollingContext()
+        context.add("source", "translation", generation=4, chunk_order=2, media_t_end=3.0)
+        self.assertTrue(context.contains(generation=4, chunk_order=2))
+        self.assertFalse(context.contains(generation=5, chunk_order=2))
+
+    def test_legacy_metadata_free_callers_do_not_enter_caption_history(self) -> None:
+        context = MODULE.RollingContext()
+        self.assertFalse(context.add("live message", "弹幕", media_t_end=3.0))
+        self.assertEqual(context.history(generation=1, before_order=2, at_media_time=4.0), [])
+
+    def test_context_manager_has_no_private_language_dictionary(self) -> None:
+        self.assertFalse(hasattr(MODULE, "_LANGUAGE_NAMES"))
+        self.assertFalse(hasattr(MODULE, "build_prompt"))
 
 
 if __name__ == "__main__":

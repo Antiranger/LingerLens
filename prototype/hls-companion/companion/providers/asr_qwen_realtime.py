@@ -9,9 +9,22 @@ from typing import Any, AsyncIterator
 import aiohttp
 
 from . import register
-from .base import ASRCapabilities, ASREvent, ASRProvider, ASRStream
+from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
+from .base import (
+    ASRCapabilities,
+    ASREvent,
+    ASRLanguageCapabilities,
+    ASRProvider,
+    ASRStream,
+    CaptionObservation,
+    SourceLanguagePolicy,
+)
 
 _LANGUAGES = ("zh", "yue", "en", "ja", "de", "ko", "ru", "fr", "pt", "ar", "it", "es", "hi", "id", "th", "tr", "uk", "vi")
+
+
+def _canonical_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(tag for tag in (canonicalize_tag_or_none(item) for item in tags) if tag)
 
 
 @register("dashscope-qwen-realtime")
@@ -27,48 +40,71 @@ class QwenRealtimeASRProvider(ASRProvider):
 
     @property
     def capabilities(self) -> ASRCapabilities:
-        return ASRCapabilities(True, True, True, True, False, False, False, _LANGUAGES, (16000,), True)
+        return ASRCapabilities(
+            True, True, True, True, False, False, False, _LANGUAGES, (16000,), True,
+            language=ASRLanguageCapabilities(
+                supported_tags=_canonical_tags(_LANGUAGES),
+                detection="none",
+                reports_detected_language=True,
+                tier="provider_claimed",
+            ),
+            preferred_sample_rate=16000,
+            caption_evidence=frozenset({"stable_prefix_snapshot", "utterance_final", "endpoint"}),
+        )
 
-    async def stream(self, *, language: str, hotwords: list[str], context: list[str]) -> ASRStream:
+    async def stream(self, *, policy: SourceLanguagePolicy, sample_rate: int, hotwords: list[str], context: list[str]) -> ASRStream:
         del hotwords, context
         if not self.api_key:
             raise ValueError(f"API key is not configured for provider {self.id}")
-        stream = _QwenRealtimeStream(self, language)
+        if policy.mode != "specified" or not policy.tag:
+            raise LanguageNotSupportedError("Qwen realtime requires a specified source language")
+        stream = _QwenRealtimeStream(self, primary_subtag(policy.tag), sample_rate)
         await stream.connect()
         return stream
 
 
 class _QwenRealtimeStream(ASRStream):
-    def __init__(self, provider: QwenRealtimeASRProvider, language: str):
+    def __init__(self, provider: QwenRealtimeASRProvider, language: str, sample_rate: int):
         self.provider = provider
         self.language = language
+        self.sample_rate = sample_rate
         self.session: aiohttp.ClientSession | None = None
         self.ws: aiohttp.ClientWebSocketResponse | None = None
         self.closed = False
 
     async def connect(self) -> None:
-        self.session = aiohttp.ClientSession()
-        url = f"{self.provider.base_url}?model={self.provider.model}"
-        self.ws = await self.session.ws_connect(url, headers={"Authorization": f"Bearer {self.provider.api_key}"})
-        options = self.provider.options
-        turn = options.get("turnDetection", {})
-        await self.ws.send_json({
-            "event_id": f"event_{uuid.uuid4().hex}",
-            "type": "session.update",
-            "session": {
-                "input_audio_format": "pcm",
-                "sample_rate": int(options.get("sampleRate", 16000)),
-                "input_audio_transcription": {"language": self.language},
-                "turn_detection": {
-                    "type": turn.get("type", "server_vad"),
-                    "threshold": float(turn.get("threshold", 0.2)),
-                    # 400ms: official fast-segmentation recommendation; a 600ms
-                    # window merges continuous speech into 10-20s "sentences"
-                    # that are useless as subtitle units (redesign Fix F).
-                    "silence_duration_ms": int(turn.get("silenceDurationMs", 400)),
+        # Everything that can fail lives inside this try. A failed handshake is
+        # the common case in production -- _asr_manager retries forever with
+        # backoff (subtitle_pipeline.py:713-756) -- and without this the
+        # ClientSession and its TCPConnector were never closed: measured 40
+        # failed handshakes -> 40 unclosed sessions and 40 unclosed connectors,
+        # i.e. a file-descriptor leak proportional to reconnect count.
+        try:
+            self.session = aiohttp.ClientSession()
+            url = f"{self.provider.base_url}?model={self.provider.model}"
+            self.ws = await self.session.ws_connect(url, headers={"Authorization": f"Bearer {self.provider.api_key}"})
+            options = self.provider.options
+            turn = options.get("turnDetection", {})
+            await self.ws.send_json({
+                "event_id": f"event_{uuid.uuid4().hex}",
+                "type": "session.update",
+                "session": {
+                    "input_audio_format": "pcm",
+                    "sample_rate": self.sample_rate,
+                    "input_audio_transcription": {"language": self.language},
+                    "turn_detection": {
+                        "type": turn.get("type", "server_vad"),
+                        "threshold": float(turn.get("threshold", 0.2)),
+                        # 400ms: official fast-segmentation recommendation; a 600ms
+                        # window merges continuous speech into 10-20s "sentences"
+                        # that are useless as subtitle units (redesign Fix F).
+                        "silence_duration_ms": int(turn.get("silenceDurationMs", 400)),
+                    },
                 },
-            },
-        })
+            })
+        except BaseException:
+            await self.aclose()
+            raise
 
     async def push_pcm(self, chunk: bytes, pcm_offset: float) -> None:
         del pcm_offset
@@ -126,7 +162,11 @@ class _QwenRealtimeStream(ASRStream):
         if event_type == "input_audio_buffer.speech_started":
             return ASREvent("speech_started", begin_pcm=_seconds(raw.get("audio_start_ms")), item_id=item_id, raw=raw)
         if event_type == "input_audio_buffer.speech_stopped":
-            return ASREvent("speech_stopped", end_pcm=_seconds(raw.get("audio_end_ms")), item_id=item_id, raw=raw)
+            end = _seconds(raw.get("audio_end_ms"))
+            return ASREvent(
+                "speech_stopped", end_pcm=end, item_id=item_id, raw=raw,
+                caption_observation=CaptionObservation("endpoint", 0, str(item_id or "0"), end_pcm=end),
+            )
         if event_type == "conversation.item.input_audio_transcription.text":
             # ``text`` is the confirmed stable prefix (grows monotonically);
             # ``stash`` is a tentative tail that WILL be rewritten.
@@ -134,17 +174,26 @@ class _QwenRealtimeStream(ASRStream):
                 "interim",
                 text=raw.get("text", ""),
                 stash=raw.get("stash", ""),
-                language=raw.get("language"),
+                language=canonicalize_tag_or_none(raw.get("language")),
                 item_id=item_id,
                 raw=raw,
+                caption_observation=CaptionObservation(
+                    "stable_prefix_snapshot", 0, str(item_id or "0"),
+                    stable_text=str(raw.get("text", "")),
+                    tentative_text=str(raw.get("stash", "")),
+                ),
             )
         if event_type == "conversation.item.input_audio_transcription.completed":
             return ASREvent(
                 "final",
                 text=raw.get("transcript", ""),
-                language=raw.get("language"),
+                language=canonicalize_tag_or_none(raw.get("language")),
                 item_id=item_id,
                 raw=raw,
+                caption_observation=CaptionObservation(
+                    "utterance_final", 0, str(item_id or "0"),
+                    stable_text=str(raw.get("transcript", "")),
+                ),
             )
         if event_type in {"error", "conversation.item.input_audio_transcription.failed"}:
             error = raw.get("error", raw)

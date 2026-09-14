@@ -5,19 +5,16 @@ Offline (no API key) end-to-end verification of the subtitle timeline:
 
 1. Synthesize a 60s H.264/AAC MPEG-TS whose audio track carries 1 kHz beeps
    at media times 5, 15, 25, 35, 45 s (1 s each).
-2. Drive the REAL pipeline in the production startup shape (redesign Fix A):
-   subtitle tee installed on the byte pump before any byte flows ->
-   packaging ffmpeg (real HLS muxing with PDT) -> real DelayedPlaylistPublisher
-   -> real subtitle-leg ffmpeg -> stub ASR that detects the beeps.
-   The stream is fed at 2x realtime, i.e. a controlled startup catch-up burst
-   while retaining the production anchor cadence (one sample per second).
+2. Drive the REAL pipeline in the production startup shape: packaging ffmpeg
+   writes private HLS with PDT -> the subtitle ffmpeg reads that same HLS over
+   loopback HTTP -> stub ASR detects the beeps.
+   The stream is fed at realtime speed, matching the live HLS production rate.
 3. Assert that cue.tEnd maps back onto the packaging PDT timeline with
-   <= 300 ms error, that the MediaAnchor spread is tight, and that no cue
-   ever lives in wall-clock space.
+   <= 300 ms error and that no cue ever lives in wall-clock space.
 
 Stub ASR runs in two timing shapes:
-  --mode asr  finals carry begin/end offsets (timingSource "asr")
-  --mode vad  only speech_started/speech_stopped events (timingSource "vad")
+  --mode asr  finals also carry begin/end offsets
+  --mode vad  boundaries arrive only through speech_started/speech_stopped
 
 Requires ffmpeg on PATH.
 """
@@ -33,14 +30,17 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from companion.core import _AUDIO_SETTS, _VIDEO_SETTS, DelayedPlaylistPublisher
+from companion.core import _AUDIO_SETTS, _VIDEO_SETTS, DelayedPlaylistPublisher, hls_output_args
 from companion.providers.base import (
     ASRCapabilities,
     ASREvent,
@@ -90,9 +90,9 @@ def build_test_stream(destination: Path) -> None:
 
 
 class PacedSource(io.BytesIO):
-    """Finite TS source delivered as a controlled 2x-realtime catch-up."""
+    """Finite TS source delivered at the live media production rate."""
 
-    def __init__(self, payload: bytes, wall_seconds: float = 30.0) -> None:
+    def __init__(self, payload: bytes, wall_seconds: float = STREAM_SECONDS) -> None:
         super().__init__(payload)
         self.total_bytes = len(payload)
         self.wall_seconds = wall_seconds
@@ -120,6 +120,7 @@ class BeepDetectingStream(ASRStream):
         self.speech_start = 0.0
         self.last_loud_end = 0.0
         self.count = 0
+        self.current_item = ""
         self.quiet_since: float | None = None
 
     async def push_pcm(self, chunk: bytes, pcm_offset: float) -> None:
@@ -133,8 +134,10 @@ class BeepDetectingStream(ASRStream):
                 if not self.in_speech:
                     self.in_speech = True
                     self.speech_start = t
-                    if self.mode == "vad":
-                        self.events.put_nowait(ASREvent("speech_started"))
+                    self.current_item = f"marker-{self.count + 1}"
+                    self.events.put_nowait(ASREvent(
+                        "speech_started", begin_pcm=t, item_id=self.current_item
+                    ))
                 self.last_loud_end = t + SUB_WINDOW
                 self.quiet_since = None
             elif self.in_speech:
@@ -144,6 +147,9 @@ class BeepDetectingStream(ASRStream):
                     self.count += 1
                     self.in_speech = False
                     self.quiet_since = None
+                    self.events.put_nowait(ASREvent(
+                        "speech_stopped", end_pcm=self.last_loud_end, item_id=self.current_item
+                    ))
                     if self.mode == "asr":
                         self.events.put_nowait(
                             ASREvent(
@@ -151,14 +157,13 @@ class BeepDetectingStream(ASRStream):
                                 text=f"MARK-{self.count}",
                                 begin_pcm=self.speech_start,
                                 end_pcm=self.last_loud_end,
+                                item_id=self.current_item,
                             )
                         )
                     else:
-                        # Emitted exactly when SILENCE_CONFIRM of quiet audio
-                        # has been pushed: the pipeline subtracts its silence
-                        # duration from the last sent offset.
-                        self.events.put_nowait(ASREvent("speech_stopped"))
-                        self.events.put_nowait(ASREvent("final", text=f"MARK-{self.count}"))
+                        self.events.put_nowait(ASREvent(
+                            "final", text=f"MARK-{self.count}", item_id=self.current_item
+                        ))
 
     async def flush(self) -> None:
         return None
@@ -188,8 +193,8 @@ class BeepASRProvider(ASRProvider):
     def capabilities(self) -> ASRCapabilities:
         return ASRCapabilities(True, False, False, True, False, False, False, ("ja",), (16000,), False)
 
-    async def stream(self, *, language: str, hotwords: list[str], context: list[str]) -> ASRStream:
-        del language, hotwords, context
+    async def stream(self, *, policy, sample_rate: int, hotwords: list[str], context: list[str]) -> ASRStream:
+        del policy, sample_rate, hotwords, context
         self.stream_instance = BeepDetectingStream(self.mode)
         return self.stream_instance
 
@@ -256,15 +261,9 @@ def packaging_command(pump: _TcpPump, private_dir: Path) -> list[str]:
         "-bsf:v", _VIDEO_SETTS,
         "-bsf:a", _AUDIO_SETTS,
         "-max_interleave_delta", "0",
-        "-f", "hls",
-        "-hls_time", "1",
-        "-hls_list_size", "150",
-        "-hls_delete_threshold", "60",
-        "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", str(private_dir / "init.mp4"),
-        "-hls_flags", "delete_segments+program_date_time+temp_file+split_by_time",
-        "-hls_segment_filename", str(private_dir / "seg_%09d.m4s"),
-        str(private_dir / "live.m3u8"),
+        # Same packaging arguments production uses, so this harness cannot pass
+        # while the shipped packager emits segments no player can decode.
+        *hls_output_args(private_dir, list_size=150),
     ]
 
 
@@ -282,25 +281,15 @@ async def run_scenario(mode: str, ts_bytes: bytes, workspace: Path) -> dict:
         translation_provider=StubTranslation(),
         cue_store=store,
         meta=StreamMeta("alignment-smoke", "stub", "test", "ja", "zh"),
-        pdt_epoch=lambda: publisher.pdt_epoch,
-        media_clock=lambda: (
-            (publisher.private_media_seconds, publisher.target_duration)
-            if publisher.private_media_seconds > 0
-            else None
-        ),
         silence_duration_ms=300,  # matches the stub's confirmation window
-        vad_event_lag=0.3,
-        max_utterance_seconds=0,  # beeps are 1s; no forced commits in this test
-        anchor_sample_interval=1.0,
-        anchor_freeze_samples=20,
+        translation_workers=2,
     )
-    sink = await pipeline.start()
-    # Fix A shape: the tee exists before the pump can forward any byte.
-    pump = _TcpPump("smoke", tee=sink)
+    pump = _TcpPump("smoke")
     publisher.start()
     pump.start(PacedSource(ts_bytes))
     process = subprocess.Popen(
         packaging_command(pump, private_dir),
+        cwd=private_dir,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=False,
@@ -311,10 +300,24 @@ async def run_scenario(mode: str, ts_bytes: bytes, workspace: Path) -> dict:
         for raw in process.stderr or []:
             ffmpeg_tail.append(raw.decode("utf-8", "replace").strip())
 
-    import threading
-
     reader = threading.Thread(target=read_stderr, daemon=True)
     reader.start()
+
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(private_dir)))
+    http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    http_thread.start()
+    ready_deadline = time.monotonic() + 10
+    while time.monotonic() < ready_deadline:
+        if publisher.pdt_epoch is not None and (private_dir / "seg_000000000.m4s").is_file():
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise RuntimeError("private HLS did not become ready")
+    await pipeline.start(f"http://127.0.0.1:{httpd.server_port}/live.m3u8", publisher.pdt_epoch)
 
     deadline = time.monotonic() + 120
     last_progress = (-1.0, -1)
@@ -357,6 +360,9 @@ async def run_scenario(mode: str, ts_bytes: bytes, workspace: Path) -> dict:
         process.wait(timeout=10)
         publisher.stop()
         await pipeline.stop()
+        httpd.shutdown()
+        httpd.server_close()
+        http_thread.join(timeout=3)
 
     status = pipeline.status()
     cues = sorted(store.query(after_seq=0), key=lambda cue: cue.t_end)
@@ -383,23 +389,13 @@ async def run_scenario(mode: str, ts_bytes: bytes, workspace: Path) -> dict:
             if not cue.zh:
                 failures.append(f"{cue.src}: translation never completed")
 
-    anchor = status
-    if not anchor.get("mediaAnchorFrozen"):
-        failures.append(f"media anchor never froze: {json.dumps({k: anchor.get(k) for k in ('mediaAnchorC', 'mediaAnchorSamples')})}")
-    spread = anchor.get("mediaAnchorSpread")
-    if spread is None or spread >= 0.5:
-        failures.append(f"mediaAnchorSpread {spread} >= 0.5s (Fix A likely not effective)")
-    if abs(anchor.get("mediaAnchorC") or 99) > 2.0:
-        failures.append(f"mediaAnchorC {anchor.get('mediaAnchorC')} is implausibly large")
     for cue in cues:
         media_position = cue.t_end - pdt0
         if not -1.0 <= media_position <= STREAM_SECONDS + 5.0:
             failures.append(f"{cue.src}: tEnd maps outside the media timeline ({media_position:.1f}s) — wall-clock space leak")
-    if status.get("teeDropped"):
-        failures.append(f"teeDropped={status['teeDropped']} (subtitle leg lost transport bytes)")
     if status.get("pcmDropped"):
         failures.append(f"pcmDropped={status['pcmDropped']} (PCM queue overflowed)")
-    if status.get("timingSourceCounts", {}).get("asr" if mode == "asr" else "vad") != len(BEEP_STARTS):
+    if status.get("timingSourceCounts", {}).get("asr") != len(BEEP_STARTS):
         failures.append(f"timingSourceCounts={status.get('timingSourceCounts')} for mode {mode}")
     if status.get("readyLagP95") is None:
         failures.append("readyLag percentiles were never recorded (Fix E wiring)")
@@ -418,7 +414,7 @@ async def run_scenario(mode: str, ts_bytes: bytes, workspace: Path) -> dict:
             }
             for cue, beep_end in zip(cues, true_ends)
         ],
-        "mediaAnchor": {key: anchor.get(key) for key in ("mediaAnchorC", "mediaAnchorFrozen", "mediaAnchorSamples", "mediaAnchorSpread", "mediaAnchorDrift")},
+        "timelineSource": status.get("timelineSource"),
         "timingSourceCounts": status.get("timingSourceCounts"),
         "readyLag": {"p50": status.get("readyLagP50"), "p95": status.get("readyLagP95")},
         "failures": failures,
@@ -433,7 +429,7 @@ async def amain(args: argparse.Namespace) -> int:
         print(f"[smoke] synthesizing {STREAM_SECONDS:.0f}s test stream with beeps at {BEEP_STARTS} ...", flush=True)
         build_test_stream(ts_path)
         ts_bytes = ts_path.read_bytes()
-        print(f"[smoke] stream ready ({len(ts_bytes) / 1e6:.1f} MB); feeding both legs at 2x realtime", flush=True)
+        print(f"[smoke] stream ready ({len(ts_bytes) / 1e6:.1f} MB); feeding both legs at realtime speed", flush=True)
         modes = ["asr", "vad"] if args.mode == "both" else [args.mode]
         reports = []
         failed = False
@@ -442,7 +438,7 @@ async def amain(args: argparse.Namespace) -> int:
             reports.append(report)
             for cue in report["cues"]:
                 print(f"[smoke] {mode:>4} {cue['src']:>8}: true {cue['trueEnd']:.2f}s -> mapped {cue['mediaEnd']:.2f}s  (error {cue['errorMs']:+d}ms, {cue['timingSource']})", flush=True)
-            print(f"[smoke] anchor: {json.dumps(report['mediaAnchor'], ensure_ascii=False)}", flush=True)
+            print(f"[smoke] timeline: {report['timelineSource']}", flush=True)
             if report["failures"]:
                 failed = True
                 for failure in report["failures"]:

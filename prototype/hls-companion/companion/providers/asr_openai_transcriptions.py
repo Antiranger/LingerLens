@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import wave
 from collections.abc import AsyncIterator
 from typing import Any
@@ -10,7 +11,16 @@ from typing import Any
 import aiohttp
 
 from . import register
-from .base import ASRCapabilities, ASREvent, ASRProvider, ASRStream
+from ..languages import canonicalize_tag_or_none, primary_subtag
+from .base import (
+    ASRCapabilities,
+    ASREvent,
+    ASRLanguageCapabilities,
+    ASRProvider,
+    ASRStream,
+    CaptionObservation,
+    SourceLanguagePolicy,
+)
 
 
 @register("openai-audio-transcriptions")
@@ -22,22 +32,39 @@ class OpenAITranscriptionASRProvider(ASRProvider):
         self.base_url = str(config["baseUrl"]).rstrip("/")
         self.api_key = config.get("_apiKey", config.get("apiKey", ""))
         self.options = config.get("options", {})
+        window_seconds = float(self.options.get("windowSeconds", 5.0))
+        if not math.isfinite(window_seconds) or window_seconds <= 0 or window_seconds > 6.0:
+            raise ValueError("options.windowSeconds must be finite, > 0, and <= 6.0")
         self.price_per_second_cny = config.get("pricePerSecondCny")
 
     @property
     def capabilities(self) -> ASRCapabilities:
-        return ASRCapabilities(False, False, False, False, False, False, False, (), (16000,))
+        sample_rate = int(self.options.get("sampleRate", 16000))
+        return ASRCapabilities(
+            False, False, False, False, False, False, False, (), (sample_rate,),
+            language=ASRLanguageCapabilities(
+                # Whisper-style file transcription accepts any language and
+                # auto-detects when the language field is omitted.
+                supported_tags=None,
+                detection="unrestricted",
+                reports_detected_language=True,
+                tier="provider_claimed",
+            ),
+            preferred_sample_rate=sample_rate,
+            caption_evidence=frozenset({"utterance_final"}),
+        )
 
-    async def stream(self, *, language: str, hotwords: list[str], context: list[str]) -> ASRStream:
+    async def stream(self, *, policy: SourceLanguagePolicy, sample_rate: int, hotwords: list[str], context: list[str]) -> ASRStream:
         del hotwords, context
-        return _OpenAITranscriptionStream(self, language)
+        language = primary_subtag(policy.tag) if policy.mode == "specified" and policy.tag else ""
+        return _OpenAITranscriptionStream(self, language, sample_rate)
 
 
 class _OpenAITranscriptionStream(ASRStream):
-    def __init__(self, provider: OpenAITranscriptionASRProvider, language: str):
+    def __init__(self, provider: OpenAITranscriptionASRProvider, language: str, sample_rate: int):
         self.provider = provider
         self.language = language
-        self.sample_rate = int(provider.options.get("sampleRate", 16000))
+        self.sample_rate = sample_rate
         self.window_bytes = max(2, int(float(provider.options.get("windowSeconds", 5.0)) * self.sample_rate * 2))
         self.max_pending = max(1, int(provider.options.get("maxPendingWindows", 2)))
         self.timeout = aiohttp.ClientTimeout(total=float(provider.options.get("requestTimeoutSeconds", 30)))
@@ -113,7 +140,15 @@ class _OpenAITranscriptionStream(ASRStream):
                 payload = body
         duration = len(audio) / (self.sample_rate * 2)
         if isinstance(payload, str):
-            return [ASREvent("final", text=payload.strip(), begin_pcm=offset, end_pcm=offset + duration)] if payload.strip() else []
+            text = payload.strip()
+            return [ASREvent(
+                "final", text=text, begin_pcm=offset, end_pcm=offset + duration,
+                item_id=f"window:{offset:.6f}",
+                caption_observation=CaptionObservation(
+                    "utterance_final", 0, f"window:{offset:.6f}", stable_text=text,
+                    begin_pcm=offset, end_pcm=offset + duration,
+                ),
+            )] if text else []
         segments = payload.get("segments") if isinstance(payload, dict) else None
         if isinstance(segments, list) and segments:
             events: list[ASREvent] = []
@@ -122,10 +157,29 @@ class _OpenAITranscriptionStream(ASRStream):
                     continue
                 start = float(segment.get("start", 0.0))
                 end = float(segment.get("end", duration))
-                events.append(ASREvent("final", text=str(segment["text"]).strip(), begin_pcm=offset + start, end_pcm=offset + end, language=payload.get("language"), raw=segment))
+                text = str(segment["text"]).strip()
+                item_id = f"window:{offset:.6f}:segment:{len(events)}"
+                events.append(ASREvent(
+                    "final", text=text, begin_pcm=offset + start, end_pcm=offset + end,
+                    language=canonicalize_tag_or_none(payload.get("language")), raw=segment,
+                    item_id=item_id,
+                    caption_observation=CaptionObservation(
+                        "utterance_final", 0, item_id, stable_text=text,
+                        begin_pcm=offset + start, end_pcm=offset + end,
+                    ),
+                ))
             return events
         text = str(payload.get("text", "")).strip() if isinstance(payload, dict) else ""
-        return [ASREvent("final", text=text, begin_pcm=offset, end_pcm=offset + duration, language=payload.get("language"), raw=payload)] if text else []
+        item_id = f"window:{offset:.6f}"
+        return [ASREvent(
+            "final", text=text, begin_pcm=offset, end_pcm=offset + duration,
+            language=canonicalize_tag_or_none(payload.get("language")), raw=payload,
+            item_id=item_id,
+            caption_observation=CaptionObservation(
+                "utterance_final", 0, item_id, stable_text=text,
+                begin_pcm=offset, end_pcm=offset + duration,
+            ),
+        )] if text else []
 
     async def _iterate(self) -> AsyncIterator[ASREvent]:
         while True:

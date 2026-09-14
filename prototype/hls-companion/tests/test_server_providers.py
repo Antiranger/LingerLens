@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiohttp.test_utils import AioHTTPTestCase
 
@@ -16,6 +17,34 @@ sys.path.insert(0, str(ROOT))
 import companion.server as server_module
 from companion.server import CompanionApplication, errors
 from companion.core import BrowserCookieSnapshot, LiveSession
+from companion.providers.base import SourceLanguagePolicy, TranslationCapabilities, TranslationLanguageCapabilities
+
+
+class AsrAudioLegSelectorTests(unittest.TestCase):
+    """P3-B: the dedicated ASR leg uses a self-resolving yt-dlp selector so
+    probe-time manifest fluctuation cannot silently disable it (observed live:
+    audio-only renditions 233/234 present in one extraction, gone the next)."""
+
+    def test_youtube_gets_generic_hls_audio_selector(self) -> None:
+        info = {"extractor": "youtube", "formats": []}
+        selector = CompanionApplication._asr_audio_leg_selector(info)
+        self.assertEqual(selector, "234/233/ba[protocol^=m3u8]/worst[protocol^=m3u8]")
+
+    def test_selector_does_not_depend_on_probe_formats(self) -> None:
+        # Even a probe that transiently lists zero audio-only formats must
+        # still enable the audio leg.
+        info = {
+            "extractor": "youtube",
+            "formats": [
+                {"format_id": "301", "vcodec": "avc1.4D402A", "acodec": "mp4a.40.2", "url": "u", "protocol": "m3u8_native"},
+            ],
+        }
+        self.assertIsNotNone(CompanionApplication._asr_audio_leg_selector(info))
+
+    def test_muxed_only_platforms_return_none(self) -> None:
+        for extractor in ("bililive", "twitchstream"):
+            info = {"extractor": extractor, "formats": []}
+            self.assertIsNone(CompanionApplication._asr_audio_leg_selector(info), msg=extractor)
 
 
 class ProviderApiTests(AioHTTPTestCase):
@@ -27,6 +56,8 @@ class ProviderApiTests(AioHTTPTestCase):
             providers_file=root / "providers.json",
             publish_delay=2.0,
             cookies_from_browser=None,
+            host="127.0.0.1",
+            port=8765,
         )
         companion = CompanionApplication(args)
         companion.control.start = lambda: None
@@ -49,17 +80,69 @@ class ProviderApiTests(AioHTTPTestCase):
 
         response = await self.client.post(
             "/api/providers",
-            json={"asr": {"active": "bailian-paraformer"}, "translation": {"fallback": []}},
+            json={"asr": {"active": "bailian-fun-asr-2026-02-28"}, "translation": {"fallback": []}},
         )
         self.assertEqual(response.status, 200)
         payload = await response.json()
-        self.assertEqual(payload["asr"]["active"], "bailian-paraformer")
+        self.assertEqual(payload["asr"]["active"], "bailian-fun-asr-2026-02-28")
         self.assertEqual(payload["translation"]["fallback"], [])
 
         response = await self.client.post("/api/providers", json={"asr": {"apiKey": "leak"}})
         self.assertEqual(response.status, 400)
         persisted = (Path(self.temporary.name) / "providers.json").read_text(encoding="utf-8")
         self.assertNotIn("leak", persisted)
+
+    async def test_target_language_update_hot_switches_running_subtitle_pipeline(self) -> None:
+        class RunningPipeline:
+            def __init__(self) -> None:
+                language = TranslationLanguageCapabilities(open_world_prompting=True)
+                self.translation_provider = SimpleNamespace(
+                    capabilities=TranslationCapabilities(True, True, True, False, 1000, language)
+                )
+                self.source_policy = SourceLanguagePolicy.specified("ja")
+                self.targets: list[str] = []
+
+            def update_target_language(self, target: str) -> bool:
+                self.targets.append(target)
+                return True
+
+            async def stop(self) -> None:
+                return None
+
+        companion = self.app["companion"]
+        pipeline = RunningPipeline()
+        companion.subtitle_pipeline = pipeline
+        current = await (await self.client.get("/api/providers")).json()
+        subtitle = {**current["subtitle"], "targetLanguage": "en-US"}
+
+        response = await self.client.post("/api/providers", json={"subtitle": subtitle})
+
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())["subtitle"]["targetLanguage"], "en-US")
+        self.assertEqual(pipeline.targets, ["en-US"])
+
+    async def test_private_hls_requires_session_token_and_ready_segment(self) -> None:
+        companion = self.app["companion"]
+        private = companion.session.private_dir
+        private.mkdir(parents=True)
+        (private / "init.mp4").write_bytes(b"init")
+        (private / "seg_000000000.m4s").write_bytes(b"segment")
+        (private / "live.m3u8").write_text(
+            "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n"
+            "#EXT-X-PROGRAM-DATE-TIME:2026-09-05T00:00:00+00:00\n"
+            "#EXTINF:1.0,\nseg_000000000.m4s\n",
+            encoding="utf-8",
+        )
+        companion.session.publisher = SimpleNamespace(pdt_epoch=1_788_547_200.0, stop=lambda: None)
+        companion.private_hls_token = "private-token"
+
+        epoch = await companion._wait_for_private_hls()
+        self.assertEqual(epoch, 1_788_547_200.0)
+        denied = await self.client.get("/_private-hls/wrong/live.m3u8")
+        self.assertEqual(denied.status, 404)
+        allowed = await self.client.get("/_private-hls/private-token/live.m3u8")
+        self.assertEqual(allowed.status, 200)
+        self.assertEqual(allowed.headers["Cache-Control"], "no-store, max-age=0")
 
     async def test_model_settings_catalog_persists_multiple_profiles_and_active_selection(self) -> None:
         catalog = {
@@ -114,7 +197,7 @@ class ProviderApiTests(AioHTTPTestCase):
         response = await self.client.post("/api/model-settings", json=catalog)
         self.assertEqual(response.status, 200, await response.text())
         saved = await response.json()
-        self.assertEqual(saved["version"], 2)
+        self.assertEqual(saved["version"], 3)
         self.assertEqual(saved["asr"]["active"], "local-whisper")
         self.assertEqual([item["id"] for item in saved["asr"]["providers"]], ["cloud-qwen", "local-whisper"])
         self.assertEqual(saved["asr"]["providers"][0]["apiKey"], "cloud-secret")
@@ -128,7 +211,7 @@ class ProviderApiTests(AioHTTPTestCase):
         )
         restarted = CompanionApplication(args)
         restarted_view = restarted.providers_config
-        self.assertEqual(restarted_view["version"], 2)
+        self.assertEqual(restarted_view["version"], 3)
         self.assertEqual(restarted_view["asr"]["active"], "local-whisper")
         self.assertEqual(restarted_view["translation"]["fallback"], ["cloud-translation"])
         response = await self.client.get("/api/model-settings")
@@ -191,7 +274,7 @@ class ProviderApiTests(AioHTTPTestCase):
                 "active": "legacy-mt", "fallback": ["legacy-fallback"],
                 "providers": [
                     {"id": "legacy-mt", "label": "Legacy MT", "kind": "openai-compatible", "model": "legacy-model", "baseUrl": "https://legacy.example/v1", "apiKey": "legacy-mt-key", "options": {"contextPairs": 7}},
-                    {"id": "legacy-fallback", "label": "Legacy Qwen MT", "kind": "qwen-mt", "model": "qwen-mt-flash", "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1", "apiKey": "fallback-key", "options": {"tmPairs": 3}},
+                    {"id": "legacy-fallback", "label": "Legacy Fallback", "kind": "openai-compatible", "model": "fallback-model", "baseUrl": "https://fallback.example/v1", "apiKey": "fallback-key", "options": {"contextPairs": 3}},
                 ],
             },
             "subtitle": {"sourceLanguage": "ja", "targetLanguage": "zh", "manualOffsetSeconds": 1.25, "bilingual": False},
@@ -200,14 +283,72 @@ class ProviderApiTests(AioHTTPTestCase):
         response = await self.client.get("/api/model-settings")
         self.assertEqual(response.status, 200)
         migrated = await response.json()
-        self.assertEqual(migrated["version"], 2)
+        self.assertEqual(migrated["version"], 3)
         self.assertEqual(migrated["asr"]["active"], "legacy-asr")
         self.assertEqual(migrated["translation"]["fallback"], ["legacy-fallback"])
         self.assertEqual(migrated["asr"]["providers"][0]["apiKey"], "legacy-asr-key")
         self.assertEqual(migrated["translation"]["providers"][0]["model"], "legacy-model")
+        self.assertEqual(migrated["subtitle"]["sourceLanguage"], {"mode": "specified", "tag": "ja"})
+        self.assertEqual(migrated["subtitle"]["targetLanguage"], "zh-Hans")
         self.assertEqual(migrated["subtitle"]["manualOffsetSeconds"], 1.25)
         persisted = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(persisted["version"], 2)
+        self.assertEqual(persisted["version"], 3)
+        self.assertEqual(persisted["translation"]["providers"][1]["apiKey"], "fallback-key")
+
+    async def test_version_two_language_config_migrates_to_v3_without_losing_anything(self) -> None:
+        path = Path(self.temporary.name) / "providers.json"
+        legacy = {
+            "version": 2,
+            "asr": {
+                "active": "fun-asr",
+                "providers": [{
+                    "id": "fun-asr", "label": "Fun ASR", "kind": "dashscope-task-asr",
+                    "model": "fun-asr-realtime-2026-02-28", "baseUrl": "wss://legacy.example/inference",
+                    "apiKey": "asr-key-2", "pricePerSecondCny": 0.00033,
+                    "options": {"sampleRate": 16000, "languages": ["zh", "en", "ja"]},
+                }],
+            },
+            "translation": {
+                "active": "legacy-mt", "fallback": ["legacy-fallback"],
+                "providers": [
+                    {"id": "legacy-mt", "label": "Legacy MT", "kind": "openai-compatible", "model": "legacy-model", "baseUrl": "https://legacy.example/v1", "apiKey": "legacy-mt-key", "pricePerMillionInputTokensCny": 2.0, "pricePerMillionCachedInputTokensCny": 0.5, "pricePerMillionOutputTokensCny": 8.0, "options": {"contextPairs": 7}},
+                    {"id": "legacy-fallback", "label": "Legacy Fallback", "kind": "openai-compatible", "model": "fallback-model", "baseUrl": "https://fallback.example/v1", "apiKey": "fallback-key", "options": {"contextPairs": 3}},
+                ],
+            },
+            "subtitle": {
+                "sourceLanguage": "ja", "targetLanguage": "zh",
+                "manualOffsetSeconds": 1.25, "bilingual": False, "holdSecondsMin": 2.0,
+            },
+        }
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        response = await self.client.get("/api/model-settings")
+        self.assertEqual(response.status, 200)
+        migrated = await response.json()
+        self.assertEqual(migrated["version"], 3)
+        # ja -> zh becomes specified ja -> zh-Hans.
+        self.assertEqual(migrated["subtitle"]["sourceLanguage"], {"mode": "specified", "tag": "ja"})
+        self.assertEqual(migrated["subtitle"]["targetLanguage"], "zh-Hans")
+        # Profiles, active/fallback ids, keys, prices and other subtitle
+        # preferences all survive untouched.
+        self.assertEqual(migrated["asr"]["active"], "fun-asr")
+        self.assertEqual([item["id"] for item in migrated["asr"]["providers"]], ["fun-asr"])
+        self.assertEqual(migrated["asr"]["providers"][0]["apiKey"], "asr-key-2")
+        self.assertEqual(migrated["asr"]["providers"][0]["pricePerSecondCny"], 0.00033)
+        self.assertEqual(migrated["translation"]["active"], "legacy-mt")
+        self.assertEqual(migrated["translation"]["fallback"], ["legacy-fallback"])
+        self.assertEqual(migrated["translation"]["providers"][0]["apiKey"], "legacy-mt-key")
+        self.assertEqual(migrated["translation"]["providers"][0]["pricePerMillionInputTokensCny"], 2.0)
+        self.assertEqual(migrated["translation"]["providers"][0]["pricePerMillionCachedInputTokensCny"], 0.5)
+        self.assertEqual(migrated["translation"]["providers"][0]["pricePerMillionOutputTokensCny"], 8.0)
+        self.assertEqual(migrated["translation"]["providers"][1]["apiKey"], "fallback-key")
+        self.assertEqual(migrated["subtitle"]["manualOffsetSeconds"], 1.25)
+        self.assertEqual(migrated["subtitle"]["bilingual"], False)
+        self.assertEqual(migrated["subtitle"]["holdSecondsMin"], 2.0)
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["version"], 3)
+        self.assertEqual(persisted["subtitle"]["sourceLanguage"], {"mode": "specified", "tag": "ja"})
+        self.assertEqual(persisted["subtitle"]["targetLanguage"], "zh-Hans")
+        self.assertEqual(persisted["asr"]["providers"][0]["apiKey"], "asr-key-2")
         self.assertEqual(persisted["translation"]["providers"][1]["apiKey"], "fallback-key")
 
     async def test_model_settings_rejects_deleting_active_or_last_profile(self) -> None:
@@ -253,11 +394,97 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertNotIn("visible-only-here", await providers_response.text())
         self.assertNotIn("visible-only-here", await status_response.text())
 
+    async def test_languages_endpoint_returns_catalog_and_effective_capabilities(self) -> None:
+        response = await self.client.get("/api/languages")
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["catalogVersion"], 1)
+        by_tag = {entry["tag"]: entry for entry in payload["languages"]}
+        self.assertEqual(by_tag["zh-Hans"]["englishName"], "Chinese (Simplified)")
+        self.assertEqual(by_tag["zh-Hant"]["autonym"], "中文（繁體）")
+        self.assertEqual(by_tag["ar"]["direction"], "rtl")
+        self.assertIn("zh-CN", by_tag["zh-Hans"]["aliases"])
+        # The default active ASR is the verified Fun-ASR preset: specified
+        # languages only, no detection, no code-switching.
+        asr = payload["asr"]
+        self.assertEqual(asr["providerId"], "bailian-fun-asr-2026-02-28")
+        self.assertEqual(asr["language"]["tier"], "verified")
+        self.assertEqual(asr["language"]["detection"], "none")
+        self.assertFalse(asr["language"]["codeSwitching"])
+        self.assertEqual(asr["language"]["supportedTags"], ["zh", "en", "ja"])
+        self.assertEqual(asr["preferredSampleRate"], 16000)
+        translation = payload["translation"]
+        self.assertTrue(translation["language"]["openWorldPrompting"])
+        self.assertEqual(payload["defaults"]["sourceLanguage"], {"mode": "specified", "tag": "ja"})
+        self.assertEqual(payload["defaults"]["targetLanguage"], "zh-Hans")
+
+    async def test_start_rejects_unsupported_source_policy_and_target_pair(self) -> None:
+        companion = self.app["companion"]
+        with (
+            patch.object(server_module.SubtitlePipeline, "start", new=AsyncMock(return_value=lambda _chunk: None)),
+            patch.object(server_module.SubtitlePipeline, "stop", new=AsyncMock(return_value=None)),
+        ):
+            # Fun-ASR cannot auto-detect.
+            with self.assertRaisesRegex(ValueError, "auto-detect"):
+                await companion._prepare_subtitles({}, {"enabled": True, "sourceLanguage": {"mode": "detect"}})
+            # Fun-ASR supports zh/en/ja only.
+            with self.assertRaisesRegex(ValueError, "fr"):
+                await companion._prepare_subtitles({}, {"enabled": True, "sourceLanguage": {"mode": "specified", "tag": "fr"}})
+            # Code-switching is not a Fun-ASR capability.
+            with self.assertRaisesRegex(ValueError, "code-switching"):
+                await companion._prepare_subtitles({}, {
+                    "enabled": True,
+                    "sourceLanguage": {"mode": "detect", "candidates": ["ja"], "allowCodeSwitching": True},
+                })
+
+    async def test_start_rejects_missing_key_and_invalid_candidates_for_new_stt(self) -> None:
+        """Ticket 02 pre-start errors: missing credential and candidates outside
+        Deepgram nova-3's multi detection set are rejected before playback."""
+        companion = self.app["companion"]
+        catalog = await (await self.client.get("/api/model-settings")).json()
+        deepgram = {
+            "id": "dg-nova3",
+            "label": "Deepgram Nova-3",
+            "kind": "deepgram-streaming",
+            "model": "nova-3",
+            "baseUrl": "wss://api.deepgram.com/v1/listen",
+            "apiKey": "",
+            "options": {},
+        }
+        catalog["asr"]["providers"].append(deepgram)
+        catalog["asr"]["active"] = "dg-nova3"
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
+        with (
+            patch.object(server_module.SubtitlePipeline, "start", new=AsyncMock(return_value=lambda _chunk: None)),
+            patch.object(server_module.SubtitlePipeline, "stop", new=AsyncMock(return_value=None)),
+        ):
+            # Missing credential is reported before playback starts.
+            with self.assertRaisesRegex(ValueError, "API key"):
+                await companion._prepare_subtitles({}, {"enabled": True, "sourceLanguage": {"mode": "specified", "tag": "ja"}})
+
+            deepgram["apiKey"] = "dg-secret"
+            response = await self.client.post("/api/model-settings", json=catalog)
+            self.assertEqual(response.status, 200, await response.text())
+            # nova-3's multi detection cannot detect zh, even though zh is a
+            # valid specified language for the same model.
+            with self.assertRaisesRegex(ValueError, "candidates"):
+                await companion._prepare_subtitles({}, {
+                    "enabled": True,
+                    "sourceLanguage": {"mode": "detect", "candidates": ["zh"]},
+                })
+            # Multi-set candidates plus code-switching are honored.
+            pipeline = await companion._prepare_subtitles({}, {
+                "enabled": True,
+                "sourceLanguage": {"mode": "detect", "candidates": ["ja", "en"], "allowCodeSwitching": True},
+            })
+            self.assertIsInstance(pipeline, server_module.SubtitlePipeline)
+
     async def test_subtitle_start_uses_active_catalog_records_not_request_overrides(self) -> None:
         companion = self.app["companion"]
         catalog = await (await self.client.get("/api/model-settings")).json()
-        catalog["asr"]["active"] = "bailian-paraformer"
-        catalog["translation"]["active"] = "bailian-qwen-mt-flash"
+        catalog["asr"]["active"] = "bailian-fun-asr-2026-02-28"
+        catalog["translation"]["active"] = "bailian-qwen35-flash"
         catalog["translation"]["fallback"] = []
         response = await self.client.post("/api/model-settings", json=catalog)
         self.assertEqual(response.status, 200, await response.text())
@@ -274,11 +501,15 @@ class ProviderApiTests(AioHTTPTestCase):
             patch.object(server_module.SubtitlePipeline, "start", new=AsyncMock(return_value=lambda _chunk: None)),
             patch.object(server_module.SubtitlePipeline, "stop", new=AsyncMock(return_value=None)),
         ):
-            await companion._prepare_subtitles({}, {
+            pipeline = await companion._prepare_subtitles({}, {
                 "asrProviderId": "bailian-qwen3-realtime",
                 "translationProviderId": "bailian-qwen35-flash",
             })
-            self.assertEqual(selected[:2], ["bailian-paraformer", "bailian-qwen-mt-flash"])
+            self.assertEqual(selected[:2], ["bailian-fun-asr-2026-02-28", "bailian-qwen35-flash"])
+            # Independent YouTube legs must use the continuously measured
+            # MediaAnchor. First MPEG-TS PTS values are per-leg offsets, not a
+            # shared epoch, and mapping through them makes cues run early.
+            self.assertIsNone(pipeline.source_pts_mapper)
             await companion._stop_subtitles()
 
     async def test_cookie_import_filters_domains_and_returns_token(self) -> None:
@@ -332,6 +563,27 @@ class ProviderApiTests(AioHTTPTestCase):
         # A partial import without the login-critical cookies is flagged.
         self.assertIn("HSID", payload["missingCritical"])
         self.assertIn("SAPISID", payload["missingCritical"])
+
+    async def test_twitch_cookie_import_is_optional_and_domain_scoped(self) -> None:
+        response = await self.client.post(
+            "/api/auth-cookies",
+            json={"platform": "twitch", "header": "auth-token=secret; persistent=1"},
+        )
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["platform"], "twitch")
+        self.assertEqual(payload["missingCritical"], [])
+        companion = self.app["companion"]
+        snapshot = companion._authentication(
+            {"url": "https://www.twitch.tv/example", "authToken": payload["authToken"]},
+            consume=False,
+        )
+        try:
+            content = Path(snapshot.yt_dlp_args()[1]).read_text(encoding="utf-8")
+            self.assertIn("twitch.tv", content)
+            self.assertNotIn("youtube.com", content)
+        finally:
+            snapshot.close()
 
     async def test_bilibili_cookie_import_formats_preserve_cookies_and_only_require_sessdata(self) -> None:
         cases = [
@@ -533,7 +785,7 @@ class ProviderApiTests(AioHTTPTestCase):
             def detach_audio_tee(self):
                 pass
 
-        def fake_start(page_url, inputs, _publish_delay, _command):
+        def fake_start(page_url, inputs, _publish_delay, _command, **_kwargs):
             LiveSession.stop(companion.session)
             companion.session.page_url = page_url
             companion.session.quality = inputs.quality
@@ -551,6 +803,12 @@ class ProviderApiTests(AioHTTPTestCase):
                 json={"url": "https://live.bilibili.com/1", "qualityId": "auto"},
             )
             self.assertEqual(response.status, 200)
+
+            # A failed source/FFmpeg still owns local resources until Stop runs.
+            # The cleanup endpoint must remain valid and reset that error state.
+            companion.session.error = "simulated FFmpeg failure"
+            failed = await (await self.client.get("/api/status")).json()
+            self.assertEqual(failed["state"], "error")
 
             response = await self.client.post("/api/stop", json={})
             self.assertEqual(response.status, 200)
@@ -608,7 +866,7 @@ class ProviderApiTests(AioHTTPTestCase):
         companion.probe.extract = lambda *_args: info
         captured = {}
         companion.session.stop = lambda: None
-        companion.session.start = lambda _url, _inputs, delay, _command: captured.update(delay=delay)
+        companion.session.start = lambda _url, _inputs, delay, _command, **_kwargs: captured.update(delay=delay)
         with (
             patch.object(server_module, "YtDlpLiveIngest", FakeIngest),
             patch.object(server_module, "build_ffmpeg_command", return_value=["fake-ffmpeg"]),
@@ -664,6 +922,37 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertEqual(payload["cues"][0]["revision"], 2)
         self.assertEqual(payload["cues"][0]["seq"], 2)
         self.assertEqual(payload["maxSeq"], 2)
+
+
+    async def test_live_messages_endpoints_and_status(self) -> None:
+        companion = self.app["companion"]
+        companion.message_store.add(
+            platform="youtube",
+            source_id="m1",
+            author={"id": "a", "name": "Alice", "badges": []},
+            text="Hello server messages",
+            received_monotonic=100.0,
+            received_at=1700000001.0,
+            media_time=1700000000.0,
+        )
+        response = await self.client.get("/api/live-messages?afterSeq=0")
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(payload["messages"][0]["author"]["name"], "Alice")
+        self.assertEqual(payload["messages"][0]["kind"], "text")
+        self.assertEqual(payload["maxSeq"], 1)
+        self.assertIn("stats", payload)
+
+        status_res = await self.client.get("/api/messages/status")
+        self.assertEqual(status_res.status, 200)
+        status_payload = await status_res.json()
+        self.assertIn("state", status_payload)
+        self.assertIn("pendingClock", status_payload)
+
+        main_status = await (await self.client.get("/api/status")).json()
+        self.assertIn("mediaClock", main_status)
+        self.assertIn("liveMessages", main_status)
 
 
 if __name__ == "__main__":

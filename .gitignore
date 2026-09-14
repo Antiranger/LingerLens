@@ -6,6 +6,9 @@ __pycache__/
 venv/
 node_modules/
 npm-debug.log*
+# The audit venv is separate from .venv-desktop; `.venv/` does not match it, and
+# a bare `git add -A` used to stage ~1200 site-packages files because of that.
+/.venv-audit/
 
 # IDE / OS
 .DS_Store
@@ -18,6 +21,13 @@ Thumbs.db
 .playwright-cli/
 .agent/
 .agents/
+
+# Archived stale source snapshots. Kept on disk for provenance but deliberately
+# untracked: they are same-named copies of live source, so tracking them made
+# `git grep subtitle_pipeline.py` return eight contradictory answers when only
+# one of them is the code that runs. See .archive/README.md.
+/.archive/*
+!/.archive/README.md
 
 # Generated reports, benchmarks, recordings, media and logs
 output/
@@ -33,6 +43,24 @@ live-delay-*.json
 *.webm
 *.wav
 *.pcm
+# MPEG-TS captures. Scoped to scratch space on purpose: a bare `*.ts` would also
+# hide a future TypeScript source file, and these captures are what made
+# `npm run guard:release` fail (five committed .ts files from the 2026-09-09
+# startup-sync experiment).
+/.scratch/**/*.ts
+# Bulky generated experiment output. The .scratch/ investigation reports,
+# probe scripts and their JSON results are deliberately left visible — they are
+# engineering records. Only models, captures and logs are ignored, because
+# `git add -A` would otherwise stage ~1.1 GB of checkpoints.
+.scratch/**/*.pt
+.scratch/**/*.onnx
+.scratch/**/*.part
+.scratch/**/*.err
+.scratch/**/*.out
+.scratch/**/*.jsonl
+.scratch/**/*.csv
+.scratch/**/models/
+.scratch/**/backup-*/
 prototype/hls-companion/.benchmark-data/
 prototype/hls-companion/benchmark-results/
 prototype/hls-companion/runtime-*/
@@ -53,3 +81,20 @@ prototype/hls-companion/vendor/models/
 *.secret
 *.cookies
 cookies.txt
+
+# Ad-hoc probe/start payloads written to the repo root while debugging a live
+# session. They are per-run scratch, not fixtures.
+/probe*.json
+/start*.json
+/*.tmp
+# Windows ReplaceFile leftovers (`index.html~RF68e9c480.TMP`). An interrupted
+# editor/tool save leaves one next to the real file, and it then gets copied
+# into the packaged build by the freeze.
+*~RF*.TMP
+# Windows reserved device name; cannot be a real tracked file.
+/nul
+
+# Desktop build environments and distributable artifacts
+/.venv-desktop/
+/build-desktop/
+/release/

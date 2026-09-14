@@ -9,8 +9,31 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import REGISTRY
+from ..languages import canonicalize_target_tag
+from .base import SourceLanguagePolicy
 
 BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "bailian-fun-asr-2026-02-28",
+        "label": "百炼 Fun-ASR-Realtime 2026-02-28（日/中/英）",
+        "kind": "dashscope-task-asr",
+        "model": "fun-asr-realtime-2026-02-28",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        "apiKey": "",
+        "options": {
+            "sampleRate": 16000,
+            "languages": ["zh", "en", "ja"],
+            "semanticPunctuationEnabled": False,
+            "maxSentenceSilence": 400,
+            # Official Fun-ASR option: avoid an endlessly growing VAD sentence
+            # when a live host speaks without pausing.
+            "multiThresholdModeEnabled": True,
+            "heartbeat": True,
+            "hotwordsEnabled": False,
+            "contextEnabled": False,
+            "startTimeoutSeconds": 10,
+        },
+    },
     {
         "id": "bailian-qwen3-realtime",
         "label": "百炼 Qwen3-ASR-Flash-Realtime",
@@ -29,23 +52,19 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "id": "bailian-fun-asr-2026-02-28",
-        "label": "百炼 Fun-ASR-Realtime 2026-02-28（日/中/英）",
+        "id": "bailian-qwen-audio-3.0-asr-streaming",
+        "label": "百炼 Qwen-Audio-3.0-ASR-Flash-Streaming（实时·多语言）",
         "kind": "dashscope-task-asr",
-        "model": "fun-asr-realtime-2026-02-28",
+        "model": "qwen-audio-3.0-asr-flash-streaming",
         "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
         "apiKeyEnv": "DASHSCOPE_API_KEY",
         "options": {
             "sampleRate": 16000,
             "languages": ["zh", "en", "ja"],
             "semanticPunctuationEnabled": False,
-            "maxSentenceSilence": 400,
-            # Official Fun-ASR option: avoid an endlessly growing VAD sentence
-            # when a live host speaks without pausing.
+            "maxSentenceSilence": 800,
             "multiThresholdModeEnabled": True,
             "heartbeat": True,
-            "hotwordsEnabled": False,
-            "contextEnabled": False,
             "startTimeoutSeconds": 10,
         },
     },
@@ -62,23 +81,159 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
             "languages": ["zh", "en", "ja", "ko"],
             "semanticPunctuationEnabled": False,
             "maxSentenceSilence": 800,
-            "hotwordsEnabled": True,
-            "contextEnabled": True,
+            # Audit 2026-09: parameters.hotwords is not in the current official
+            # docs and input.context is not documented for this model. Hotword
+            # support goes through options.vocabulary/vocabularyId instead.
+            "contextEnabled": False,
             "startTimeoutSeconds": 10,
         },
     },
+    {
+        "id": "deepgram-nova3-multilingual",
+        "label": "Deepgram Nova-3（全球多语言·混合识别）",
+        "kind": "deepgram-streaming",
+        "model": "nova-3",
+        "baseUrl": "wss://api.deepgram.com/v1/listen",
+        "apiKeyEnv": "DEEPGRAM_API_KEY",
+        "options": {
+            "interimResults": True,
+            "smartFormat": True,
+            # Official recommendation for code-switching sessions.
+            "endpointingMs": 100,
+            "vadEvents": True,
+            # Official docs pair UtteranceEnd with this parameter; without it
+            # the UtteranceEnd speech_stopped events never fire.
+            "utteranceEndMs": 1000,
+            # Diarization is a paid add-on: opt in per profile (diarize: true).
+            "keepAliveSeconds": 8,
+        },
+    },
+    {
+        "id": "soniox-stt-rt-v5",
+        "label": "Soniox STT RT v5（多语言·稳定前缀）",
+        "kind": "soniox-realtime",
+        "model": "stt-rt-v5",
+        "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
+        "apiKeyEnv": "SONIOX_API_KEY",
+        "options": {
+            "enableLanguageIdentification": True,
+            "enableEndpointDetection": True,
+            # Diarization is included in the realtime rate (official pricing).
+            "enableSpeakerDiarization": True,
+            "maxEndpointDelayMs": 700,
+            "endpointSensitivity": 0.3,
+            "keepAliveSeconds": 5,
+        },
+    },
+    {
+        "id": "assemblyai-universal-3-5-pro",
+        "label": "AssemblyAI Universal-3.5 Pro Realtime（原生混合·英语✓）",
+        "kind": "assemblyai-streaming",
+        "model": "universal-3-5-pro",
+        "baseUrl": "wss://streaming.assemblyai.com/v3/ws",
+        "apiKeyEnv": "ASSEMBLYAI_API_KEY",
+        "options": {
+            "mode": "balanced",
+            "speakerLabels": True,
+            "maxSpeakers": 6,
+            "closeDrainTimeoutSeconds": 2.0,
+        },
+    },
+    {
+        "id": "volcengine-bigasr-sauc",
+        "label": "火山引擎豆包大模型流式 ASR（中英）",
+        "kind": "volcengine-sauc",
+        "model": "bigmodel_async",
+        "baseUrl": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+        "apiKeyEnv": "VOLCENGINE_ACCESS_TOKEN",
+        "options": {
+            # New-console auth: X-Api-Key + resource id. Legacy console auth:
+            # authMode "legacy" + appKey (apiKey holds the Access Token).
+            "resourceId": "volc.bigasr.sauc.concurrent",
+            "enableItn": True,
+            "endWindowSize": 800,
+            "closeDrainTimeoutSeconds": 2.0,
+        },
+    },
+    {
+        "id": "elevenlabs-scribe-v2-rt",
+        "label": "ElevenLabs Scribe v2 Realtime（多语言）",
+        "kind": "elevenlabs-scribe-realtime",
+        "model": "scribe_v2_realtime",
+        "baseUrl": "wss://api.elevenlabs.io/v1/speech-to-text/realtime",
+        "apiKeyEnv": "ELEVENLABS_API_KEY",
+        "options": {
+            "commitStrategy": "manual",
+            "includeLanguageDetection": True,
+        },
+    },
+    {
+        "id": "speechmatics-rt-enhanced",
+        "label": "Speechmatics Realtime Enhanced（单语·时间戳）",
+        "kind": "speechmatics-realtime",
+        "model": "enhanced",
+        "baseUrl": "wss://global.rt.speechmatics.com/v2/",
+        "apiKeyEnv": "SPEECHMATICS_API_KEY",
+        "options": {
+            "enablePartials": True,
+            "maxDelaySeconds": 4,
+        },
+    },
+    {
+        "id": "tencent-asr-v2-speaker",
+        "label": "腾讯云实时 ASR（16k_zh_en_speaker_2.0·话者分离）",
+        "kind": "tencent-asr",
+        "model": "16k_zh_en_speaker_2.0",
+        "baseUrl": "wss://asr.cloud.tencent.com/asr/v2/<appid>",
+        "apiKeyEnv": "TENCENT_SECRET_KEY",
+        "options": {
+            # Fill in your console values: appId + secretId (SecretKey goes in
+            # the API Key field or TENCENT_SECRET_KEY). Japanese: engineModelType
+            # "16k_ja" on the classic engine.
+            "appId": "",
+            "secretId": "",
+            "engineModelType": "16k_zh_en_speaker_2.0",
+            "voiceFormat": 1,
+            "wordInfo": 1,
+            "needvad": 1,
+        },
+    },
+    {
+        "id": "openai-gpt-live-transcribe",
+        "label": "OpenAI GPT-Live-Transcribe（低延迟·24 kHz）",
+        "kind": "openai-realtime-transcription",
+        "model": "gpt-live-transcribe",
+        "baseUrl": "wss://api.openai.com/v1/realtime",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "options": {
+            "delay": "low",
+            "turnDetection": {"type": "server_vad", "threshold": 0.2, "prefixPaddingMs": 300, "silenceDurationMs": 400},
+        },
+    },
+    {
+        "id": "openai-gpt-transcribe",
+        "label": "OpenAI GPT-Transcribe（检测语言·24 kHz）",
+        "kind": "openai-realtime-transcription",
+        "model": "gpt-transcribe",
+        "baseUrl": "wss://api.openai.com/v1/realtime",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "options": {
+            "turnDetection": {"type": "server_vad", "threshold": 0.2, "prefixPaddingMs": 300, "silenceDurationMs": 400},
+        },
+    },
+
 )
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 2,
+    "version": 3,
     "asr": {
-        "active": "bailian-qwen3-realtime",
-        "providers": [copy.deepcopy(provider) for provider in BUILTIN_ASR_PROVIDERS],
+        "active": "bailian-fun-asr-2026-02-28",
+        "providers": [copy.deepcopy(BUILTIN_ASR_PROVIDERS[0])],
     },
     "translation": {
         "active": "bailian-qwen35-flash",
-        "fallback": ["bailian-qwen-mt-flash"],
+        "fallback": [],
         "providers": [
             {
                 "id": "bailian-qwen35-flash",
@@ -96,37 +251,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
                     "contextSeconds": 90,
                 },
             },
-            {
-                "id": "bailian-qwen-mt-flash",
-                "label": "百炼 Qwen-MT-Flash（极速基线）",
-                "kind": "qwen-mt",
-                "model": "qwen-mt-flash",
-                "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "apiKeyEnv": "DASHSCOPE_API_KEY",
-                "options": {"timeoutSeconds": 4, "tmPairs": 4},
-            },
         ],
     },
     "subtitle": {
-        "sourceLanguage": "ja",
-        "targetLanguage": "zh",
+        "sourceLanguage": {"mode": "specified", "tag": "ja"},
+        "targetLanguage": "zh-Hans",
         "anchor": "start",
         "holdSecondsMin": 1.2,
         "holdSecondsMax": 7.0,
         "holdSecondsPerChar": 0.06,
-        # 0 disables mid-speech forced commits: server VAD at 400ms already
-        # segments into ~1.6s median units, and forcing a break cuts words and
-        # produces cues with no end boundary.
-        "maxUtteranceSeconds": 0.0,
-        # Emit confirmed sub-sentences from the realtime ASR's stable prefix
-        # while a long utterance is still being spoken (redesign Fix F P2,
-        # RC-4). Without it a speaker who never pauses yields 10-30s
-        # utterances whose cue only exists after the sentence is over
-        # (measured 2026-08-31 countdown live: 6/21 utterances >=9.2s, worst
-        # 30.2s; prefix split delivered 32 sub-sentences 8.4s earlier on
-        # average). The cap keeps short utterances on the final-only path.
-        "prefixSplitEnabled": True,
-        "prefixSplitAfterSeconds": 3.0,
+        # Cut policy lives entirely in the shared CaptionChunker. The former
+        # maxUtteranceSeconds / prefixSplitEnabled / prefixSplitAfterSeconds
+        # knobs configured a second segmentation mechanism that no shipped ASR
+        # Adapter could reach, and are gone with it.
         "translationWorkers": 4,
         "manualOffsetSeconds": 0.0,
         "bilingual": True,
@@ -140,33 +277,90 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> dict[
         atomic_write_config(path, DEFAULT_CONFIG)
     with path.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
-    if config.get("version") == 1:
-        config = migrate_v1_config(config)
+    if config.get("version") != 3:
+        config = migrate_config(config)
         atomic_write_config(path, config)
     validate_config(config)
     return resolve_secrets(config, env)
 
 
-def migrate_v1_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Upgrade the original provider lists in place without changing records."""
+def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade any older persisted config to the current schema version."""
     migrated = copy.deepcopy(config)
-    migrated["version"] = 2
-    validate_config(migrated)
+    if migrated.get("version") == 1:
+        migrated["version"] = 2
+    if migrated.get("version") == 2:
+        migrated = migrate_v2_config(migrated)
     return migrated
 
 
+def migrate_v2_config(config: dict[str, Any]) -> dict[str, Any]:
+    """v2 -> v3: language fields become canonical BCP 47 contract values.
+
+    ``sourceLanguage: "ja"`` becomes the specified policy ``{"mode":
+    "specified", "tag": "ja"}``; the legacy Chinese target ``zh`` becomes
+    ``zh-Hans`` (the product's existing translations are Simplified Chinese).
+    Provider profiles, active/fallback ids, keys, prices and every other
+    subtitle preference are preserved untouched.
+    """
+    migrated = copy.deepcopy(config)
+    migrated["version"] = 3
+    subtitle = migrated.get("subtitle")
+    if isinstance(subtitle, dict):
+        source = subtitle.get("sourceLanguage")
+        if isinstance(source, str):
+            subtitle["sourceLanguage"] = SourceLanguagePolicy.specified(source).to_json()
+        elif isinstance(source, dict):
+            # Re-canonicalize an already-structured policy.
+            subtitle["sourceLanguage"] = SourceLanguagePolicy.from_json(source).to_json()
+        target = subtitle.get("targetLanguage")
+        if isinstance(target, str):
+            subtitle["targetLanguage"] = canonicalize_target_tag(target)
+    return migrated
+
+
+def _validate_subtitle_language_settings(config: dict[str, Any]) -> None:
+    subtitle = config.get("subtitle")
+    if not isinstance(subtitle, dict):
+        return
+    if "sourceLanguage" in subtitle:
+        try:
+            SourceLanguagePolicy.from_json(subtitle["sourceLanguage"])
+        except ValueError as exc:
+            raise ValueError(f"subtitle.sourceLanguage: {exc}") from exc
+    if "targetLanguage" in subtitle:
+        try:
+            canonicalize_target_tag(subtitle["targetLanguage"])
+        except ValueError as exc:
+            raise ValueError(f"subtitle.targetLanguage: {exc}") from exc
+
+
 def validate_config(config: dict[str, Any]) -> None:
-    if config.get("version") != 2:
-        raise ValueError("providers config version must be 2")
+
+    if config.get("version") != 3:
+        raise ValueError("providers config version must be 3")
+    _validate_subtitle_language_settings(config)
     for section_name in ("asr", "translation"):
         section = config.get(section_name)
         if not isinstance(section, dict) or not isinstance(section.get("providers"), list):
             raise ValueError(f"{section_name}.providers must be a list")
         ids: list[str] = []
         allowed_kinds = (
-            {"dashscope-qwen-realtime", "dashscope-task-asr", "openai-audio-transcriptions"}
+            {
+                "dashscope-qwen-realtime",
+                "dashscope-task-asr",
+                "openai-audio-transcriptions",
+                "deepgram-streaming",
+                "soniox-realtime",
+                "openai-realtime-transcription",
+                "assemblyai-streaming",
+                "elevenlabs-scribe-realtime",
+                "volcengine-sauc",
+                "speechmatics-realtime",
+                "tencent-asr",
+            }
             if section_name == "asr"
-            else {"openai-compatible", "qwen-mt"}
+            else {"openai-compatible", "anthropic-messages", "google-genai"}
         )
         for provider in section["providers"]:
             if not isinstance(provider, dict):
@@ -189,6 +383,7 @@ def validate_config(config: dict[str, Any]) -> None:
                 else (
                     "pricePerMillionInputTokensCny",
                     "pricePerMillionCachedInputTokensCny",
+                    "pricePerMillionCacheWriteTokensCny",
                     "pricePerMillionOutputTokensCny",
                 )
             )
@@ -204,6 +399,13 @@ def validate_config(config: dict[str, Any]) -> None:
             fallback = section.get("fallback", [])
             if not isinstance(fallback, list) or any(item not in ids for item in fallback):
                 raise ValueError("translation.fallback must contain configured provider ids")
+    # Old profiles inherit once; persisted selections then remain independent.
+    config.setdefault("chatTranslation", {"active": config.get("translation", {}).get("active")})
+    chat = config["chatTranslation"]
+    if not isinstance(chat, dict) or set(chat) - {"active"}:
+        raise ValueError("chatTranslation only accepts active")
+    if chat.get("active") not in {p.get("id") for p in config.get("translation", {}).get("providers", [])}:
+        raise ValueError("chatTranslation.active must reference a configured translation model")
 
 
 def resolve_secrets(
@@ -214,7 +416,7 @@ def resolve_secrets(
     for provider in _providers(resolved):
         inline = provider.pop("apiKey", None)
         env_name = provider.get("apiKeyEnv")
-        provider["_apiKey"] = inline if inline is not None else environment.get(env_name, "")
+        provider["_apiKey"] = inline if inline is not None else (environment.get(env_name, "") if env_name else "")
     return resolved
 
 
@@ -251,10 +453,11 @@ def update_model_settings(path: str | Path, settings: dict[str, Any]) -> dict[st
         if not isinstance(asr_settings.get("providers"), list) or not isinstance(translation_settings.get("providers"), list):
             raise ValueError("asr.providers and translation.providers must be lists")
         candidate = {
-            "version": 2,
+            "version": 3,
+            "chatTranslation": copy.deepcopy(settings.get("chatTranslation", {"active": translation_settings.get("active")})),
             "asr": copy.deepcopy(asr_settings),
             "translation": copy.deepcopy(translation_settings),
-            "subtitle": copy.deepcopy(settings.get("subtitle", persisted.get("subtitle", {}))),
+            "subtitle": _canonicalize_subtitle_settings(settings.get("subtitle", persisted.get("subtitle", {}))),
         }
         _preserve_omitted_secrets(candidate, current)
         validate_config(candidate)
@@ -320,7 +523,7 @@ def model_settings_view(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_config(path: str | Path, patch: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"asr", "translation", "subtitle"}
+    allowed = {"asr", "translation", "subtitle", "chatTranslation"}
     if set(patch) - allowed:
         raise ValueError("only asr, translation, and subtitle may be updated")
     path = Path(path)
@@ -328,6 +531,8 @@ def update_config(path: str | Path, patch: dict[str, Any]) -> dict[str, Any]:
         atomic_write_config(path, DEFAULT_CONFIG)
     with path.open("r", encoding="utf-8") as handle:
         persisted = json.load(handle)
+    if persisted.get("version") != 3:
+        persisted = migrate_config(persisted)
     validate_config(persisted)
     if "asr" in patch:
         if set(patch["asr"]) != {"active"}:
@@ -338,13 +543,29 @@ def update_config(path: str | Path, patch: dict[str, Any]) -> dict[str, Any]:
         if unknown:
             raise ValueError("only translation.active and translation.fallback may be updated")
         persisted["translation"].update(patch["translation"])
+    if "chatTranslation" in patch:
+        persisted["chatTranslation"] = copy.deepcopy(patch["chatTranslation"])
     if "subtitle" in patch:
         if not isinstance(patch["subtitle"], dict):
             raise ValueError("subtitle must be an object")
-        persisted["subtitle"] = copy.deepcopy(patch["subtitle"])
+        persisted["subtitle"] = _canonicalize_subtitle_settings(patch["subtitle"])
     validate_config(persisted)
     atomic_write_config(path, persisted)
     return load_config(path)
+
+
+def _canonicalize_subtitle_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the language fields of a subtitle settings payload.
+
+    Canonicalization happens before persistence; invalid values raise
+    actionable errors instead of being silently truncated.
+    """
+    normalized = copy.deepcopy(settings)
+    if "sourceLanguage" in normalized:
+        normalized["sourceLanguage"] = SourceLanguagePolicy.from_json(normalized["sourceLanguage"]).to_json()
+    if "targetLanguage" in normalized:
+        normalized["targetLanguage"] = canonicalize_target_tag(normalized["targetLanguage"])
+    return normalized
 
 
 def atomic_write_config(path: str | Path, config: dict[str, Any]) -> None:

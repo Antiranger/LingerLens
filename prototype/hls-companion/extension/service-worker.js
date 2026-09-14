@@ -5,8 +5,12 @@ const PLATFORMS = [
     cookieUrls: ["https://www.youtube.com/", "https://accounts.google.com/"],
   },
   {
-    matches: (url) => /(^|\.)bilibili\.com$/.test(url.hostname),
+    matches: (url) => url.hostname === "live.bilibili.com" && /^\/\d+/.test(url.pathname),
     cookieUrls: ["https://www.bilibili.com/", "https://live.bilibili.com/"],
+  },
+  {
+    matches: (url) => /^(www\.)?twitch\.tv$/.test(url.hostname) && /^\/[A-Za-z0-9_]+\/?$/.test(url.pathname),
+    cookieUrls: ["https://www.twitch.tv/"],
   },
 ];
 
@@ -15,7 +19,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     if (!tab.id || !tab.url) throw new Error("No active page URL");
     const pageUrl = new URL(tab.url);
     const platform = PLATFORMS.find((candidate) => candidate.matches(pageUrl));
-    if (!platform) throw new Error("Open a YouTube or Bilibili live page first");
+    if (!platform) throw new Error("Open a YouTube, Bilibili, or Twitch live page first");
 
     const store = await cookieStoreForTab(tab.id);
     const cookies = await collectCookies(platform.cookieUrls, store?.id);

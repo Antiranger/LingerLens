@@ -4,13 +4,16 @@
   else root.createSubtitleWindowController = api.createSubtitleWindowController;
 })(typeof globalThis !== "undefined" ? globalThis : this, () => {
   const STORAGE_KEY = "laglingo.subtitle.window.v1";
+  /* 默认位置/配色取自设计原型：字幕落在画面底部（原型 bottom: 12%），
+     原文柠檬黄、译文纯白。y 是窗口中心相对舞台高度的比例；0.82 让典型
+     的一到两行字幕（含内边距约 50-90px）正好落在控制条上方。 */
   const DEFAULTS = Object.freeze({
     x: 0.5,
-    y: 0.76,
-    opacity: 0.9,
+    y: 0.82,
+    opacity: 0.92,
     scale: 1,
-    sourceColor: "#ffd9e2",
-    translationColor: "#ffffff",
+    sourceColor: "#FFD23F",
+    translationColor: "#FFFFFF",
   });
   const COLOR = /^#[0-9a-f]{6}$/i;
   const number = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
