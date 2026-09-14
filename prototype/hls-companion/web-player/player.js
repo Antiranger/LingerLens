@@ -8,22 +8,175 @@
   let browserLatency = null;
   const initialParams = new URLSearchParams(location.search);
   let authToken = initialParams.get("authToken");
-  let statusTimer = null;
-  let subtitleTimer = null;
+  let controlsBusy = false;
+  let sessionAction = null;
+  let lastSessionState = "idle";
+  let statusPoller = null;
+  let subtitlePoller = null;
   let subtitleRenderTimer = null;
   let latestLevelDetails = null;
+  let sourceWasStalled = false;
+  let lastRecoverySeekAt = -Infinity;
   let subtitleCues = new Map();
   let subtitleAfterSeq = 0;
   let subtitleMaxKnownEnd = 0;
+  // Advance by one 100ms render tick plus the measured 50ms median residual.
+  // This centers normal cue onset without increasing timer or polling work.
+  const SUBTITLE_RENDER_ADVANCE_SECONDS = 0.15;
   let providerCatalog = null;
+  let roleCatalog = null;
+  let editingSection = "asr";
+  const editingModel = {};
+  function providerHasCredential(provider) {
+    return provider?.apiKeyConfigured === true
+      || Boolean(provider?.apiKey && provider.apiKey !== "***");
+  }
+
+  function providerOption(provider, selected = false) {
+    const label = provider.label || provider.model || provider.id;
+    const detail = provider.model && !String(provider.label || "").includes(provider.model)
+      ? ` · ${provider.model}`
+      : "";
+    return `<option value="${escapeHtml(provider.id)}"${selected ? " selected" : ""}>${escapeHtml(label)}${escapeHtml(detail)}</option>`;
+  }
+
+  function roleProviders(group, references = []) {
+    const referenced = new Set(references.filter(Boolean));
+    return (group?.providers || []).filter((provider) => providerHasCredential(provider) || referenced.has(provider.id));
+  }
+
+  function renderRoleSelectors(config) {
+    roleCatalog = config;
+    const translation = config.translation || { providers: [] };
+    const fallback = Array.isArray(translation.fallback) ? translation.fallback : [];
+    const chatActive = config.chatTranslation?.active || translation.active;
+    const definitions = [
+      ["roleAsr", config.asr, config.asr?.active, [config.asr?.active]],
+      ["roleSubtitle", translation, translation.active, [translation.active]],
+      ["roleChat", translation, chatActive, [chatActive, translation.active]],
+    ];
+    for (const [id, group, active, references] of definitions) {
+      el(id).innerHTML = roleProviders(group, references).map((provider) => providerOption(provider, provider.id === active)).join("");
+    }
+    const fallbackSelect = el("roleFallback");
+    if (fallbackSelect) {
+      const fallbackActive = fallback.find((id) => id !== translation.active) || "";
+      const fallbackProviders = roleProviders(translation, [fallbackActive, translation.active])
+        .filter((provider) => provider.id !== translation.active);
+      fallbackSelect.innerHTML = `<option value="">不选</option>${fallbackProviders.map((provider) => providerOption(provider, provider.id === fallbackActive)).join("")}`;
+    }
+  }
+  async function selectRole(id, section) {
+    const controls = ["roleAsr", "roleSubtitle", "roleFallback", "roleChat"].map(el);
+    controls.forEach(c => c.disabled = true);
+    el("roleFeedback").textContent = "正在应用选择…";
+    try {
+      const value = el(id).value;
+      const patch = section === "translationFallback"
+        ? { translation: { fallback: value ? [value] : [] } }
+        : { [section]: { active: value } };
+      const data = await request("/api/providers", patch);
+      renderRoleSelectors(data);
+      el("roleFeedback").textContent = section === "asr" ? "已保存" : section === "translationFallback" ? "已保存兜底选择" : "已应用";
+    } catch (error) {
+      if (roleCatalog) renderRoleSelectors(roleCatalog);
+      el("roleFeedback").textContent = `切换失败：${error.message}`;
+    } finally { controls.forEach(c => c.disabled = false); }
+  }
+  // Language catalog/capability state from /api/languages (server-authoritative)
+  // plus the persisted subtitle preferences used as the persistence merge base.
+  const languageState = { asr: null, translation: null, subtitle: null, candidates: [] };
+  let sourceSelector = null;
+  let targetSelector = null;
+  let candidateSelector = null;
   const subtitleScheduler = window.createSubtitleScheduler
     ? window.createSubtitleScheduler({ minDwell: 1.2, maxLateSeconds: 2.0, bridgeGap: 0.3 })
     : null;
   const subtitleWindow = window.createSubtitleWindowController
     ? window.createSubtitleWindowController({ stage, windowElement: el("subtitleLayer"), storage: localStorage, fullscreenDocument: document })
     : null;
+  const mediaClock = window.createMediaClock
+    ? window.createMediaClock({
+        hlsProvider: () => hls,
+        videoElement: video,
+        levelDetailsProvider: () => latestLevelDetails,
+      })
+    : null;
+  const liveMessagesClient = window.createLiveMessagesClient
+    ? window.createLiveMessagesClient({
+        request,
+        onUpdate: (data) => updateLiveMessagesUI(data),
+      })
+    : null;
+  const filterPureEmojiPreference = localStorage.getItem("laglingo_filter_pure_emoji") === "true";
+  const chatOverlay = window.createChatOverlay({ container: el("chatOverlay") });
+  const chatOverlayToggle = el("chatOverlayToggle");
+  const chatOverlayOpacity = el("chatOverlayOpacity");
+  const chatOverlaySize = el("chatOverlaySize");
+  chatOverlayToggle.checked = localStorage.getItem("laglingo.chatOverlay.enabled") !== "false";
+  chatOverlayOpacity.value = localStorage.getItem("laglingo.chatOverlay.opacity") || "0.8";
+  chatOverlaySize.value = localStorage.getItem("laglingo.chatOverlay.size") || "1";
+  const applyChatOpacity = () => el("chatOverlay").style.setProperty("--chat-opacity", chatOverlayOpacity.value);
+  applyChatOpacity();
+  el("chatOverlay").style.setProperty("--chat-size", chatOverlaySize.value);
+  chatOverlayToggle.addEventListener("change", () => {
+    localStorage.setItem("laglingo.chatOverlay.enabled", String(chatOverlayToggle.checked));
+    chatOverlay.clear();
+  });
+  chatOverlayOpacity.addEventListener("input", () => {
+    applyChatOpacity();
+    localStorage.setItem("laglingo.chatOverlay.opacity", chatOverlayOpacity.value);
+  });
+  chatOverlaySize.addEventListener("change", () => {
+    localStorage.setItem("laglingo.chatOverlay.size", chatOverlaySize.value);
+  });
+  const liveMessagesTimeline = window.createLiveMessagesTimeline
+    ? window.createLiveMessagesTimeline({
+        container: el("chatTimelineList"),
+        statsContainer: el("chatStatsIndicator"),
+        source: () => liveMessagesClient ? [...liveMessagesClient.getStore().values()] : [],
+        filterPureEmoji: filterPureEmojiPreference,
+      })
+    : null;
+  const workbenchController = window.createWorkbenchController
+    ? window.createWorkbenchController({
+        container: el("workbenchContainer"),
+        tabs: {
+          split: el("tabWorkbenchSplit"),
+          subtitles: el("tabWorkbenchSubtitles"),
+          chat: el("tabWorkbenchChat"),
+        },
+        storage: localStorage,
+      })
+    : null;
+  const followSubtitlesController = window.createFollowModeController
+    ? window.createFollowModeController({
+        container: el("subtitlesTimelineList"),
+        button: el("followSubtitlesBtn"),
+      })
+    : null;
+  const followChatController = window.createFollowModeController
+    ? window.createFollowModeController({
+        container: el("chatTimelineList"),
+        button: el("followChatBtn"),
+      })
+    : null;
+
+  let timelineRenderTimer = null;
   const subtitleBudget = { lowSince: null, suggested: null };
   const savedTargetDelay = Number(localStorage.getItem("laglingo.targetDelaySeconds") || 15);
+  const chatTranslatePreference = localStorage.getItem("laglingo.liveMessages.translate") === "true";
+  el("chatTranslateToggle").checked = chatTranslatePreference;
+  if (el("hidePureEmojiToggle")) {
+    el("hidePureEmojiToggle").checked = filterPureEmojiPreference;
+    el("hidePureEmojiToggle").addEventListener("change", (e) => {
+      const enabled = Boolean(e.target.checked);
+      localStorage.setItem("laglingo_filter_pure_emoji", String(enabled));
+      if (liveMessagesTimeline && typeof liveMessagesTimeline.setFilterPureEmoji === "function") {
+        liveMessagesTimeline.setFilterPureEmoji(enabled);
+      }
+    });
+  }
   const subtitlePrefs = {
     enabled: localStorage.getItem("laglingo.subtitle.enabled") !== "false",
     mode: localStorage.getItem("laglingo.subtitle.mode") || "bilingual",
@@ -31,6 +184,7 @@
     offset: Number(localStorage.getItem("laglingo.subtitle.offset") || 0),
   };
   if (initialParams.get("url")) el("url").value = initialParams.get("url");
+  if (el("proxy")) el("proxy").value = localStorage.getItem("laglingo.proxy") || "";
   el("targetDelay").value = String(savedTargetDelay > 10 && savedTargetDelay <= 60 ? savedTargetDelay : 15);
 
   const setState = (text, tone = "idle") => {
@@ -45,29 +199,74 @@
     : `不可估算${reason ? `（${reason}）` : ""}`;
 
   async function request(path, body) {
-    const response = await fetch(path, {
+    const timeout = path === "/api/probe" ? 20000 : 30000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    let response;
+    try {
+      response = await Promise.race([
+        fetch(path, {
       method: body ? "POST" : "GET",
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
-    });
+        signal: controller.signal,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(
+          path === "/api/probe"
+            ? "读取直播信息超时（20 秒）。请确认代理软件正在运行，或检查直播是否需要登录 Cookie。"
+            : "本地后台响应超时，请重试。"
+        )), timeout)),
+      ]);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(path === "/api/probe"
+          ? "读取直播信息超时。请确认链接是正在进行的公开直播，并检查网络、登录状态或代理设置。"
+          : "本地后台响应超时，请重试。");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     const text = await response.text();
     let payload = {};
     try { payload = text ? JSON.parse(text) : {}; } catch { payload = { error: text }; }
-    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok) {
+      const detail = contentType.includes("json") && payload.error
+        ? payload.error
+        : `本地后台接口 ${path} 返回 HTTP ${response.status}，请确认 LagLingo 后台已启动。`;
+      throw new Error(detail);
+    }
+    if (!contentType.includes("json")) {
+      throw new Error(`本地后台接口 ${path} 返回了非 JSON 响应，请重启 LagLingo。`);
+    }
     return payload;
   }
 
   function commonBody() {
     const body = { url: el("url").value.trim() };
+    const proxy = el("proxy")?.value.trim() || "";
+    if (proxy) { body.proxy = proxy; localStorage.setItem("laglingo.proxy", proxy); }
     if (authToken) body.authToken = authToken;
     return body;
   }
 
   async function probe() {
+    if (controlsBusy || sessionAction || lastSessionState === "running") return;
+    if (!el("url").value.trim() || !el("url").checkValidity()) {
+      el("setupFeedback").textContent = "请先粘贴完整的直播链接。";
+      el("url").focus();
+      return;
+    }
+    el("quality").disabled = true;
+    el("setupPlayback").hidden = true;
+    el("probe").textContent = "准备中…";
+    el("probe").setAttribute("aria-busy", "true");
+    el("setupFeedback").textContent = "正在读取直播信息和可用清晰度…";
     setBusy(true);
-    setState("正在探测", "waiting");
-    el("message").textContent = "当前版 yt-dlp 正在读取可用格式。登录受限直播需要扩展授权，或用 --cookies-from-browser 启动 Companion。";
+    setState("正在准备", "waiting");
+    el("message").textContent = "正在准备直播…";
     try {
       const data = await request("/api/probe", commonBody());
       const select = el("quality");
@@ -79,60 +278,86 @@
         option.disabled = quality.requiresTranscode;
         select.append(option);
       }
-      const preferred = data.qualities.find((quality) => quality.height === 1080 && !quality.requiresTranscode)
+      const preferred = (typeof pickPreferredQuality === "function" ? pickPreferredQuality(data.qualities) : null)
+        || data.qualities.find((quality) => quality.height === 1080 && !quality.requiresTranscode)
         || data.qualities.find((quality) => quality.height === 720 && !quality.requiresTranscode);
       select.value = preferred?.qualityId || "auto";
       select.disabled = false;
       el("start").disabled = false;
       el("streamTitle").textContent = data.title || "直播格式已就绪";
-      el("message").textContent = `发现 ${data.qualities.length} 个候选输出。灰色选项需要转码，本原型不会自动使用。`;
-      setState("格式已就绪", "active");
+      el("setupPlayback").hidden = false;
+      el("setupFeedback").textContent = "准备好了，选择清晰度后点击启动。";
+      el("message").textContent = "直播已就绪。";
+      setState("准备就绪", "active");
     } catch (error) {
       showError(error);
     } finally {
+      el("probe").textContent = "准备";
+      el("probe").removeAttribute("aria-busy");
       setBusy(false);
     }
   }
 
   async function start() {
+    setSessionAction("starting");
+    setMediaLoading(true, "正在启动直播…");
     setBusy(true);
     setState("启动合流", "waiting");
     destroyPlayer();
     try {
+      if (el("subtitlesEnabled").checked) {
+        const problem = validateLanguageSettingsClient();
+        if (problem) throw new Error(problem);
+        await persistLanguageSettings();
+      }
       const body = {
         ...commonBody(),
         qualityId: el("quality").value,
         targetDelaySeconds: Number(el("targetDelay").value),
         subtitles: {
           enabled: el("subtitlesEnabled").checked,
-          sourceLanguage: "ja",
-          targetLanguage: el("targetLanguage").value,
+          sourceLanguage: sourcePolicyFromUi(),
+          targetLanguage: targetSelector?.value || "zh-Hans",
+        },
+        liveMessages: {
+          enabled: true,
+          translate: el("chatTranslateToggle").checked,
         },
       };
       const data = await request("/api/start", body);
+      lastSessionState = data.status?.state || "running";
       localStorage.setItem("laglingo.targetDelaySeconds", String(body.targetDelaySeconds));
       el("stop").disabled = false;
       const quality = data.quality;
       el("resolution").textContent = `${quality.width || "?"}×${quality.height || "?"}${quality.fps ? ` @ ${quality.fps}fps` : ""}`;
-      el("message").textContent = "yt-dlp 正在下载直播，FFmpeg 只负责本地 CMAF 封装；公开播放列表会在延迟预算满足后出现。";
+      el("message").textContent = "正在建立播放缓冲，画面就绪后自动播放。";
       setState("建立延迟缓冲", "waiting");
+      setMediaLoading(true, "正在建立直播缓冲…");
       authToken = null;
     } catch (error) {
+      lastSessionState = "idle";
+      setMediaLoading(false);
       showError(error);
     } finally {
+      setSessionAction(null);
       setBusy(false);
     }
   }
 
   function resetStoppedUi() {
     destroyPlayer();
+    lastSessionState = "idle";
+    setSessionAction(null);
+    setMediaLoading(false);
     stage.classList.remove("has-media");
     el("quality").disabled = true;
     el("quality").innerHTML = '<option value="auto">自动（最高兼容）</option>';
     el("start").disabled = true;
+    el("setupPlayback").hidden = true;
+    el("setupFeedback").textContent = "已停止。可以重新准备，或粘贴另一场直播的链接。";
     el("stop").disabled = true;
     el("streamTitle").textContent = "等待直播地址";
-    el("message").textContent = "已停止当前直播。可以输入另一个 YouTube 或 Bilibili 地址继续探测。";
+    el("message").textContent = "已停止当前直播。";
     for (const id of ["hiddenDelay", "playerDelay", "totalDelay", "buffer", "resolution", "uptime", "subtitleProviderStatus", "asrUsageCost", "translationUsageCost", "totalUsageCost", "translationLatency", "subtitleReadyLag", "budgetMargin", "cueDuration", "timingSources", "schedulerDrops"]) {
       el(id).textContent = "—";
     }
@@ -140,13 +365,18 @@
   }
 
   async function stop() {
+    setSessionAction("stopping");
+    setMediaLoading(true, "正在停止并清理本地会话…");
     setBusy(true);
+    setState("正在停止", "waiting");
     try {
       await request("/api/stop", {});
       resetStoppedUi();
     } catch (error) {
+      setMediaLoading(false);
       showError(error);
     } finally {
+      setSessionAction(null);
       setBusy(false);
     }
   }
@@ -167,10 +397,12 @@
         // 播放头依然只落后边缘 3 秒。缓冲必须在播放器这一侧要。
         liveSyncDurationCount: 12,
         // 必须显著大于 liveSyncDurationCount，否则 hls.js 会不停判定「延迟超标」
-        // 并强制前跳，那本身就是卡顿感的来源。
-        liveMaxLatencyDurationCount: 40,
+        // 并强制前跳，那本身就是卡顿感的来源。200 个分片 ≈ 3 分钟，配合服务端
+        // 180s 公开窗口，用户可以自由回看而不被强拖回直播边缘。
+        liveMaxLatencyDurationCount: 200,
         maxBufferLength: 90,
-        backBufferLength: 30,
+        // 回拖缓冲 ≈ 3 分钟（180s 公开窗口 + 余量），1s 分片约 170MB 内存。
+        backBufferLength: 190,
         enableWorker: true,
       });
       hls.loadSource(`${url}?t=${Date.now()}`);
@@ -197,19 +429,14 @@
   }
 
   function attemptAutoplay() {
-    video.play().then(() => {
-      if (video.muted) {
-        el("message").textContent = "已静音开播（浏览器自动播放限制）。在播放器上取消静音即可听到声音。";
-      }
-    }).catch(() => {
-      setState("自动播放被拦截", "waiting");
-      el("message").textContent = "浏览器拦截了自动播放。点击播放器的播放按钮即可开始。";
+    video.play().catch(() => {
+      if (sessionAction === "stopping") return;
+      setMediaLoading(false);
+      setState("待播放", "waiting");
+      updatePlayerControls();
+      revealPlayerControls();
     });
   }
-
-  document.addEventListener("click", () => {
-    if (video.paused && (hls || video.src)) video.play().catch(() => {});
-  });
 
   function destroyPlayer() {
     if (hls) hls.destroy();
@@ -217,11 +444,18 @@
     lastPlaylistUrl = null;
     browserLatency = null;
     latestLevelDetails = null;
+    sourceWasStalled = false;
+    lastRecoverySeekAt = -Infinity;
+    video.playbackRate = 1;
     subtitleCues.clear();
     subtitleAfterSeq = 0;
     subtitleMaxKnownEnd = 0;
     if (subtitleScheduler) subtitleScheduler.reset();
+    if (liveMessagesClient) liveMessagesClient.reset();
+    if (liveMessagesTimeline) liveMessagesTimeline.clear();
+    chatOverlay.clear();
     clearSubtitle();
+    renderSubtitlesTimeline(null);
     video.removeAttribute("src");
     video.load();
   }
@@ -232,32 +466,44 @@
       // The stream may have been started from another tab, the extension, or a
       // diagnostic client. Restore controls from server truth on every poll
       // instead of relying on this page's start() call having run.
-      const serverActive = data.state === "running";
-      el("stop").disabled = !serverActive;
+      lastSessionState = data.state;
+      renderSessionControls();
       if (data.playlistUrl) attach(data.playlistUrl);
-      if (data.state === "error") throw new Error(data.error || "FFmpeg failed");
+      updateStallOverlay(data);
+      if (data.state === "error" && sessionAction !== "stopping") {
+        setMediaLoading(false);
+        throw new Error(data.error || "FFmpeg failed");
+      }
       if (data.state === "running") {
         const playing = data.playlistReady && !video.paused;
-        setState(data.playlistReady ? (playing ? "延迟播放中" : "就绪待播放") : "建立延迟缓冲", playing ? "stable" : "waiting");
+        if (sessionAction !== "stopping") {
+          setState(data.playlistReady ? (playing ? "延迟播放中" : "就绪待播放") : "建立延迟缓冲", playing ? "stable" : "waiting");
+          if (!data.playlistReady) setMediaLoading(true, "正在建立直播缓冲…");
+        }
       }
-      if (data.state === "idle" && (hls || video.src)) resetStoppedUi();
+      if (data.state === "idle" && (hls || video.src) && sessionAction !== "stopping") resetStoppedUi();
       el("hiddenDelay").textContent = seconds(Number(data.hiddenMediaSeconds));
       const playerBehind = Number.isFinite(browserLatency) ? browserLatency : estimateVideoLatency();
       el("playerDelay").textContent = seconds(playerBehind);
       const measuredDelay = Number(data.sourceDelaySeconds || 0) + Number(data.hiddenMediaSeconds || 0) + (playerBehind || 0);
       el("totalDelay").textContent = seconds(measuredDelay);
+      updateStallOverlay(data);
       if (data.state === "running" && Number(data.targetDelaySeconds) > 10) {
         el("targetDelay").value = String(data.targetDelaySeconds);
         localStorage.setItem("laglingo.targetDelaySeconds", String(data.targetDelaySeconds));
       }
-      el("buffer").textContent = seconds(bufferAhead());
+      const ahead = bufferAhead();
+      el("buffer").textContent = seconds(ahead);
+      updatePlaybackRecovery(data, playerBehind, ahead);
       el("uptime").textContent = seconds(Number(data.uptimeSeconds));
       const subtitles = data.subtitles || {};
-      el("subtitleProviderStatus").textContent = subtitles.asrProviderId ? `${subtitles.asrProviderId} / ${subtitles.translationProviderId || "原文"}` : "未运行";
+      el("subtitleProviderStatus").innerHTML = subtitles.asrProviderId
+        ? `<span><small>ASR</small>${escapeHtml(subtitles.asrProviderLabel || subtitles.asrProviderId)}</span><span><small>翻译</small>${escapeHtml(subtitles.translationProviderLabel || subtitles.translationProviderId || "仅原文")}</span>`
+        : "<span class=\"usage-empty\">未运行</span>";
       const asrUsage = subtitles.asrUsage || { seconds: subtitles.asrSeconds || 0 };
       const translationUsage = subtitles.translationUsage || {};
-      el("asrUsageCost").textContent = `${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒 · ${cny(subtitles.asrEstimatedCostCny, subtitles.asrEstimateReason)}`;
-      el("translationUsageCost").textContent = `输入 ${integer(translationUsage.nonCachedInputTokens)} · 缓存 ${integer(translationUsage.cachedInputTokens)} · 输出 ${integer(translationUsage.outputTokens)} · ${cny(subtitles.translationEstimatedCostCny, subtitles.translationEstimateReason)}`;
+      el("asrUsageCost").innerHTML = `<span><small>音频</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒</span><span><small>费用</small>${cny(subtitles.asrEstimatedCostCny, subtitles.asrEstimateReason)}</span>`;
+      el("translationUsageCost").innerHTML = `<span><small>输入</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>缓存</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>输出</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>费用</small>${cny(subtitles.translationEstimatedCostCny, subtitles.translationEstimateReason)}</span>`;
       el("totalUsageCost").textContent = cny(subtitles.totalEstimatedCostCny, subtitles.totalEstimateReason);
       const latency = subtitles.avgTranslationLatencyMs;
       el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} 秒` : "—";
@@ -266,6 +512,136 @@
     } catch (error) {
       if (!String(error.message).includes("Failed to fetch")) showError(error);
     }
+  }
+
+  function updatePlaybackRecovery(data, playerBehind, ahead) {
+    if (!video) return;
+    if (data?.state !== "running") {
+      video.playbackRate = 1;
+      sourceWasStalled = false;
+      return;
+    }
+    const publisherStall = Number(data.sourceStallSeconds);
+    const health = typeof window.classifySourceHealth === "function"
+      ? window.classifySourceHealth({
+        state: data.state,
+        playlistReady: data.playlistReady,
+        sourceStallSeconds: publisherStall,
+        sourceIngest: data.sourceIngest,
+      })
+      : {
+        active: Number.isFinite(publisherStall) && publisherStall > 5,
+        kind: "upstream",
+        stallSeconds: publisherStall,
+      };
+    // Only an ingest-confirmed outage should pause catch-up. A publisher-only
+    // pause is a local packaging hiccup; the player can keep draining its
+    // buffer and recover without being forced into a hold state.
+    const isStalled = health.active && health.kind === "upstream";
+    const stall = isStalled ? Number(health.stallSeconds) : 0;
+    const recovered = sourceWasStalled && !isStalled;
+    const decision = window.decidePlaybackRecovery?.({
+      playerBehind,
+      targetDelay: data.targetDelaySeconds,
+      hiddenDelay: data.hiddenMediaSeconds,
+      bufferAhead: ahead,
+      sourceStallSeconds: stall,
+      recovered,
+    });
+    sourceWasStalled = isStalled;
+    if (!decision) {
+      // Keep a failed/late policy script load from leaving a previous
+      // catch-up rate active indefinitely.
+      video.playbackRate = 1;
+      return;
+    }
+    // A user pause (and the automatic rebuffer pause) owns playback. Do not
+    // leave a catch-up rate armed while the element is not advancing.
+    if (video.paused && decision.action !== "hold") {
+      video.playbackRate = 1;
+      return;
+    }
+    if (decision.action === "hold") {
+      video.playbackRate = 1;
+      return;
+    }
+    if (decision.action === "rate") {
+      video.playbackRate = decision.playbackRate;
+      return;
+    }
+    video.playbackRate = 1;
+    if (decision.action !== "seek" || video.paused || ahead < 10) return;
+    const now = performance.now() / 1000;
+    if (now - lastRecoverySeekAt < 10) return;
+    const edge = Number.isFinite(Number(latestLevelDetails?.edge))
+      ? Number(latestLevelDetails.edge)
+      : (video.seekable?.length ? video.seekable.end(video.seekable.length - 1) : null);
+    if (!Number.isFinite(edge)) return;
+    const start = video.seekable?.length ? video.seekable.start(0) : null;
+    const target = edge - decision.desiredDelay;
+    if (!Number.isFinite(start) || target < start || target <= video.currentTime + 0.5) return;
+    try {
+      video.currentTime = target;
+    } catch (_) {
+      return;
+    }
+    lastRecoverySeekAt = now;
+    // A forward recovery skips media time in one jump. Clear the scheduler's
+    // admission cache so the next render is based on the new playhead rather
+    // than waiting for the next subtitle poll to discover the jump.
+    subtitleScheduler?.retime();
+    renderSubtitle();
+  }
+
+  let autoPausedForStall = false;
+
+  function updateStallOverlay(data) {
+    const banner = el("stallBanner");
+    if (!banner) return;
+    if (data.state === "error") {
+      autoPausedForStall = false;
+      setMediaLoading(false);
+      banner.hidden = false;
+      banner.textContent = `直播会话出错：${String(data.error || "未知错误").slice(0, 80)}——请停止后重新启动`;
+      return;
+    }
+    const stall = Number(data.sourceStallSeconds);
+    const health = typeof window.classifySourceHealth === "function"
+      ? window.classifySourceHealth({
+        state: data.state,
+        playlistReady: data.playlistReady,
+        sourceStallSeconds: stall,
+        sourceIngest: data.sourceIngest,
+      })
+      : {
+        active: data.state === "running" && data.playlistReady && Number.isFinite(stall) && stall > 5,
+        kind: "upstream",
+        stallSeconds: stall,
+      };
+    if (health.active) {
+      banner.hidden = false;
+      const message = health.kind === "packaging"
+        ? "本地媒体封装暂未推进，正在恢复…"
+        : "直播源下载暂未收到新数据，正在自动恢复…";
+      banner.textContent = `${message}（已停 ${Math.round(health.stallSeconds)} 秒）`;
+      if (!video.paused && bufferAhead() < 3) {
+        autoPausedForStall = true;
+        video.pause();
+      }
+      return;
+    }
+    if (autoPausedForStall) {
+      if (bufferAhead() >= 10) {
+        autoPausedForStall = false;
+        banner.hidden = true;
+        if (video.paused) video.play().catch(() => {});
+      } else {
+        banner.hidden = false;
+        banner.textContent = "直播源已恢复，正在重新缓冲…";
+      }
+      return;
+    }
+    banner.hidden = true;
   }
 
   function estimateVideoLatency() {
@@ -287,7 +663,7 @@
     const feedback = el("modelSettingsFeedback");
     feedback.textContent = "正在读取本机配置…";
     feedback.dataset.tone = "";
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     try {
       providerCatalog = await request("/api/model-settings");
       renderProviderProfiles();
@@ -303,11 +679,37 @@
       ["dashscope-qwen-realtime", "DashScope Qwen Realtime"],
       ["dashscope-task-asr", "DashScope Task ASR"],
       ["openai-audio-transcriptions", "OpenAI Audio Transcriptions"],
+      ["deepgram-streaming", "Deepgram Streaming"],
+      ["soniox-realtime", "Soniox Realtime STT"],
+      ["openai-realtime-transcription", "OpenAI Realtime Transcription"],
+      ["assemblyai-streaming", "AssemblyAI Streaming v3"],
+      ["volcengine-sauc", "火山引擎豆包大模型流式 ASR (v3 sauc)"],
+      ["elevenlabs-scribe-realtime", "ElevenLabs Scribe v2 Realtime"],
+      ["speechmatics-realtime", "Speechmatics Realtime v2"],
+      ["tencent-asr", "腾讯云实时语音识别"],
     ],
     translation: [
       ["openai-compatible", "OpenAI Compatible"],
-      ["qwen-mt", "Qwen MT"],
+      ["anthropic-messages", "Anthropic Messages (Claude)"],
+      ["google-genai", "Google Gemini (GenerateContent)"],
     ],
+  };
+
+  const providerDefaults = {
+    "dashscope-qwen-realtime": { model: "qwen3-asr-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000 } },
+    "dashscope-task-asr": { model: "fun-asr-realtime-2026-02-28", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference", options: { sampleRate: 16000, heartbeat: true } },
+    "openai-audio-transcriptions": { model: "", baseUrl: "https://api.openai.com/v1", options: { language: "ja", windowSeconds: 3, requestTimeoutSeconds: 20 } },
+    "deepgram-streaming": { model: "nova-3", baseUrl: "wss://api.deepgram.com/v1/listen", options: { interimResults: true, smartFormat: true, endpointingMs: 100, vadEvents: true, utteranceEndMs: 1000, keepAliveSeconds: 8 } },
+    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700 } },
+    "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
+    "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", speakerLabels: true, maxSpeakers: 6 } },
+    "volcengine-sauc": { model: "bigmodel_async", baseUrl: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", options: { resourceId: "volc.bigasr.sauc.concurrent", authMode: "new" } },
+    "elevenlabs-scribe-realtime": { model: "scribe_v2_realtime", baseUrl: "wss://api.elevenlabs.io/v1/speech-to-text/realtime", options: { commitStrategy: "manual", includeLanguageDetection: true } },
+    "speechmatics-realtime": { model: "enhanced", baseUrl: "wss://global.rt.speechmatics.com/v2/", options: { enablePartials: true, maxDelaySeconds: 4 } },
+    "tencent-asr": { model: "16k_ja", baseUrl: "wss://asr.cloud.tencent.com/asr/v2/<appid>", options: { appId: "", secretId: "", engineModelType: "16k_ja", wordInfo: 0 } },
+    "openai-compatible": { model: "", baseUrl: "https://api.openai.com/v1", options: { temperature: 0.3, maxTokens: 256, timeoutSeconds: 6, contextPairs: 6 } },
+    "anthropic-messages": { model: "", baseUrl: "https://api.anthropic.com", options: { temperature: 0.3, maxTokens: 256, timeoutSeconds: 6, contextPairs: 6 } },
+    "google-genai": { model: "", baseUrl: "https://generativelanguage.googleapis.com/v1beta", options: { temperature: 0.3, maxTokens: 256, timeoutSeconds: 6, contextPairs: 6 } },
   };
 
   function newProviderId(section) {
@@ -318,25 +720,37 @@
     return `${prefix}-${index}`;
   }
 
+  function applyProviderKindDefaults(provider, kind) {
+    const defaults = providerDefaults[kind];
+    if (!defaults) return;
+    provider.kind = kind;
+    provider.model = defaults.model;
+    provider.baseUrl = defaults.baseUrl;
+    provider.options = structuredClone(defaults.options);
+  }
+
   function addProvider(section) {
     const id = newProviderId(section);
-    const asr = section === "asr";
-    providerCatalog[section].providers.push({
+    const kind = section === "asr" ? "soniox-realtime" : "openai-compatible";
+    const provider = {
       id,
-      label: asr ? "新 ASR Provider" : "新翻译 Provider",
-      kind: asr ? "openai-audio-transcriptions" : "openai-compatible",
-      model: asr ? "whisper-1" : "",
-      baseUrl: asr ? "http://127.0.0.1:8000/v1" : "http://127.0.0.1:8000/v1",
+      label: section === "asr" ? "新语音识别配置" : "新翻译配置",
+      kind,
+      model: "",
+      baseUrl: "",
       apiKey: "",
-      options: asr
-        ? { language: "ja", windowSeconds: 3, requestTimeoutSeconds: 20 }
-        : { temperature: 0.3, maxTokens: 256, timeoutSeconds: 6, contextPairs: 6 },
-    });
+      options: {},
+    };
+    applyProviderKindDefaults(provider, kind);
+    providerCatalog[section].providers.push(provider);
+    editingModel[section] = provider.id;
     renderProviderProfiles();
   }
 
   function renderProviderProfiles() {
     if (!providerCatalog) return;
+    document.querySelector(".asr-section").hidden = editingSection !== "asr";
+    document.querySelector(".translation-section").hidden = editingSection !== "translation";
     renderProviderSection("asr", el("asrProfiles"));
     renderProviderSection("translation", el("translationProfiles"));
   }
@@ -344,38 +758,59 @@
   function renderProviderSection(section, container) {
     const group = providerCatalog[section];
     container.innerHTML = "";
-    group.providers.forEach((provider) => {
+    const references = section === "translation"
+      ? [group.active, providerCatalog.chatTranslation?.active, ...(Array.isArray(group.fallback) ? group.fallback : [])]
+      : [group.active];
+    const visibleProviders = roleProviders(group, references.concat(editingModel[section]));
+    if (!visibleProviders.some(p => p.id === editingModel[section])) editingModel[section] = group.active;
+    const list = document.createElement("nav");
+    list.className = "connection-list";
+    visibleProviders.forEach(p => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "connection-item";
+      button.setAttribute("aria-pressed", String(editingModel[section] === p.id));
+      const uses = [];
+      if (p.id === group.active) uses.push(section === "asr" ? "识别已选" : "字幕已选");
+      if (section === "translation" && p.id === providerCatalog.chatTranslation?.active) uses.push("弹幕已选");
+      button.textContent = `${p.label || p.model}  ${uses.join(" · ")}`;
+      button.addEventListener("click", () => { editingModel[section] = p.id; renderProviderProfiles(); });
+      list.append(button);
+    });
+    container.append(list);
+    visibleProviders.filter(p => p.id === editingModel[section]).forEach((provider) => {
       const card = document.createElement("article");
       card.className = "provider-profile";
       card.dataset.providerId = provider.id;
       const isActive = group.active === provider.id;
-      const cannotDelete = isActive || group.providers.length === 1;
+      const cannotDelete = isActive || (section === "translation" && providerCatalog.chatTranslation?.active === provider.id) || group.providers.length === 1;
       const kinds = providerKinds[section].map(([value, label]) =>
         `<option value="${value}"${provider.kind === value ? " selected" : ""}>${label}</option>`
       ).join("");
       card.innerHTML = `
         <header class="provider-profile-head">
-          <label class="active-provider"><input type="radio" name="active-${section}" data-action="active" ${isActive ? "checked" : ""}> 当前使用</label>
+          <strong class="active-provider">正在编辑：${escapeHtml(provider.label || provider.model)}</strong>
           <code>${escapeHtml(provider.id)}</code>
           <button class="secondary compact provider-delete" type="button" data-action="delete" ${cannotDelete ? "disabled" : ""}>删除</button>
         </header>
         <div class="provider-fields">
           <label><span>名称</span><input data-field="label" value="${escapeHtml(provider.label || "")}" required></label>
           <label><span>协议</span><select data-field="kind">${kinds}</select></label>
-          <label><span>模型</span><input data-field="model" value="${escapeHtml(provider.model || "")}" required></label>
+          <label><span>模型</span><input data-field="model" value="${escapeHtml(provider.model || "")}" placeholder="填写厂商模型 ID" required></label>
           <label><span>Base URL</span><input data-field="baseUrl" value="${escapeHtml(provider.baseUrl || "")}" required></label>
-          <label class="wide"><span>API Key（原文显示）</span><input data-field="apiKey" type="text" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>本窗口会直接显示保存的 Key；共享屏幕、截图或旁观者都可能看到。</small></label>
-          ${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
-          ${section === "asr" ? asrOptionFields(provider) : translationOptionFields(provider)}
+          <label class="wide"><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>凭据保存在本机。</small><button type="button" class="secondary compact" data-action="reveal">显示 Key</button></label>
+          <details class="wide"><summary>价格与高级设置</summary><div class="provider-fields">${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
+          ${section === "asr" ? asrOptionFields(provider) : translationOptionFields(provider)}</div></details>
         </div>`;
+      card.querySelector('[data-action="reveal"]').addEventListener("click", (event) => {
+        const input = card.querySelector('[data-field="apiKey"]');
+        input.type = input.type === "password" ? "text" : "password";
+        event.target.textContent = input.type === "password" ? "显示 Key" : "隐藏 Key";
+      });
       card.addEventListener("input", handleProviderInput);
       card.addEventListener("change", handleProviderInput);
-      card.querySelector('[data-action="active"]').addEventListener("change", () => {
-        group.active = provider.id;
-        renderProviderProfiles();
-      });
       card.querySelector('[data-action="delete"]').addEventListener("click", () => {
-        if (group.active === provider.id || group.providers.length <= 1) return;
+        if (cannotDelete) return;
         group.providers = group.providers.filter((item) => item.id !== provider.id);
         if (section === "translation") group.fallback = (group.fallback || []).filter((id) => id !== provider.id);
         renderProviderProfiles();
@@ -396,16 +831,55 @@
     return `
       <label><span>普通输入（CNY / 百万 token）</span><input data-field="pricePerMillionInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionInputTokensCny)}" placeholder="留空不可估算"></label>
       <label><span>缓存输入（CNY / 百万 token）</span><input data-field="pricePerMillionCachedInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCachedInputTokensCny)}" placeholder="留空不可估算"></label>
+      <label><span>缓存写入（CNY / 百万 token）</span><input data-field="pricePerMillionCacheWriteTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCacheWriteTokensCny)}" placeholder="可选；无缓存写入可留空"></label>
       <label><span>输出（CNY / 百万 token）</span><input data-field="pricePerMillionOutputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionOutputTokensCny)}" placeholder="留空不可估算"></label>`;
+  }
+
+  function checked(value) {
+    return value ? " checked" : "";
   }
 
   function asrOptionFields(provider) {
     const options = provider.options || {};
-    if (provider.kind !== "openai-audio-transcriptions") return "";
-    return `
+    if (provider.kind === "openai-audio-transcriptions") return `
       <label><span>语言</span><input data-option="language" value="${escapeHtml(options.language || "ja")}"></label>
       <label><span>分窗秒数</span><input data-option="windowSeconds" type="number" min="0.5" step="0.5" value="${Number(options.windowSeconds || 3)}"></label>
       <label><span>请求超时（秒）</span><input data-option="requestTimeoutSeconds" type="number" min="1" step="1" value="${Number(options.requestTimeoutSeconds || 20)}"></label>`;
+    if (provider.kind === "soniox-realtime") return `
+      <label><span><input data-option="enableEndpointDetection" type="checkbox"${checked(options.enableEndpointDetection !== false)}> 端点检测</span></label>
+      <label><span><input data-option="enableLanguageIdentification" type="checkbox"${checked(options.enableLanguageIdentification !== false)}> 语言识别</span></label>
+      <label><span><input data-option="enableSpeakerDiarization" type="checkbox"${checked(options.enableSpeakerDiarization)}> 说话人分离</span></label>
+      <label><span>最大端点延迟 ms</span><input data-option="maxEndpointDelayMs" type="number" min="500" max="3000" step="100" value="${Number(options.maxEndpointDelayMs || 2000)}"></label>`;
+    if (provider.kind === "deepgram-streaming") return `
+      <label><span><input data-option="diarize" type="checkbox"${checked(options.diarize)}> 说话人分离（附加计费）</span></label>
+      <label><span>Endpointing ms</span><input data-option="endpointingMs" type="number" min="1" step="10" value="${Number(options.endpointingMs || 300)}"></label>
+      <label><span>Utterance End ms</span><input data-option="utteranceEndMs" type="number" min="0" step="100" value="${Number(options.utteranceEndMs || 0)}"></label>`;
+    if (provider.kind === "assemblyai-streaming") return `
+      <label><span>模式</span><select data-option="mode"><option value="balanced"${options.mode === "balanced" ? " selected" : ""}>balanced</option><option value="min_latency"${options.mode === "min_latency" ? " selected" : ""}>min_latency</option><option value="max_accuracy"${options.mode === "max_accuracy" ? " selected" : ""}>max_accuracy</option></select></label>
+      <label><span><input data-option="speakerLabels" type="checkbox"${checked(options.speakerLabels)}> 说话人分离</span></label>
+      <label><span>最多说话人</span><input data-option="maxSpeakers" type="number" min="1" max="10" step="1" value="${Number(options.maxSpeakers || 6)}"></label>`;
+    if (provider.kind === "volcengine-sauc") return `
+      <label><span>Resource ID</span><input data-option="resourceId" value="${escapeHtml(options.resourceId || "volc.bigasr.sauc.concurrent")}"></label>
+      <label><span>旧控制台 App Key</span><input data-option="appKey" value="${escapeHtml(options.appKey || "")}"></label>
+      <label><span>鉴权模式</span><select data-option="authMode"><option value="new"${options.authMode !== "legacy" ? " selected" : ""}>新控制台</option><option value="legacy"${options.authMode === "legacy" ? " selected" : ""}>旧控制台</option></select></label>`;
+    if (provider.kind === "elevenlabs-scribe-realtime") return `
+      <label><span>提交策略</span><select data-option="commitStrategy"><option value="manual"${options.commitStrategy !== "vad" ? " selected" : ""}>manual</option><option value="vad"${options.commitStrategy === "vad" ? " selected" : ""}>vad</option></select></label>
+      <label><span><input data-option="includeTimestamps" type="checkbox"${checked(options.includeTimestamps)}> 延迟词时间戳</span></label>
+      <label><span><input data-option="includeLanguageDetection" type="checkbox"${checked(options.includeLanguageDetection)}> 返回检测语言</span></label>`;
+    if (provider.kind === "speechmatics-realtime") return `
+      <label><span><input data-option="enablePartials" type="checkbox"${checked(options.enablePartials !== false)}> 中间结果</span></label>
+      <label><span><input data-option="diarization" type="checkbox"${checked(options.diarization)}> 说话人分离</span></label>
+      <label><span>最多说话人</span><input data-option="maxSpeakers" type="number" min="2" step="1" value="${Number(options.maxSpeakers || 6)}"></label>
+      <label><span>最大延迟秒数</span><input data-option="maxDelaySeconds" type="number" min="0.7" max="4" step="0.1" value="${Number(options.maxDelaySeconds || 4)}"></label>`;
+    if (provider.kind === "tencent-asr") return `
+      <label><span>App ID</span><input data-option="appId" value="${escapeHtml(options.appId || "")}" required></label>
+      <label><span>Secret ID</span><input data-option="secretId" value="${escapeHtml(options.secretId || "")}" required></label>
+      <label><span>引擎</span><input data-option="engineModelType" value="${escapeHtml(options.engineModelType || provider.model || "16k_ja")}"></label>
+      <label><span>Word Info</span><input data-option="wordInfo" type="number" min="0" max="2" step="1" value="${Number(options.wordInfo || 0)}"></label>`;
+    if (provider.kind === "dashscope-task-asr") return `
+      <label><span>Vocabulary ID</span><input data-option="vocabularyId" value="${escapeHtml(options.vocabularyId || "")}"></label>
+      <label><span><input data-option="heartbeat" type="checkbox"${checked(options.heartbeat)}> 静音保活</span></label>`;
+    return "";
   }
 
   function translationOptionFields(provider) {
@@ -414,7 +888,7 @@
       <label><span>温度</span><input data-option="temperature" type="number" min="0" max="2" step="0.1" value="${Number(options.temperature ?? 0.3)}"></label>
       <label><span>最大 Tokens</span><input data-option="maxTokens" type="number" min="32" step="1" value="${Number(options.maxTokens || 256)}"></label>
       <label><span>超时（秒）</span><input data-option="timeoutSeconds" type="number" min="1" step="1" value="${Number(options.timeoutSeconds || 6)}"></label>
-      <label><span>上下文对数</span><input data-option="contextPairs" type="number" min="0" step="1" value="${Number(options.contextPairs ?? 6)}"></label>`;
+      <label><span>字幕上下文对数（弹幕不使用）</span><input data-option="contextPairs" type="number" min="0" step="1" value="${Number(options.contextPairs ?? 6)}"></label>`;
   }
 
   function handleProviderInput(event) {
@@ -428,12 +902,20 @@
       provider[field] = event.target.type === "number"
         ? (event.target.value === "" ? null : Number(event.target.value))
         : event.target.value;
+      if (field === "apiKey") provider.apiKeyConfigured = Boolean(String(event.target.value || "").trim());
     }
     if (option) {
       provider.options ||= {};
-      provider.options[option] = event.target.type === "number" ? Number(event.target.value) : event.target.value;
+      provider.options[option] = event.target.type === "number"
+        ? Number(event.target.value)
+        : event.target.type === "checkbox"
+          ? event.target.checked
+          : event.target.value;
     }
-    if (field === "kind") renderProviderProfiles();
+    if (field === "kind") {
+      renderProviderProfiles();
+      el("modelSettingsFeedback").textContent = "协议已修改，保留了现有模型和地址，请检查它们是否匹配新协议。";
+    }
   }
 
   function escapeHtml(value) {
@@ -445,13 +927,19 @@
   }
 
   function updateCookiePlatformHelp() {
-    const bilibili = el("cookiePlatform").value === "bilibili";
+    const platform = el("cookiePlatform").value;
+    const bilibili = platform === "bilibili";
+    const twitch = platform === "twitch";
     el("cookieImportIntro").textContent = bilibili
       ? "从 bilibili.com 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。yt-dlp 登录检查只要求 SESSDATA；其他有效 Cookie 会一并保留。"
-      : "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。";
+      : twitch
+        ? "从 twitch.tv 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。公开 Twitch 直播不要求 Cookie。"
+        : "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。";
     el("cookiePayload").placeholder = bilibili
       ? "SESSDATA　xxxxxxxx…\nbili_jct　yyyyyyyy…\nDedeUserID　12345"
-      : "SID　xxxxxxxx…\nHSID　yyyyyyyy…\n（直接从 DevTools Cookie 列表复制即可）";
+      : twitch
+        ? "auth-token　xxxxxxxx…\npersistent　1\n（公开直播可不导入）"
+        : "SID　xxxxxxxx…\nHSID　yyyyyyyy…\n（直接从 DevTools Cookie 列表复制即可）";
   }
 
   function openCookieImport() {
@@ -459,7 +947,8 @@
     feedback.textContent = "";
     feedback.dataset.tone = "";
     updateCookiePlatformHelp();
-    el("cookieImportDialog").showModal();
+    const dialog = el("cookieImportDialog");
+    if (!dialog.open) dialog.showModal();
   }
 
   function closeCookieImport() {
@@ -490,7 +979,7 @@
           : `已保存 ${data.accepted} 个 YouTube Cookie，但缺少登录关键字段：${data.missingCritical.join("、")}。请从 YouTube/Google 登录域的 Cookie 列表重新复制。`;
         feedback.dataset.tone = "error";
       } else {
-        const platformName = data.platform === "bilibili" ? "Bilibili" : "YouTube";
+        const platformName = data.platform === "bilibili" ? "Bilibili" : data.platform === "twitch" ? "Twitch" : "YouTube";
         feedback.textContent = `已导入 ${data.accepted} 个 ${platformName} Cookie（${data.names.join("、")}）${data.persisted ? "，已按平台保存到本机" : "，磁盘保存失败，仅本次运行有效"}。现在可以探测对应平台地址。`;
         feedback.dataset.tone = "success";
       }
@@ -514,10 +1003,12 @@
       const payload = structuredClone(providerCatalog);
       const data = await request("/api/model-settings", payload);
       providerCatalog = data;
+      renderRoleSelectors(data);
       renderProviderProfiles();
       feedback.textContent = "已保存。下次启动直播时使用新配置。";
       feedback.dataset.tone = "success";
-      el("targetLanguage").value = data.subtitle?.targetLanguage || el("targetLanguage").value;
+      if (targetSelector && data.subtitle?.targetLanguage) targetSelector.value = data.subtitle.targetLanguage;
+      await refreshLanguageCapabilities();
     } catch (error) {
       feedback.textContent = error.message || String(error);
       feedback.dataset.tone = "error";
@@ -526,10 +1017,179 @@
     }
   }
 
-  async function loadSubtitleDefaults() {
+  function sourcePolicyFromUi() {
+    if (el("sourceLanguageMode").value === "detect") {
+      const candidates = languageState.candidates.slice();
+      const policy = {
+        mode: "detect",
+        candidates,
+        allowCodeSwitching: el("allowCodeSwitching").checked,
+      };
+      // The first candidate doubles as the preferred language.
+      if (candidates.length) policy.preferred = candidates[0];
+      return policy;
+    }
+    return { mode: "specified", tag: sourceSelector?.value || "ja" };
+  }
+
+  function applySourcePolicyToUi(policy) {
+    if (policy?.mode === "detect") {
+      el("sourceLanguageMode").value = "detect";
+      languageState.candidates = Array.isArray(policy.candidates) ? policy.candidates.slice() : [];
+      el("allowCodeSwitching").checked = !!policy.allowCodeSwitching;
+    } else {
+      el("sourceLanguageMode").value = "specified";
+      languageState.candidates = [];
+      el("allowCodeSwitching").checked = false;
+      if (sourceSelector && policy?.tag) sourceSelector.value = policy.tag;
+    }
+    renderCandidateChips();
+    updateSourceModeVisibility();
+  }
+
+  function updateSourceModeVisibility() {
+    const detect = el("sourceLanguageMode").value === "detect";
+    el("sourceSpecifiedField").hidden = detect;
+    el("sourceDetectField").hidden = !detect;
+  }
+
+  function addCandidate(tag) {
+    if (!tag || languageState.candidates.includes(tag)) return;
+    languageState.candidates.push(tag);
+    renderCandidateChips();
+    persistLanguageSettings();
+  }
+
+  function removeCandidate(tag) {
+    languageState.candidates = languageState.candidates.filter((item) => item !== tag);
+    renderCandidateChips();
+    persistLanguageSettings();
+  }
+
+  function renderCandidateChips() {
+    const container = el("sourceCandidateChips");
+    container.innerHTML = "";
+    languageState.candidates.forEach((tag, index) => {
+      const parts = window.LagLingoLanguages.nameParts(tag);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "language-chip";
+      chip.dir = "auto";
+      chip.textContent = `${index === 0 ? "首选 " : ""}${parts.autonym} · ${tag} ×`;
+      chip.setAttribute("aria-label", `移除候选语言 ${parts.primary}`);
+      chip.addEventListener("click", () => removeCandidate(tag));
+      container.append(chip);
+    });
+  }
+
+  function refreshLanguageCapabilityUi() {
+    const asr = languageState.asr?.language;
+    const detectOption = el("sourceLanguageMode").querySelector('option[value="detect"]');
+    const detectUnsupported = !!asr && asr.detection === "none";
+    detectOption.disabled = detectUnsupported;
+    if (detectUnsupported && el("sourceLanguageMode").value === "detect") el("sourceLanguageMode").value = "specified";
+    updateSourceModeVisibility();
+  }
+
+  function tagCoveredBy(tag, supportedTags) {
+    if (supportedTags == null) return true;
+    if (supportedTags.includes(tag)) return true;
+    // BCP 47 basic-range match: an unqualified supported tag (zh) covers
+    // more specific policy tags (zh-Hans).
+    return supportedTags.includes(String(tag).split("-")[0]);
+  }
+
+  function validateLanguageSettingsClient() {
+    // The server stays the final authority; this only shortens the feedback
+    // loop with the effective capabilities the loopback API reported.
+    const asr = languageState.asr?.language;
+    const policy = sourcePolicyFromUi();
+    if (asr) {
+      if (policy.mode === "specified") {
+        if (!tagCoveredBy(policy.tag, asr.supportedTags)) return `当前 ASR 不支持源语言 ${policy.tag}`;
+      } else {
+        if (asr.detection === "none") return "当前 ASR 不支持自动识别源语言，请指定语言";
+        if (asr.detection === "candidates" && !policy.candidates.length) return "当前 ASR 自动识别需要候选语言";
+        if (asr.maxCandidates != null && policy.candidates.length > asr.maxCandidates) return `当前 ASR 自动识别最多支持 ${asr.maxCandidates} 个候选语言`;
+        const candidateScope = asr.detectionTags ?? asr.supportedTags;
+        const unsupported = policy.candidates.filter((tag) => !tagCoveredBy(tag, candidateScope));
+        if (unsupported.length) return `当前 ASR 不支持候选语言：${unsupported.join("、")}`;
+        if (policy.allowCodeSwitching && !asr.codeSwitching) return "当前 ASR 不支持混合语言（code-switching）识别";
+      }
+    }
+    const translation = languageState.translation?.language;
+    const target = targetSelector?.value;
+    if (translation && target && !translation.openWorldPrompting && !tagCoveredBy(target, translation.targetTags)) {
+      return `当前翻译 Provider 不支持目标语言 ${target}`;
+    }
+    return null;
+  }
+
+  async function persistLanguageSettings() {
+    if (!languageState.subtitle) return;
+    const problem = validateLanguageSettingsClient();
+    if (problem) {
+      showError(new Error(problem));
+      return;
+    }
+    const previousTarget = languageState.subtitle.targetLanguage;
+    const patch = {
+      ...languageState.subtitle,
+      sourceLanguage: sourcePolicyFromUi(),
+      targetLanguage: targetSelector?.value || "zh-Hans",
+    };
     try {
-      const data = await request("/api/providers");
-      el("targetLanguage").value = data.subtitle?.targetLanguage || "zh";
+      const data = await request("/api/providers", { subtitle: patch });
+      languageState.subtitle = data.subtitle;
+      if (patch.targetLanguage !== previousTarget) {
+        const parts = window.LagLingoLanguages.nameParts(patch.targetLanguage);
+        el("message").textContent = `目标语言已切换为 ${parts.primary}；后续字幕立即使用新语言。`;
+      }
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function initLanguageSelectors(defaults) {
+    if (!targetSelector) {
+      targetSelector = window.LagLingoLanguages.createLanguageSelector(el("targetLanguage"), {
+        onChange: () => {
+          // Direction and any currently visible rows update synchronously;
+          // persistLanguageSettings hot-switches subsequent translations.
+          renderSubtitle();
+          persistLanguageSettings();
+        },
+      });
+      sourceSelector = window.LagLingoLanguages.createLanguageSelector(el("sourceLanguage"), {
+        onChange: () => persistLanguageSettings(),
+      });
+      candidateSelector = window.LagLingoLanguages.createLanguageSelector(el("sourceCandidates"), {
+        placeholder: "添加候选语言…",
+        onChange: (tag) => { addCandidate(tag); candidateSelector.value = ""; },
+      });
+    }
+    applySourcePolicyToUi(defaults.sourceLanguage || { mode: "specified", tag: "ja" });
+    targetSelector.value = defaults.targetLanguage || "zh-Hans";
+  }
+
+  async function refreshLanguageCapabilities() {
+    const languages = await request("/api/languages");
+    window.LagLingoLanguages.setCatalog(languages.languages);
+    languageState.asr = languages.asr;
+    languageState.translation = languages.translation;
+    refreshLanguageCapabilityUi();
+  }
+
+  async function loadLanguageSettings() {
+    try {
+      const [languages, providers] = await Promise.all([request("/api/languages"), request("/api/providers")]);
+      window.LagLingoLanguages.setCatalog(languages.languages);
+      languageState.asr = languages.asr;
+      languageState.translation = languages.translation;
+      renderRoleSelectors(providers);
+      languageState.subtitle = providers.subtitle || {};
+      initLanguageSelectors(languages.defaults || {});
+      refreshLanguageCapabilityUi();
     } catch (error) {
       showError(error);
     }
@@ -606,7 +1266,7 @@
       await request("/api/target-delay", { seconds: suggested });
       el("targetDelay").value = String(suggested);
       localStorage.setItem("laglingo.targetDelaySeconds", String(suggested));
-      el("message").textContent = `已把目标总延迟调到 ${suggested} 秒。字幕就绪预算现在有余量；负载回落后可手动调回。`;
+      el("message").textContent = `已把本地延迟调到 ${suggested} 秒。字幕就绪预算现在有余量；负载回落后可手动调回。`;
       subtitleBudget.lowSince = null;
       button.hidden = true;
     } catch (error) {
@@ -634,7 +1294,9 @@
       let newest = subtitleMaxKnownEnd;
       for (const cue of subtitleCues.values()) newest = Math.max(newest, cue.tEnd + cue.hold);
       subtitleMaxKnownEnd = newest;
-      const cutoff = newest - 125;
+      // Keep ten minutes client-side so a typical live session exposes at
+      // least about 100 recent cues. The DOM remains separately capped below.
+      const cutoff = newest - 605;
       for (const [id, cue] of subtitleCues) {
         if (cue.tEnd + cue.hold < cutoff) subtitleCues.delete(id);
       }
@@ -644,12 +1306,220 @@
   }
 
   function playingWallClock() {
-    const playing = hls?.playingDate;
-    if (playing instanceof Date && Number.isFinite(playing.getTime())) return playing.getTime() / 1000;
-    const fragments = latestLevelDetails?.fragments || [];
-    const fragment = fragments.find((item) => video.currentTime >= item.start && video.currentTime <= item.start + item.duration);
-    const programDateTime = Number(fragment?.programDateTime);
-    return fragment && Number.isFinite(programDateTime) ? programDateTime / 1000 + (video.currentTime - fragment.start) : null;
+    if (Number.isFinite(window.__laglingoSubtitleTestWallTime)) return window.__laglingoSubtitleTestWallTime;
+    return mediaClock?.playingWallTime() ?? null;
+  }
+
+  function renderSubtitlesTimeline(wallClock) {
+    const container = el("subtitlesTimelineList");
+    if (!container) return;
+    if (!Number.isFinite(wallClock)) {
+      if (container.children.length === 0) {
+        container.innerHTML = '<div class="timeline-empty-state">等待就绪字幕...</div>';
+      }
+      return;
+    }
+
+    const t = wallClock + subtitlePrefs.offset;
+    const sortedCues = [...subtitleCues.values()]
+      .filter((cue) => cue && (cue.state === "done" && typeof cue.zh === "string" && cue.zh.trim()) && cue.tStart <= t)
+      .sort((a, b) => a.tStart - b.tStart);
+
+    const empty = container.querySelector(".timeline-empty-state");
+    if (sortedCues.length === 0) {
+      if (!empty) container.innerHTML = '<div class="timeline-empty-state">等待就绪字幕...</div>';
+      return;
+    }
+    if (empty) empty.remove();
+
+    const existingRows = new Map();
+    for (const child of container.children) {
+      if (child.dataset?.cueId) existingRows.set(child.dataset.cueId, child);
+    }
+
+    const activeCue = subtitleScheduler ? subtitleScheduler.pick([...subtitleCues.values()], t) : null;
+    const maxEntries = 100;
+    const sliced = sortedCues.slice(-maxEntries);
+    // dataset values are always strings. Comparing them with numeric cue IDs
+    // made every retained row look obsolete, rebuilding all 100 rows at 4 Hz.
+    const visibleIds = new Set(sliced.map((cue) => String(cue.id)));
+
+    // Remove obsolete
+    for (const [id, elem] of existingRows) {
+      if (!visibleIds.has(id)) elem.remove();
+    }
+
+    const fmtTime = window.formatWallClockTime || ((s) => `${Math.floor(s)}s`);
+    const timingFor = window.subtitleTimelineTiming || ((start, offset, format) => {
+      const wallTime = start - offset;
+      return { wallTime, label: format(wallTime) };
+    });
+    let hasNewAppended = false;
+
+    for (const cue of sliced) {
+      let row = existingRows.get(String(cue.id));
+      const isActive = activeCue && activeCue.id === cue.id;
+      const timing = timingFor(cue.tStart, subtitlePrefs.offset, fmtTime);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "timeline-row subtitle-timeline-row";
+        row.dataset.cueId = cue.id;
+        row.innerHTML = `
+          <div class="timeline-time"></div>
+          <div class="timeline-body">
+            ${cue.zh ? `<div class="timeline-text-translated">${escapeHtml(cue.zh)}</div>` : ""}
+            ${cue.src ? `<div class="timeline-text-source">${escapeHtml(cue.src)}</div>` : ""}
+          </div>
+        `;
+        row.tabIndex = 0;
+        const seekCue = () => seekToWallTime(Number(row.dataset.seekWallTime), row);
+        row.addEventListener("click", seekCue);
+        row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); seekCue(); } });
+        container.appendChild(row);
+        hasNewAppended = true;
+      }
+      const seekWallTime = String(timing.wallTime);
+      if (row.dataset.seekWallTime !== seekWallTime) row.dataset.seekWallTime = seekWallTime;
+      const timeElement = row.querySelector(".timeline-time");
+      if (timeElement.textContent !== timing.label) timeElement.textContent = timing.label;
+      if (row.classList.contains("is-current") !== Boolean(isActive)) {
+        row.classList.toggle("is-current", Boolean(isActive));
+      }
+    }
+
+    if (hasNewAppended && followSubtitlesController) {
+      followSubtitlesController.onNewContent();
+    }
+  }
+
+  function seekToWallTime(wallTime, row) {
+    const position = mediaClock?.mediaPositionForWallTime(wallTime);
+    if (!Number.isFinite(position) || !video.seekable.length) return;
+    const start = video.seekable.start(0);
+    const end = video.seekable.end(video.seekable.length - 1);
+    if (position < start || position > end) {
+      row?.setAttribute("aria-disabled", "true");
+      row?.setAttribute("title", "已超出本地回看窗口");
+      return;
+    }
+    video.currentTime = position;
+  }
+
+  function updatePlayerControls() {
+    const range = mediaClock?.seekableWallClockRange();
+    const rail = el("seekRail");
+    const playLabel = video.paused ? "播放" : "暂停";
+    const muteLabel = video.muted ? "取消静音" : "静音";
+    el("playPause").setAttribute("aria-label", playLabel);
+    el("playPause").setAttribute("title", playLabel);
+    el("muteToggle").setAttribute("aria-label", muteLabel);
+    el("muteToggle").setAttribute("title", muteLabel);
+    stage.classList.toggle("is-paused", video.paused);
+    stage.classList.toggle("is-muted", video.muted);
+    el("currentWallTime").textContent = mediaClock?.formatTime(range?.currentWallTime) || "--:--:--";
+    if (!range || !rail) return;
+    rail.min = String(range.startPosition);
+    rail.max = String(range.endPosition);
+    if (!rail.matches(":active")) rail.value = String(Math.min(range.endPosition, Math.max(range.startPosition, video.currentTime)));
+    el("seekStartWallTime").textContent = mediaClock.formatTime(range.startWallTime);
+    el("seekEndWallTime").textContent = mediaClock.formatTime(range.endWallTime);
+    if (!rail.dataset.dragging) el("seekPreview").textContent = mediaClock.formatTime(range.currentWallTime);
+  }
+
+  let playerControlsHideTimer = null;
+
+  function setPlayerControlsVisible(visible) {
+    stage.classList.toggle("controls-visible", visible);
+  }
+
+  function schedulePlayerControlsHide() {
+    clearTimeout(playerControlsHideTimer);
+    setPlayerControlsVisible(true);
+    if (video.paused) return;
+    playerControlsHideTimer = setTimeout(() => setPlayerControlsVisible(false), 1600);
+  }
+
+  function revealPlayerControls() {
+    clearTimeout(playerControlsHideTimer);
+    setPlayerControlsVisible(true);
+  }
+
+  function updateFullscreenControl() {
+    const fullscreen = document.fullscreenElement === stage;
+    const label = fullscreen ? "退出全屏" : "进入全屏";
+    stage.classList.toggle("is-fullscreen", fullscreen);
+    el("toggleFullscreen").setAttribute("aria-label", label);
+    el("toggleFullscreen").setAttribute("title", label);
+  }
+
+  function updateLiveMessagesUI(data) {
+    // Stats update
+    const stats = data.stats || {};
+    const indicator = el("chatStatsIndicator");
+    if (indicator) {
+      const parts = [];
+      const receiveState = {
+        idle: "未监听", connecting: "正在连接聊天", authenticating: "正在验证聊天连接", reconnecting: "正在重连聊天",
+        running: "聊天接收中", polling: "轮询接收中", error: "聊天接收失败", unavailable: "聊天不可用",
+      }[stats.state];
+      if (receiveState) parts.push(receiveState);
+      if (data.error || stats.lastError) parts.push(data.error || stats.lastError);
+      if (stats.pendingClock) parts.push(`等待媒体时钟: ${stats.pendingClock}`);
+      if (stats.received !== undefined) parts.push(`收到: ${stats.received}`);
+      if (stats.translated !== undefined) parts.push(`翻译: ${stats.translated}`);
+      if (stats.translationFailed) parts.push(`失败: ${stats.translationFailed}`);
+      const failureLabels = { timeout: "翻译超时", deadline: "翻译预算耗尽", empty: "空译文", json_format: "JSON格式错误", batch_count: "批次数量不符", batch_item: "批次内容或编号异常", batch_ids: "批次编号不符", response_format: "响应格式异常", rate_limit: "翻译限流", authentication: "翻译认证失败", provider_error: "翻译调用失败" };
+      if (stats.translationLastFailure) parts.push(failureLabels[stats.translationLastFailure] || "翻译失败");
+      if (chatOverlay.getStats().dropped) parts.push(`画面省略: ${chatOverlay.getStats().dropped}`);
+      if (stats.translationSkipped) parts.push(`跳过: ${stats.translationSkipped}`);
+      indicator.textContent = parts.length > 0 ? parts.join(" · ") : "聊天室就绪";
+    }
+
+    // Toggle sync
+    const toggle = el("chatTranslateToggle");
+    if (toggle && data.translate !== undefined && document.activeElement !== toggle) {
+      toggle.checked = Boolean(data.translate);
+    }
+    const target = el("chatTranslationTarget");
+    if (target) {
+      const state = stats.translationState === "degraded" ? " · 降级" : "";
+      target.textContent = `目标语言 ${stats.targetLanguage || targetSelector?.value || "—"}${state}`;
+    }
+  }
+
+  function renderTimelines() {
+    const wall = playingWallClock();
+    renderSubtitlesTimeline(wall);
+    chatOverlay.render(wall, liveMessagesClient ? [...liveMessagesClient.getStore().values()] : [], {
+      enabled: chatOverlayToggle.checked, translated: el("chatTranslateToggle").checked,
+      size: Number(chatOverlaySize.value),
+      paused: video.paused, filterPureEmoji: el("hidePureEmojiToggle").checked,
+    });
+    if (liveMessagesTimeline) {
+      const result = liveMessagesTimeline.render(wall);
+      if (result.changed && followChatController) {
+        followChatController.onNewContent();
+      }
+    }
+  }
+
+  const anonymousSpeakerKey = "__anonymous__";
+
+  function speakerKey(cue) {
+    const value = cue?.speaker;
+    return value === null || value === undefined || String(value).trim() === ""
+      ? anonymousSpeakerKey
+      : String(value);
+  }
+
+  function speakerColorIndex(cue) {
+    const key = speakerKey(cue);
+    if (key === anonymousSpeakerKey) return -1;
+    // Stable and bounded: no per-speaker registry grows during long sessions.
+    // Ten visual slots are intentionally reused when diarization reports >10 labels.
+    let hash = 0;
+    for (const character of key) hash = ((hash * 31) + character.codePointAt(0)) >>> 0;
+    return hash % 10;
   }
 
   function renderSubtitle() {
@@ -657,22 +1527,74 @@
     if (!subtitlePrefs.enabled || !subtitleScheduler) { clearSubtitle(); return; }
     const wall = playingWallClock();
     if (!Number.isFinite(wall)) { clearSubtitle(); return; }
-    const t = wall + subtitlePrefs.offset;
-    // 显示门控 = 译文就绪（redesign Fix D）：只有 done/failed 的 cue 才可能被
-    // 调度器返回，显示窗口锚在句尾 [tEnd, tEnd+hold]；迟到 cue 按策略追赶或
-    // 丢弃。没有「翻译中…」占位，未就绪的 cue 永不上屏。
-    const cue = subtitleScheduler.pick([...subtitleCues.values()], t);
-    if (!cue) { clearSubtitle(); return; }
-    layer.classList.remove("off");
-    layer.querySelector(".subtitle-zh").textContent = cue.zh || "";
-    layer.querySelector(".subtitle-src").textContent = cue.src || "";
+    const t = wall + subtitlePrefs.offset + SUBTITLE_RENDER_ADVANCE_SECONDS;
+    // Every cue owns its own display window. active() returns all ready cues
+    // whose windows contain the playhead, so overlapping speakers/utterances
+    // remain visible as independent rows rather than replacing one another.
+    const cueValues = [...subtitleCues.values()];
+    const cues = typeof subtitleScheduler.active === "function"
+      ? subtitleScheduler.active(cueValues, t)
+      : [subtitleScheduler.pick(cueValues, t)].filter(Boolean);
+    if (!cues.length) { clearSubtitle(); return; }
+    if (layer.classList.contains("off")) layer.classList.remove("off");
+    const content = layer.querySelector(".subtitle-content");
+    const rowsById = new Map([...content.children].map((child) => [child.dataset.cueId, child]));
+    const visibleIds = new Set(cues.map((cue) => String(cue.id)));
+    for (const [id, child] of rowsById) {
+      if (!visibleIds.has(id)) {
+        child.remove();
+        rowsById.delete(id);
+      }
+    }
+    const targetLanguage = targetSelector?.value || "";
+    for (let index = 0; index < cues.length; index += 1) {
+      const cue = cues[index];
+      const id = String(cue.id);
+      let row = rowsById.get(id);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "subtitle-cue-row";
+        row.dataset.cueId = id;
+        row.innerHTML = '<div class="subtitle-zh"></div><div class="subtitle-src"></div>';
+        rowsById.set(id, row);
+      }
+      // Cue updates advance seq/revision. Include visible fields as a defensive
+      // fallback for test seams and provider metadata revisions.
+      const renderRevision = [
+        cue.seq, cue.revision, cue.speaker, cue.src, cue.zh, cue.lang, targetLanguage,
+      ].join("\u001f");
+      if (row.dataset.renderRevision !== renderRevision) {
+        const colorIndex = speakerColorIndex(cue);
+        if (colorIndex >= 0) row.dataset.speakerColor = String(colorIndex);
+        else delete row.dataset.speakerColor;
+        row.dataset.speaker = speakerKey(cue);
+        row.setAttribute("aria-label", cue.speaker ? `说话人 ${cue.speaker}` : "字幕");
+        const zhLine = row.querySelector(".subtitle-zh");
+        const srcLine = row.querySelector(".subtitle-src");
+        zhLine.textContent = cue.zh || "";
+        srcLine.textContent = cue.src || "";
+        // Bidi: each line resolves its own direction (RTL translations never leak
+        // into the LTR source line). dir=auto is primary; the catalog direction
+        // is kept on data-direction as the fallback for old browsers.
+        zhLine.dir = "auto";
+        srcLine.dir = "auto";
+        srcLine.dataset.direction = window.LagLingoLanguages?.directionFor(cue.lang) || "ltr";
+        zhLine.dataset.direction = window.LagLingoLanguages?.directionFor(targetLanguage) || "ltr";
+        row.dataset.renderRevision = renderRevision;
+      }
+      // Reorder only when the active cue order really changed. Re-appending all
+      // rows every 100ms forced layout and repaint over the video surface.
+      if (content.children[index] !== row) {
+        content.insertBefore(row, content.children[index] || null);
+      }
+    }
   }
 
   function clearSubtitle() {
     const layer = el("subtitleLayer");
-    layer.classList.add("off");
-    layer.querySelector(".subtitle-zh").textContent = "";
-    layer.querySelector(".subtitle-src").textContent = "";
+    if (!layer.classList.contains("off")) layer.classList.add("off");
+    const content = layer.querySelector(".subtitle-content");
+    if (content.childElementCount) content.replaceChildren();
   }
 
   function applySubtitlePrefs() {
@@ -686,60 +1608,171 @@
     const windowPrefs = subtitleWindow?.preferences();
     if (windowPrefs) {
       el("subtitleOpacity").value = String(windowPrefs.opacity);
-      el("subtitleScale").value = String(windowPrefs.scale);
       el("subtitleSourceColor").value = windowPrefs.sourceColor;
       el("subtitleTranslationColor").value = windowPrefs.translationColor;
     }
   }
 
+  function updateSubtitleOffset() {
+    const offset = Number(el("subtitleOffset").value);
+    if (!Number.isFinite(offset)) return;
+    subtitlePrefs.offset = offset;
+    localStorage.setItem("laglingo.subtitle.offset", String(offset));
+    applySubtitlePrefs();
+    // Admissions are derived from the effective playhead. Re-evaluate them
+    // when the user moves that playhead, then paint synchronously so the
+    // control does not wait for a render, timeline, or subtitle-polling tick.
+    subtitleScheduler?.retime();
+    renderSubtitle();
+    renderTimelines();
+  }
+
   function updateSubtitleWindowStyle() {
     subtitleWindow?.updateStyle({
       opacity: Number(el("subtitleOpacity").value),
-      scale: Number(el("subtitleScale").value),
       sourceColor: el("subtitleSourceColor").value,
       translationColor: el("subtitleTranslationColor").value,
     });
   }
 
   function beginSubtitleDrag(event) {
-    if (!subtitleWindow || event.button !== 0) return;
+    if (!subtitleWindow || event.button !== 0 || event.target.closest(".subtitle-resize-handle")) return;
     event.preventDefault();
-    const move = (pointer) => {
-      const rect = stage.getBoundingClientRect();
-      subtitleWindow.moveTo((pointer.clientX - rect.left) / rect.width, (pointer.clientY - rect.top) / rect.height);
-    };
+    const layer = el("subtitleLayer");
+    const stageRect = stage.getBoundingClientRect();
+    const start = subtitleWindow.preferences();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    layer.classList.add("is-dragging");
+    const move = (pointer) => subtitleWindow.moveTo(
+      start.x + (pointer.clientX - startX) / stageRect.width,
+      start.y + (pointer.clientY - startY) / stageRect.height,
+    );
     const end = () => {
+      layer.classList.remove("is-dragging");
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+  }
+
+  function beginSubtitleResize(event) {
+    if (!subtitleWindow || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const layer = el("subtitleLayer");
+    const start = subtitleWindow.preferences();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const diagonal = Math.max(80, Math.hypot(layer.offsetWidth, layer.offsetHeight));
+    layer.classList.add("is-resizing");
+    const resize = (pointer) => {
+      const delta = ((pointer.clientX - startX) + (pointer.clientY - startY)) / diagonal;
+      subtitleWindow.updateStyle({ scale: start.scale + delta });
+    };
+    const end = () => {
+      layer.classList.remove("is-resizing");
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
   }
 
   function showError(error) {
+    setMediaLoading(false);
     setState("错误", "error");
     el("message").textContent = error.message || String(error);
+    el("setupFeedback").textContent = error.message || String(error);
+  }
+
+  function setMediaLoading(visible, text) {
+    const loading = el("mediaLoading");
+    loading.hidden = !visible;
+    stage.classList.toggle("is-loading", visible);
+    if (text) el("mediaLoadingText").textContent = text;
+  }
+
+  function setSessionAction(action) {
+    sessionAction = action;
+    const starting = action === "starting";
+    const stopping = action === "stopping";
+    if (starting) el("start").setAttribute("aria-busy", "true");
+    else el("start").removeAttribute("aria-busy");
+    if (stopping) el("stop").setAttribute("aria-busy", "true");
+    else el("stop").removeAttribute("aria-busy");
+    el("start").querySelector(".button-label").textContent = starting ? "正在启动" : "启动";
+    el("stop").querySelector(".button-label").textContent = stopping ? "正在停止" : "停止";
+    renderSessionControls();
+  }
+
+  function renderSessionControls() {
+    const sessionCanStop = lastSessionState === "running" || lastSessionState === "error";
+    stage.classList.toggle("session-active", sessionCanStop || sessionAction !== null);
+    el("probe").disabled = controlsBusy;
+    el("start").disabled = controlsBusy || sessionAction !== null || el("quality").disabled;
+    // An errored source can still own FFmpeg, subtitle, chat and auth resources.
+    // Keep Stop available until the idempotent /api/stop cleanup has completed.
+    el("stop").disabled = sessionAction !== null || !sessionCanStop;
+    el("playPause").disabled = sessionAction === "stopping";
+    el("url").disabled = controlsBusy;
+    el("targetDelay").disabled = controlsBusy;
   }
 
   function setBusy(busy) {
-    el("probe").disabled = busy;
-    el("start").disabled = busy || el("quality").disabled;
-    el("url").disabled = busy;
-    el("targetDelay").disabled = busy;
+    controlsBusy = busy;
+    renderSessionControls();
   }
 
   el("probe").addEventListener("click", probe);
+  el("url").addEventListener("input", () => {
+    el("quality").disabled = true;
+    el("setupPlayback").hidden = true;
+    el("setupFeedback").textContent = "点击准备，读取这场直播的清晰度。";
+    renderSessionControls();
+  });
   el("start").addEventListener("click", start);
   el("stop").addEventListener("click", stop);
   el("applyDelayButton").addEventListener("click", applySuggestedDelay);
   el("toggleFullscreen").addEventListener("click", () => subtitleWindow?.toggleFullscreen());
-  el("subtitleDragHandle").addEventListener("pointerdown", beginSubtitleDrag);
-  el("subtitleDragHandle").addEventListener("keydown", (event) => {
+  el("playPause").addEventListener("click", async () => {
+    if (sessionAction === "stopping") return;
+    if (!video.paused) {
+      video.pause();
+      updatePlayerControls();
+      return;
+    }
+    setMediaLoading(true, "正在恢复播放…");
+    try {
+      await video.play();
+    } catch (error) {
+      setMediaLoading(false);
+      setState("播放失败", "error");
+      el("message").textContent = `无法开始播放：${error.message || error}`;
+    }
+  });
+  el("muteToggle").addEventListener("click", () => { video.muted = !video.muted; if (!video.muted && video.volume === 0) video.volume = 0.8; el("volume").value = String(video.muted ? 0 : video.volume); });
+  el("volume").addEventListener("input", () => { video.volume = Number(el("volume").value); video.muted = video.volume === 0; revealPlayerControls(); });
+  el("seekRail").addEventListener("input", () => { el("seekRail").dataset.dragging = "true"; el("seekPreview").textContent = mediaClock?.formatTime(mediaClock.wallTimeForMediaPosition(Number(el("seekRail").value))) || "--:--:--"; revealPlayerControls(); });
+  el("seekRail").addEventListener("change", () => { video.currentTime = Number(el("seekRail").value); delete el("seekRail").dataset.dragging; schedulePlayerControlsHide(); });
+  stage.addEventListener("pointermove", schedulePlayerControlsHide);
+  stage.addEventListener("pointerenter", revealPlayerControls);
+  stage.addEventListener("pointerleave", schedulePlayerControlsHide);
+  stage.addEventListener("focusin", revealPlayerControls);
+  stage.addEventListener("focusout", schedulePlayerControlsHide);
+  el("subtitleLayer").addEventListener("pointerdown", beginSubtitleDrag);
+  el("subtitleLayer").addEventListener("keydown", (event) => {
     if (subtitleWindow?.nudge(event.key, event.shiftKey)) event.preventDefault();
   });
+  el("subtitleResizeHandle").addEventListener("pointerdown", beginSubtitleResize);
   el("resetSubtitlePosition").addEventListener("click", () => { subtitleWindow?.reset(); applySubtitlePrefs(); });
-  ["subtitleOpacity", "subtitleScale", "subtitleSourceColor", "subtitleTranslationColor"].forEach((id) => el(id).addEventListener("input", updateSubtitleWindowStyle));
-  document.addEventListener("fullscreenchange", () => subtitleWindow?.apply());
+  ["subtitleOpacity", "subtitleSourceColor", "subtitleTranslationColor"].forEach((id) => el(id).addEventListener("input", updateSubtitleWindowStyle));
+  document.addEventListener("fullscreenchange", () => { subtitleWindow?.apply(); updateFullscreenControl(); schedulePlayerControlsHide(); });
   window.addEventListener("resize", () => subtitleWindow?.apply());
   if (window.ResizeObserver && subtitleWindow) new ResizeObserver(() => subtitleWindow.apply()).observe(stage);
   el("openModelSettings").addEventListener("click", openModelSettings);
@@ -750,22 +1783,114 @@
   el("cancelCookieImport").addEventListener("click", closeCookieImport);
   el("cookiePlatform").addEventListener("change", updateCookiePlatformHelp);
   el("cookieImportForm").addEventListener("submit", submitCookieImport);
+  el("manageModelConnections").addEventListener("click", openModelSettings);
+  el("editAsrConnections").addEventListener("click", () => { editingSection = "asr"; renderProviderProfiles(); });
+  el("editTranslationConnections").addEventListener("click", () => { editingSection = "translation"; renderProviderProfiles(); });
+  el("roleAsr").addEventListener("change", () => selectRole("roleAsr", "asr"));
+  el("roleSubtitle").addEventListener("change", () => selectRole("roleSubtitle", "translation"));
+  el("roleFallback").addEventListener("change", () => selectRole("roleFallback", "translationFallback"));
+  el("roleChat").addEventListener("change", () => selectRole("roleChat", "chatTranslation"));
   el("modelSettingsForm").addEventListener("submit", saveModelSettings);
+  el("sourceLanguageMode").addEventListener("change", () => { updateSourceModeVisibility(); persistLanguageSettings(); });
+  el("allowCodeSwitching").addEventListener("change", () => persistLanguageSettings());
   el("addAsrProfile").addEventListener("click", () => addProvider("asr"));
   el("addTranslationProfile").addEventListener("click", () => addProvider("translation"));
   el("subtitlesEnabled").addEventListener("change", () => { subtitlePrefs.enabled = el("subtitlesEnabled").checked; localStorage.setItem("laglingo.subtitle.enabled", String(subtitlePrefs.enabled)); if (!subtitlePrefs.enabled) clearSubtitle(); });
   el("subtitleMode").addEventListener("change", () => { subtitlePrefs.mode = el("subtitleMode").value; localStorage.setItem("laglingo.subtitle.mode", subtitlePrefs.mode); applySubtitlePrefs(); });
   el("subtitleSize").addEventListener("change", () => { subtitlePrefs.size = el("subtitleSize").value; localStorage.setItem("laglingo.subtitle.size", subtitlePrefs.size); applySubtitlePrefs(); });
-  el("subtitleOffset").addEventListener("input", () => { subtitlePrefs.offset = Number(el("subtitleOffset").value); localStorage.setItem("laglingo.subtitle.offset", String(subtitlePrefs.offset)); applySubtitlePrefs(); });
+  el("subtitleOffset").addEventListener("input", updateSubtitleOffset);
   el("url").addEventListener("keydown", (event) => { if (event.key === "Enter") probe(); });
-  video.addEventListener("playing", () => setState("延迟播放中", "stable"));
-  video.addEventListener("waiting", () => setState("播放器缓冲", "waiting"));
+  video.addEventListener("playing", () => {
+    if (sessionAction === "stopping") return;
+    setMediaLoading(false);
+    setState("延迟播放中", "stable");
+    updatePlayerControls();
+    schedulePlayerControlsHide();
+  });
+  video.addEventListener("pause", () => { updatePlayerControls(); revealPlayerControls(); });
+  video.addEventListener("volumechange", updatePlayerControls);
+  video.addEventListener("waiting", () => {
+    if (sessionAction === "stopping" || lastSessionState !== "running") return;
+    setMediaLoading(true, "播放器正在缓冲…");
+    setState("播放器缓冲", "waiting");
+    revealPlayerControls();
+  });
+
+  // Live chat translation toggle
+  const chatToggle = el("chatTranslateToggle");
+  if (chatToggle && liveMessagesClient) {
+    chatToggle.addEventListener("change", async () => {
+      try {
+        const previous = !chatToggle.checked;
+        localStorage.setItem("laglingo.liveMessages.translate", String(chatToggle.checked));
+        try {
+          await liveMessagesClient.setTranslate(chatToggle.checked);
+        } catch (error) {
+          chatToggle.checked = previous;
+          localStorage.setItem("laglingo.liveMessages.translate", String(previous));
+          throw error;
+        }
+      } catch (err) {
+        console.warn("Failed to set chat translate setting:", err);
+      }
+    });
+  }
+
+  // Clear timelines buttons
+  el("clearSubtitlesTimelineBtn")?.addEventListener("click", () => {
+    subtitleCues.clear();
+    renderSubtitlesTimeline(null);
+  });
+  el("clearChatTimelineBtn")?.addEventListener("click", () => {
+    liveMessagesTimeline?.clear();
+  });
+
   applySubtitlePrefs();
   subtitleWindow?.apply();
-  loadSubtitleDefaults();
-  statusTimer = setInterval(refreshStatus, 1000);
-  subtitleTimer = setInterval(refreshSubtitles, 500);
-  subtitleRenderTimer = setInterval(renderSubtitle, 100);
-  refreshStatus();
-  window.addEventListener("beforeunload", () => { clearInterval(statusTimer); clearInterval(subtitleTimer); clearInterval(subtitleRenderTimer); });
+  // Narrow browser-test seam for the production renderer. The public UI still
+  // mutates cues only through polling; tests use these references to verify
+  // concurrent speaker rows without duplicating rendering implementation.
+  window.__laglingoSubtitleCues = subtitleCues;
+  window.__laglingoRenderSubtitle = renderSubtitle;
+  window.__laglingoRenderTimelines = renderTimelines;
+  window.__laglingoSetSubtitleTestWallTime = (value) => {
+    window.__laglingoSubtitleTestWallTime = Number.isFinite(Number(value)) ? Number(value) : null;
+  };
+
+  loadLanguageSettings();
+  updateFullscreenControl();
+  revealPlayerControls();
+  statusPoller = window.createSerialPoller?.({
+    run: refreshStatus,
+    intervalMs: 1000,
+    hiddenIntervalMs: 5000,
+    isHidden: () => document.hidden,
+  });
+  subtitlePoller = window.createSerialPoller?.({
+    run: refreshSubtitles,
+    intervalMs: 500,
+    hiddenIntervalMs: 2000,
+    isHidden: () => document.hidden,
+  });
+  statusPoller?.start();
+  subtitlePoller?.start();
+  subtitleRenderTimer = setInterval(() => { if (!document.hidden) renderSubtitle(); }, 100);
+  timelineRenderTimer = setInterval(() => { if (!document.hidden) { renderTimelines(); updatePlayerControls(); } }, 250);
+  if (liveMessagesClient) liveMessagesClient.startPolling(500);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      statusPoller?.wake();
+      subtitlePoller?.wake();
+      renderSubtitle();
+      renderTimelines();
+      updatePlayerControls();
+    }
+  });
+  window.addEventListener("beforeunload", () => {
+    statusPoller?.stop();
+    subtitlePoller?.stop();
+    clearInterval(subtitleRenderTimer);
+    clearInterval(timelineRenderTimer);
+    if (liveMessagesClient) liveMessagesClient.stopPolling();
+  });
 })();

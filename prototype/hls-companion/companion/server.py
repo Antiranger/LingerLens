@@ -60,6 +60,7 @@ try:
         validate_page_url,
     )
     from .media_anchor import MediaAnchor  # type: ignore[import-not-found]
+    from .recovery_policy import RecoveryPolicy  # type: ignore[import-not-found]
 except ImportError:  # Direct script execution.
     from control_ipc import ControlServer  # type: ignore[import-not-found]
     from ytdlp_ingest import YtDlpLiveIngest  # type: ignore[import-not-found]
@@ -95,6 +96,7 @@ except ImportError:  # Direct script execution.
         validate_page_url,
     )
     from companion.media_anchor import MediaAnchor  # type: ignore[import-not-found]
+    from companion.recovery_policy import RecoveryPolicy  # type: ignore[import-not-found]
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_PLAYER = ROOT / "web-player"
@@ -173,6 +175,7 @@ class CompanionApplication:
         self.message_generation = 0
         self.auth_lease: SessionAuthLease | None = None
         self.private_hls_token: str | None = None
+        self.recovery_policy = RecoveryPolicy()
 
     def routes(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
@@ -189,6 +192,9 @@ class CompanionApplication:
         app.router.add_get("/quality-preference.js", self.static_file)
         app.router.add_get("/live-messages-client.js", self.static_file)
         app.router.add_get("/workbench-controller.js", self.static_file)
+        app.router.add_get("/playback-recovery.js", self.static_file)
+        app.router.add_get("/i18n.js", self.static_file)
+        app.router.add_get("/control-bar.js", self.static_file)
         app.router.add_get("/style.css", self.static_file)
         app.router.add_get("/vendor/{name}", self.static_file)
         app.router.add_get("/hls/{name}", self.hls_file)
@@ -259,6 +265,20 @@ class CompanionApplication:
         if self.asr_audio_ingest is not None:
             ingest_list.append(dict(self.asr_audio_ingest.snapshot(), role="asr-audio"))
         status["sourceIngest"] = ingest_list
+        if ingest_snapshot:
+            decision = self.recovery_policy.decide(
+                stall_seconds=ingest_snapshot.get("sourceIdleSeconds"),
+                process_running=bool(ingest_snapshot.get("running")),
+                source_error=ingest_snapshot.get("sourceError"),
+            )
+            status["sourceRecovery"] = {
+                "state": decision.state,
+                "action": decision.action,
+                "reason": decision.reason,
+                "stallSeconds": ingest_snapshot.get("sourceIdleSeconds"),
+            }
+        else:
+            status["sourceRecovery"] = {"state": "idle", "action": "none", "reason": "no-session", "stallSeconds": None}
         subtitle_status = self._subtitle_status()
         message_status = self._messages_status()
         status["subtitles"] = subtitle_status
@@ -588,6 +608,7 @@ class CompanionApplication:
             # the next session lease.
             await self._stop_messages()
             await self._stop_subtitles()
+            self.session.request_stop()
             if self.source_ingest:
                 await asyncio.to_thread(self.source_ingest.stop)
                 self.source_ingest = None
@@ -717,6 +738,7 @@ class CompanionApplication:
                 )
                 self.target_delay_seconds = target_delay
             except Exception:
+                self.session.request_stop()
                 await asyncio.to_thread(self.source_ingest.stop)
                 self.source_ingest = None
                 if self.asr_audio_ingest is not None:
@@ -770,6 +792,7 @@ class CompanionApplication:
         except Exception:
             await self._stop_messages()
             await self._stop_subtitles()
+            self.session.request_stop()
             if self.source_ingest:
                 await asyncio.to_thread(self.source_ingest.stop)
                 self.source_ingest = None
@@ -827,6 +850,7 @@ class CompanionApplication:
     async def handle_stop(self, _: web.Request) -> web.Response:
         await self._stop_messages()
         await self._stop_subtitles()
+        self.session.request_stop()
         if self.source_ingest:
             await asyncio.to_thread(self.source_ingest.stop)
             self.source_ingest = None
@@ -895,7 +919,14 @@ class CompanionApplication:
             ingest_status = lambda: self.asr_audio_ingest.snapshot() if self.asr_audio_ingest else {}  # noqa: E731
             media_anchor: MediaAnchor | None = MediaAnchor()
             anchor_probe = self._current_private_media_seconds
-            source_pts_mapper = self._map_audio_pcm_to_private_media
+            # The two yt-dlp legs are independently extracted. Their first
+            # MPEG-TS PTS values are not a shared epoch (each leg may start at
+            # a different live-window boundary), so subtracting those first
+            # samples produces a fixed but potentially large subtitle skew.
+            # Use the continuously measured MediaAnchor instead; it samples
+            # both legs only while they advance at real time and re-anchors
+            # after skips.
+            source_pts_mapper = None
         else:
             ingest_status = lambda: self.source_ingest.snapshot() if self.source_ingest else {}  # noqa: E731
             media_anchor = None
@@ -956,18 +987,6 @@ class CompanionApplication:
     def _current_private_media_seconds(self) -> float | None:
         publisher = self.session.publisher if self.session else None
         return publisher.private_media_seconds if publisher is not None else None
-
-    def _map_audio_pcm_to_private_media(self, pcm_seconds: float) -> float | None:
-        """Map ASR PCM time through the shared source PTS clock without waiting."""
-        audio = self.asr_audio_ingest.snapshot() if self.asr_audio_ingest else {}
-        video = self.source_ingest.snapshot() if self.source_ingest else {}
-        audio_leg = next((x for x in (audio.get("legThroughput") or []) if x.get("label") == "audio"), {})
-        video_leg = next((x for x in (video.get("legThroughput") or []) if x.get("label") == "video"), {})
-        audio_first = audio_leg.get("sourcePtsFirst")
-        video_first = video_leg.get("sourcePtsFirst")
-        if audio_first is None or video_first is None:
-            return None
-        return float(audio_first) + float(pcm_seconds) - float(video_first)
 
     async def _wait_for_private_hls(self) -> float:
         """Wait for one complete private segment and its authoritative PDT."""
@@ -1353,6 +1372,7 @@ class CompanionApplication:
     async def cleanup(self, _: web.Application) -> None:
         await self._stop_messages()
         await self._stop_subtitles()
+        self.session.request_stop()
         if self.source_ingest:
             await asyncio.to_thread(self.source_ingest.stop)
             self.source_ingest = None

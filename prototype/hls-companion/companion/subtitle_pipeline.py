@@ -40,6 +40,7 @@ from .subtitle_text import (
     is_duplicate_final,
     newly_confirmed_sentences,
 )
+from .translation_budget import TranslationBudget, TranslationBudgetPolicy
 
 PCM_BYTES_PER_SECOND = 16_000 * 2
 PCM_CHUNK_BYTES = 3_200
@@ -139,6 +140,8 @@ class PipelineStats:
     suppressed_by_ingest_error: int = 0
     translation_dropped: int = 0
     translation_failures: int = 0
+    translation_deadline_expired: int = 0
+    translation_provider_failures: int = 0
     translation_attempts: int = 0
     asr_reconnects: int = 0
     final_deduplicated: int = 0
@@ -161,6 +164,10 @@ class PipelineStats:
     avg_translation_latency_ms: float | None = None
     last_translation_attempt_at: float | None = None
     translation_context_missing_immediate_predecessor: int = 0
+
+
+class TranslationDeadlineExpired(asyncio.TimeoutError):
+    """A cue missed its local display window before translation completed."""
 
 
 @dataclasses.dataclass
@@ -300,6 +307,12 @@ class SubtitlePipeline:
         self.playback_delay_seconds = playback_delay_seconds
         self.wall_clock = wall_clock
         self.monotonic = monotonic
+        self._translation_budget_policy = TranslationBudgetPolicy(
+            translation_timeout_seconds,
+            playback_delay_seconds=playback_delay_seconds,
+            wall_clock=wall_clock,
+            monotonic=monotonic,
+        )
         self.subprocess_factory = subprocess_factory
         self.context = RollingContext(context_pairs, context_seconds)
         self.stats = PipelineStats()
@@ -324,7 +337,7 @@ class SubtitlePipeline:
         self.input_format: str | None = None
         self._pcm_queue: asyncio.Queue[tuple[bytes, float]] | None = None
         self._translation_queue: asyncio.Queue[Cue] = asyncio.Queue()
-        self._translation_deadlines: dict[int, float] = {}
+        self._translation_budgets: dict[int, TranslationBudget] = {}
         self._tasks: list[asyncio.Task[Any]] = []
         self._process: Any = None
         self._stream: ASRStream | None = None
@@ -1264,15 +1277,11 @@ class SubtitlePipeline:
                 cue = self._translation_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            with contextlib.suppress(KeyError, ValueError):
-                self.store.update(cue.id, state="failed")
-            self._record_ready_lag(cue.id, success=False)
             self._translation_queue.task_done()
-            self.stats.translation_dropped += 1
-            self.stats.source_only_cues += 1
-            self._translation_deadlines.pop(cue.id, None)
+            self._translation_budgets.pop(cue.id, None)
+            self._drop_translation_cue(cue)
 
-        self._translation_deadlines.clear()
+        self._translation_budgets.clear()
 
     def _track_translation_pressure(self) -> None:
         backlog = self._translation_backlog
@@ -1286,26 +1295,22 @@ class SubtitlePipeline:
         self.context.add(cue.src, None, generation=cue.generation,
                          chunk_order=cue.chunk_order, media_t_end=cue.t_end)
         self.context.trim(generation=cue.generation, at_media_time=cue.t_end)
-        deadline = self.monotonic() + self.translation_timeout_seconds
-        if self.playback_delay_seconds is not None:
-            target_delay = max(0.0, float(self.playback_delay_seconds()))
-            audio_span = max(0.0, cue.t_end - cue.t_start) if cue.t_start is not None else 0.0
-            audio_end_wall = self._audio_end_walls.get(cue.id)
-            elapsed = max(0.0, self.wall_clock() - audio_end_wall) if audio_end_wall is not None else 0.0
-            deadline = min(deadline, self.monotonic() + max(0.001, target_delay - audio_span - elapsed))
-        self._translation_deadlines[cue.id] = deadline
+        budget = self._translation_budget_policy.allocate(self._audio_end_walls.get(cue.id))
+        if budget.remaining(self.monotonic()) <= 0:
+            # The cue is already beyond the delayed player's display window.
+            # Drop it at the queue seam so a worker cannot turn a stale startup
+            # backlog into a stream of misleading provider-timeout errors.
+            self.stats.translation_deadline_expired += 1
+            self._drop_translation_cue(cue)
+            return
+        self._translation_budgets[cue.id] = budget
         while self._translation_backlog >= self._queue_limit:
             dropped = self._translation_queue.get_nowait()
-            # Resolve overflow as failed and hidden, never as source-only display.
-            with contextlib.suppress(KeyError, ValueError):
-                self.store.update(dropped.id, state="failed")
-            self._record_ready_lag(dropped.id, success=False)
             # get_nowait() bypasses the worker's task_done(), so balance the
             # unfinished-task counter here or join() would never settle.
             self._translation_queue.task_done()
-            self.stats.translation_dropped += 1
-            self.stats.source_only_cues += 1
-            self._translation_deadlines.pop(dropped.id, None)
+            self._translation_budgets.pop(dropped.id, None)
+            self._drop_translation_cue(dropped)
 
         # Preceding source text is available immediately; completed translations
         # enrich that snapshot. Neither requires a predecessor dependency.
@@ -1334,13 +1339,15 @@ class SubtitlePipeline:
                     provider = self.fallback_translation_provider
                 if provider is None:
                     continue  # the finally below still runs task_done()
-                deadline = self._translation_deadlines.get(
-                    cue.id,
-                    self.monotonic() + self.translation_timeout_seconds,
-                )
-                remaining = deadline - self.monotonic()
+                budget = self._translation_budgets.get(cue.id)
+                if budget is None:
+                    budget = self._translation_budget_policy.allocate(None)
+                deadline = budget.deadline_monotonic
+                remaining = budget.remaining(self.monotonic())
                 if remaining <= 0:
-                    raise asyncio.TimeoutError("translation deadline expired while waiting for a free worker")
+                    raise TranslationDeadlineExpired(
+                        "translation deadline expired while waiting for a free worker"
+                    )
                 pair_limit = 2 if self._degrade_level >= 1 else None
                 if (
                     provider.capabilities.rolling_context
@@ -1385,40 +1392,23 @@ class SubtitlePipeline:
                 with contextlib.suppress(KeyError, ValueError):
                     self.store.update(cue.id, state="translating")
                 self._active_translation_provider_id = provider.id
-                # A transient provider error or empty response gets up to three
-                # attempts while the original cue deadline remains in force.
-                # Retries are sequential per cue, while other cues continue on
-                # the worker pool; no extra queueing delay is introduced.
-                result = None
-                last_error: Exception | None = None
-                for attempt in range(3):
-                    remaining = deadline - self.monotonic()
-                    if remaining <= 0:
-                        last_error = asyncio.TimeoutError("translation deadline expired before provider call")
-                        break
-                    self.stats.translation_attempts += 1
-                    self.stats.last_translation_attempt_at = self.wall_clock()
-                    try:
-                        candidate = await asyncio.wait_for(
-                            provider.translate(request), timeout=max(0.001, remaining)
-                        )
-                        self._record_translation_usage(candidate.provider_id, candidate.usage)
-                        translated_candidate = (candidate.text or "").strip()
-                        if not translated_candidate:
-                            raise ValueError("translation provider returned empty text")
-                        result = candidate
-                        break
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        last_error = exc
-                        if attempt < 2 and self.monotonic() < deadline:
-                            await asyncio.sleep(0)
-                if result is None:
-                    raise last_error or RuntimeError("translation failed after retries")
+                # This module spends one bounded request per cue.  A configured
+                # FallbackChain owns the primary -> fallback handoff; repeating
+                # it here multiplies provider calls and delays newer cues.
+                remaining = budget.remaining(self.monotonic())
+                if remaining <= 0:
+                    raise TranslationDeadlineExpired("translation deadline expired before provider call")
+                self.stats.translation_attempts += 1
+                self.stats.last_translation_attempt_at = self.wall_clock()
+                result = await asyncio.wait_for(
+                    provider.translate(request), timeout=max(0.001, remaining)
+                )
+                self._record_translation_usage(result.provider_id, result.usage)
+                translated = (result.text or "").strip()
+                if not translated:
+                    raise ValueError("translation provider returned empty text")
                 if latency is not None:
                     latency.provider_finished = self.monotonic()
-                translated = result.text.strip()
                 self._record_translation_latency(result.latency_ms)
                 if request.meta.target_lang != self.meta.target_lang:
                     # The user changed target language while this Provider call
@@ -1454,21 +1444,46 @@ class SubtitlePipeline:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                latency = self._cue_latencies.get(cue.id)
-                if latency is not None and latency.translation_started is not None:
-                    latency.provider_finished = self.monotonic()
-                # Timeout/failure is terminal and hidden; never publish source-only subtitles.
-                self.stats.translation_failures += 1
-                self.stats.last_translation_error = self._error_text(exc)
-                self._record_error(exc)
-                with contextlib.suppress(KeyError, ValueError):
-                    self.store.update(cue.id, state="failed")
-                self.stats.source_only_cues += 1
-                self._record_ready_lag(cue.id, success=False)
+                if isinstance(exc, TranslationDeadlineExpired):
+                    self.stats.translation_deadline_expired += 1
+                    self._drop_translation_cue(cue)
+                else:
+                    # A timeout raised by wait_for means the provider consumed
+                    # its allotted call budget; it is not the queue's stale
+                    # work path and should remain visible as a provider issue.
+                    self._mark_translation_failed(cue, exc)
             finally:
-                self._translation_deadlines.pop(cue.id, None)
+                self._translation_budgets.pop(cue.id, None)
                 self._translation_queue.task_done()
                 self._update_recovery(self._translation_backlog)
+
+    def _mark_translation_failed(
+        self,
+        cue: Cue,
+        exc: BaseException,
+    ) -> None:
+        """Resolve one provider failure and keep it separate from stale work."""
+
+        latency = self._cue_latencies.get(cue.id)
+        if latency is not None and latency.translation_started is not None:
+            latency.provider_finished = self.monotonic()
+        self.stats.translation_failures += 1
+        self.stats.translation_provider_failures += 1
+        self.stats.last_translation_error = self._error_text(exc)
+        self._record_error(exc)
+        with contextlib.suppress(KeyError, ValueError):
+            self.store.update(cue.id, state="failed")
+        self.stats.source_only_cues += 1
+        self._record_ready_lag(cue.id, success=False)
+
+    def _drop_translation_cue(self, cue: Cue) -> None:
+        """Hide stale/overflowed work without invoking a translation adapter."""
+
+        with contextlib.suppress(KeyError, ValueError):
+            self.store.update(cue.id, state="failed")
+        self.stats.translation_dropped += 1
+        self.stats.source_only_cues += 1
+        self._record_ready_lag(cue.id, success=False)
 
     def _record_ready_lag(self, cue_id: int, *, success: bool = False) -> None:
         """Record terminal readiness and the smallest useful stage breakdown."""
@@ -1744,6 +1759,8 @@ class SubtitlePipeline:
             "translationBacklog": self._translation_backlog,
             "translationDropped": self.stats.translation_dropped,
             "translationFailures": self.stats.translation_failures,
+            "translationDeadlineExpired": self.stats.translation_deadline_expired,
+            "translationProviderFailures": self.stats.translation_provider_failures,
             "translationAttempts": self.stats.translation_attempts,
             "translationWorkers": self.translation_workers,
             "translationWorkersAlive": sum(
