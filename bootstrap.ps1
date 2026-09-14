@@ -38,7 +38,8 @@ if (Require-Command $Python "https://www.python.org/downloads/windows/") {
 
 if (Require-Command "node" "https://nodejs.org/en/download/") {
     $nodeMajor = [int]((& node -p "process.versions.node.split('.')[0]").Trim())
-    if ($nodeMajor -lt 18) { Add-Failure "Node.js 18+ is required; found major version $nodeMajor." }
+    $nodeMinor = [int]((& node -p "process.versions.node.split('.')[1]").Trim())
+    if ($nodeMajor -lt 22 -or ($nodeMajor -eq 22 -and $nodeMinor -lt 12)) { Add-Failure "Node.js 22.12+ is required; found $(& node --version)." }
     else { Write-Host "[ok] Node.js $(& node --version)" }
 }
 $npmAvailable = Require-Command "npm" "https://nodejs.org/en/download/"

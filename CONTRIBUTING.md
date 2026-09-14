@@ -10,7 +10,7 @@ From a Windows PowerShell prompt at the repository root:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
-The bootstrap checks Python 3.11+, Node.js 18+/npm, FFmpeg/ffprobe, Chrome or Edge, and the vendored yt-dlp checksum before installing declared dependencies. It never installs system software or credentials.
+The browser-mode bootstrap checks Python 3.11+, Node.js 22.12+/npm, FFmpeg/ffprobe, Chrome or Edge, and the vendored yt-dlp checksum before installing declared dependencies. It never installs system software or credentials. For the self-contained desktop build, follow [desktop/README.md](desktop/README.md).
 
 ## Before opening a change
 

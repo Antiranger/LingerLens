@@ -55,6 +55,9 @@ test("release guard rejects media, logs, caches, and agent state", () => {
     ".playwright-cli/session.json",
     ".planning/state.json",
     "prototype/hls-companion/.benchmark-data/result.json",
+    "release/LagLingo-setup.exe",
+    "build-desktop/backend/runtime.json",
+    ".venv-desktop/pyvenv.cfg",
   ]) {
     const result = runGuard({ [relative]: "fixture" });
     assert.notEqual(result.status, 0, relative);

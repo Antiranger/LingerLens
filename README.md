@@ -4,9 +4,21 @@ LagLingo is a Windows-first local delayed live player for YouTube Live and Bilib
 
 The repository is still a developer-oriented prototype: it does not bypass DRM, paid access, regional restrictions, or platform anti-bot controls, and real-stream compatibility depends on the source and user authentication.
 
-## Quick start (Windows)
+## Desktop application (Windows, pre-release)
 
-Requirements are Python **3.11+**, Node.js **18+** with npm, FFmpeg/ffprobe, and Chrome or Edge. From the repository root run the one bootstrap command:
+An Electron desktop entry and a per-user Windows installer build are available.
+The desktop package includes its browser, Python runtime and packages, FFmpeg,
+yt-dlp and dictionary data. Users launch LagLingo directly; no console, localhost
+URL or separately installed developer tools are needed. Cloud provider accounts
+and optional local Whisper services are configured separately.
+
+See [desktop build and usage](desktop/README.md) and
+[bundled dependencies](desktop/DEPENDENCIES.md). Generated installers are local
+pre-release artifacts until packaging, signing and redistribution review is complete.
+
+## Developer quick start (Windows, browser mode)
+
+Requirements are Python **3.11+**, Node.js **22.12+** with npm, FFmpeg/ffprobe, and Chrome or Edge. From the repository root run the one bootstrap command:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
