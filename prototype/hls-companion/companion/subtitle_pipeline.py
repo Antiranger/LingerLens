@@ -213,6 +213,7 @@ class SubtitlePipeline:
         translation_provider: TranslationProvider | None = None,
         fallback_translation_provider: TranslationProvider | None = None,
         translation_pricing_by_provider: dict[str, dict[str, float | None]] | None = None,
+        asr_currency: str = "USD",
         glossary: list[tuple[str, str]] | None = None,
         hotwords: list[str] | None = None,
         asr_context: list[str] | None = None,
@@ -245,6 +246,8 @@ class SubtitlePipeline:
         self.translation_provider = translation_provider
         self.fallback_translation_provider = fallback_translation_provider
         self.translation_pricing_by_provider = dict(translation_pricing_by_provider or {})
+        # 该 ASR Provider 的报价币种；费用只按它计价，不做任何换算。
+        self.asr_currency = str(asr_currency or "USD").upper()
         self.store = cue_store
         self.meta = meta
         # The user's source-language instruction for ASR; the pipeline passes
@@ -1392,6 +1395,10 @@ class SubtitlePipeline:
         if usage["unknownUsageCalls"]:
             return usage, None, "translation usage unavailable for one or more completed calls"
         cost = 0.0
+        # 一次会话可能同时用过主力和兜底两个 Provider，而它们的报价币种未必
+        # 相同（例如百炼按人民币、Gemini 按美元）。不同币种不能相加，所以这里
+        # 按币种分组累计，由调用方决定合计怎么写。
+        costs_by_currency: dict[str, float] = {}
         for provider_id, provider_usage in by_provider.items():
             prices = self.translation_pricing_by_provider.get(provider_id, {})
             required = (prices.get("input"), prices.get("cachedInput"), prices.get("output"))
@@ -1410,10 +1417,20 @@ class SubtitlePipeline:
                 + provider_usage["cacheWriteInputTokens"] * (cache_write_price or 0)
                 + provider_usage["outputTokens"] * output_price
             ) / 1_000_000
+            provider_currency_code = str(prices.get("currency") or "USD").upper()
             provider_usage["estimatedCostCny"] = round(provider_cost, 9)
+            provider_usage["costCurrency"] = provider_currency_code
+            costs_by_currency[provider_currency_code] = costs_by_currency.get(provider_currency_code, 0.0) + provider_cost
             cost += provider_cost
+        usage["costsByCurrency"] = [
+            {"currency": code, "amount": round(amount, 9)}
+            for code, amount in sorted(costs_by_currency.items())
+        ]
         if not by_provider:
             return usage, None, "translation usage unavailable"
+        if len(costs_by_currency) > 1:
+            # 混合币种时给不出单一数字；由前端逐币种列出，而不是凭空换算。
+            return usage, None, "translation providers bill in more than one currency"
         return usage, round(cost, 9), None
 
     def _update_recovery(self, backlog: int) -> None:
@@ -1465,15 +1482,41 @@ class SubtitlePipeline:
         price = getattr(self.asr_provider, "price_per_second_cny", None)
         asr_cost = round(self._pcm_offset * price, 9) if price is not None else None
         asr_reason = None if price is not None else "ASR pricing unavailable"
+        asr_currency_code = str(getattr(self, "asr_currency", None) or "USD").upper()
         translation_usage, translation_cost, translation_reason = self._translation_metering()
-        total_cost = (
-            round(asr_cost + translation_cost, 9)
-            if asr_cost is not None and translation_cost is not None
-            else None
-        )
+        # 合计按币种分组。只有 ASR 与翻译「都」可估算时才给合计——卡片上写明
+        # 了「都可估算时显示」，只算一半的合计数是误导。混合币种同样给不出
+        # 「一个」数字，此时逐币种列出，绝不引入汇率去硬凑。
+        costs_by_currency: list[dict[str, Any]] = []
+        single_currency = None
+        total_cost = None
+        if asr_cost is not None and translation_cost is not None:
+            combined: dict[str, float] = {asr_currency_code: asr_cost}
+            for entry in translation_usage.get("costsByCurrency") or []:
+                code = str(entry.get("currency") or "USD").upper()
+                combined[code] = combined.get(code, 0.0) + float(entry.get("amount") or 0.0)
+            costs_by_currency = [
+                {"currency": code, "amount": round(amount, 9)}
+                for code, amount in sorted(combined.items())
+            ]
+            if len(costs_by_currency) == 1:
+                single_currency = costs_by_currency[0]["currency"]
+                total_cost = costs_by_currency[0]["amount"]
+        if translation_usage.get("costsByCurrency"):
+            translation_currency = (
+                translation_usage["costsByCurrency"][0]["currency"]
+                if len(translation_usage["costsByCurrency"]) == 1
+                else None
+            )
+        else:
+            translation_currency = None
         total_reason = None
         if total_cost is None:
-            total_reason = "; ".join(reason for reason in (asr_reason, translation_reason) if reason)
+            total_reason = (
+                "costs span more than one currency"
+                if len(costs_by_currency) > 1
+                else "; ".join(reason for reason in (asr_reason, translation_reason) if reason)
+            )
         chunker = self.caption_chunker.telemetry()
         return {
             "running": self._running,
@@ -1500,11 +1543,15 @@ class SubtitlePipeline:
             "asrSeconds": round(self._pcm_offset, 3),
             "asrUsage": {"seconds": round(self._pcm_offset, 3)},
             "asrEstimatedCostCny": asr_cost,
+            "asrCostCurrency": asr_currency_code,
             "asrEstimateReason": asr_reason,
             "translationUsage": translation_usage,
             "translationEstimatedCostCny": translation_cost,
+            "translationCostCurrency": translation_currency,
             "translationEstimateReason": translation_reason,
             "totalEstimatedCostCny": total_cost,
+            "totalCostCurrency": single_currency,
+            "costsByCurrency": costs_by_currency,
             "totalEstimateReason": total_reason,
             "estimatedCostCny": asr_cost,
             "pcmDropped": self.stats.pcm_dropped,

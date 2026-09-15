@@ -249,8 +249,11 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(html, /id="translationUsageCost"/);
   assert.match(html, /id="totalUsageCost"/);
   assert.match(js, /asrEstimatedCostCny/);
-  assert.match(js, /translationEstimatedCostCny/);
-  assert.match(js, /totalEstimatedCostCny/);
+  // 费用按币种分组显示：一次会话可能同时用过人民币与美元的 Provider，不同
+  // 币种不能相加。断言的是读取分组与币种，而不是某个单一的「合计」字段。
+  assert.match(js, /costsByCurrency/);
+  assert.match(js, /asrCostCurrency/);
+  assert.match(js, /CURRENCY_SYMBOLS/);
   assert.match(js, /toLocaleString/);
   assert.match(js, /不可估算/);
   assert.doesNotMatch(js, /Number\(subtitles\.estimatedCostCny \|\| 0\)/);

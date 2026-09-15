@@ -501,9 +501,21 @@
 
   const seconds = (value) => Number.isFinite(value) ? `${value.toFixed(1)} 秒` : "—";
   const integer = (value) => Number(value || 0).toLocaleString("zh-CN");
-  const cny = (value, reason) => Number.isFinite(Number(value))
-    ? `¥${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`
-    : `不可估算${reason ? `（${reason}）` : ""}`;
+  /* 费用必须按它自己的币种显示。币种由后端随 Provider 一起给出（中国厂商
+     人民币，其余美元），前端不做任何换算——没有汇率就不会算错。 */
+  const CURRENCY_SYMBOLS = { CNY: "¥", USD: "$" };
+  const money = (value, currency) => {
+    const code = String(currency || "CNY").toUpperCase();
+    const symbol = CURRENCY_SYMBOLS[code] || `${code} `;
+    return `${symbol}${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`;
+  };
+  const costText = (value, currency, reason) => Number.isFinite(Number(value))
+    ? money(value, currency)
+    : `${updateLabel("cost.notEstimable", "不可估算")}${reason ? `（${reason}）` : ""}`;
+  /* 主力与兜底可能是不同币种，这时没有「一个」合计，逐币种列出。 */
+  const costsText = (entries, reason) => (Array.isArray(entries) && entries.length
+    ? entries.map((entry) => money(entry.amount, entry.currency)).join(" + ")
+    : costText(null, null, reason));
 
   async function request(path, body) {
     const timeout = path === "/api/probe" ? 20000 : 30000;
@@ -843,9 +855,9 @@
         : "<span class=\"usage-empty\">未运行</span>";
       const asrUsage = subtitles.asrUsage || { seconds: subtitles.asrSeconds || 0 };
       const translationUsage = subtitles.translationUsage || {};
-      el("asrUsageCost").innerHTML = `<span><small>音频</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒</span><span><small>费用</small>${cny(subtitles.asrEstimatedCostCny, subtitles.asrEstimateReason)}</span>`;
-      el("translationUsageCost").innerHTML = `<span><small>输入</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>缓存</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>输出</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>费用</small>${cny(subtitles.translationEstimatedCostCny, subtitles.translationEstimateReason)}</span>`;
-      el("totalUsageCost").textContent = cny(subtitles.totalEstimatedCostCny, subtitles.totalEstimateReason);
+      el("asrUsageCost").innerHTML = `<span><small>音频</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒</span><span><small>费用</small>${costText(subtitles.asrEstimatedCostCny, subtitles.asrCostCurrency, subtitles.asrEstimateReason)}</span>`;
+      el("translationUsageCost").innerHTML = `<span><small>输入</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>缓存</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>输出</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>费用</small>${costsText(translationUsage.costsByCurrency, subtitles.translationEstimateReason)}</span>`;
+      el("totalUsageCost").textContent = costsText(subtitles.costsByCurrency, subtitles.totalEstimateReason);
       const latency = subtitles.avgTranslationLatencyMs;
       el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} 秒` : "—";
       updateSubtitleBudget(subtitles, measuredDelay, Number(data.targetDelaySeconds));
@@ -1181,16 +1193,18 @@
    * 漏翻译而显示成空字符串或键名。
    */
   function asrPricingFields(provider) {
+    const currency = provider.currency || "CNY";
     const notEstimable = updateLabel("ph.notEstimable", "留空表示不可估算");
-    return `<label class="wide"><span>${updateLabel("price.asr", "ASR 单价（CNY / 秒）")}</span><input data-field="pricePerSecondCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerSecondCny)}" placeholder="${notEstimable}"><small>${updateLabel("price.asr.hint", "本地免费服务请显式填写 0；留空不是免费。")}</small></label>`;
+    return `<label class="wide"><span>${updateLabel("price.asr", "ASR 单价（{currency} / 秒）", { currency })}</span><input data-field="pricePerSecondCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerSecondCny)}" placeholder="${notEstimable}"><small>${updateLabel("price.asr.hint", "本地免费服务请显式填写 0；留空不是免费。")}</small></label>`;
   }
 
   function translationPricingFields(provider) {
+    const currency = provider.currency || "CNY";
     return `
-      <label><span>${updateLabel("price.input", "普通输入（CNY / 百万 token）")}</span><input data-field="pricePerMillionInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionInputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>
-      <label><span>${updateLabel("price.cachedInput", "缓存输入（CNY / 百万 token）")}</span><input data-field="pricePerMillionCachedInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCachedInputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>
-      <label><span>${updateLabel("price.cacheWrite", "缓存写入（CNY / 百万 token）")}</span><input data-field="pricePerMillionCacheWriteTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCacheWriteTokensCny)}" placeholder="${updateLabel("ph.cacheWriteOptional", "可选；无缓存写入可留空")}"></label>
-      <label><span>${updateLabel("price.output", "输出（CNY / 百万 token）")}</span><input data-field="pricePerMillionOutputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionOutputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>`;
+      <label><span>${updateLabel("price.input", "普通输入（{currency} / 百万 token）", { currency })}</span><input data-field="pricePerMillionInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionInputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>
+      <label><span>${updateLabel("price.cachedInput", "缓存输入（{currency} / 百万 token）", { currency })}</span><input data-field="pricePerMillionCachedInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCachedInputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>
+      <label><span>${updateLabel("price.cacheWrite", "缓存写入（{currency} / 百万 token）", { currency })}</span><input data-field="pricePerMillionCacheWriteTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCacheWriteTokensCny)}" placeholder="${updateLabel("ph.cacheWriteOptional", "可选；无缓存写入可留空")}"></label>
+      <label><span>${updateLabel("price.output", "输出（{currency} / 百万 token）", { currency })}</span><input data-field="pricePerMillionOutputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionOutputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>`;
   }
 
   function checked(value) {

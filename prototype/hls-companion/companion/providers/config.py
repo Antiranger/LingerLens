@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 from . import REGISTRY
 from ..languages import canonicalize_target_tag
-from .base import SourceLanguagePolicy
+from .base import SourceLanguagePolicy, SUPPORTED_CURRENCIES, provider_currency
 
 BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
     {
@@ -393,6 +393,14 @@ def validate_config(config: dict[str, Any]) -> None:
                 value = provider[field]
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                     raise ValueError(f"{section_name} provider {field} must be a non-negative number")
+            # 币种可省略：省略时按厂商推导（中国厂商人民币，其余美元）。
+            currency = provider.get("currency")
+            if currency is not None and (
+                not isinstance(currency, str) or currency.upper() not in SUPPORTED_CURRENCIES
+            ):
+                raise ValueError(
+                    f"{section_name} provider currency must be one of {', '.join(SUPPORTED_CURRENCIES)}"
+                )
         if section.get("active") not in ids:
             raise ValueError(f"{section_name}.active must name a configured provider")
         if section_name == "translation":
@@ -429,6 +437,9 @@ def masked_config(config: dict[str, Any]) -> dict[str, Any]:
         if "apiKey" in provider or key:
             provider["apiKey"] = "***"
         provider["apiKeyConfigured"] = configured
+        # 数字的币种永远随配置一起回给前端：字段名里的 Cny 是历史命名，界面
+        # 必须按这个值标注单位，否则用户会照着错单位填价格。
+        provider["currency"] = provider_currency(provider.get("kind"), provider.get("currency"))
     return masked
 
 
@@ -519,6 +530,8 @@ def model_settings_view(config: dict[str, Any]) -> dict[str, Any]:
             runtime = _provider_by_id(config[section_name], provider["id"])
             provider["apiKey"] = runtime.get("_apiKey", "")
             provider["apiKeyConfigured"] = bool(provider["apiKey"])
+            # 价格字段名里的 Cny 是历史命名；界面必须按这个值标注单位。
+            provider["currency"] = provider_currency(provider.get("kind"), provider.get("currency"))
     return view
 
 

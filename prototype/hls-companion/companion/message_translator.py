@@ -284,6 +284,7 @@ class MessageTranslationPipeline:
         if self._unknown_usage_calls:
             cost = None
             reason = "translation usage unavailable for one or more calls"
+        costs_by_currency: dict[str, float] = {}
         for provider_id, usage in self._usage_by_provider.items():
             prices = self.pricing_by_provider.get(provider_id, {})
             required = (prices.get("input"), prices.get("cachedInput"), prices.get("output"))
@@ -291,14 +292,21 @@ class MessageTranslationPipeline:
                 cost = None
                 reason = f"translation pricing incomplete for provider {provider_id}"
                 break
-            cost = float(cost or 0.0) + (
+            provider_cost = (
                 usage["nonCachedInputTokens"] * float(required[0])
                 + usage["cachedInputTokens"] * float(required[1])
                 + usage["outputTokens"] * float(required[2])
             ) / 1_000_000
+            code = str(prices.get("currency") or "USD").upper()
+            costs_by_currency[code] = costs_by_currency.get(code, 0.0) + provider_cost
+            cost = float(cost or 0.0) + provider_cost
         if not self._usage_by_provider and cost == 0.0:
             cost = None
             reason = "translation usage unavailable"
+        # 混合币种时同样给不出单一合计，交由前端逐币种列出。
+        if len(costs_by_currency) > 1:
+            cost = None
+            reason = "translation providers bill in more than one currency"
         return {
             "running": self._running,
             "enabled": self._enabled,
@@ -308,6 +316,13 @@ class MessageTranslationPipeline:
             "lastFailureReason": self._last_failure,
             "translationUsage": aggregate,
             "translationEstimatedCostCny": round(cost, 9) if cost is not None else None,
+            "translationCostCurrency": (
+                next(iter(costs_by_currency)) if len(costs_by_currency) == 1 else None
+            ),
+            "costsByCurrency": [
+                {"currency": code, "amount": round(amount, 9)}
+                for code, amount in sorted(costs_by_currency.items())
+            ],
             "translationEstimateReason": reason,
         }
 

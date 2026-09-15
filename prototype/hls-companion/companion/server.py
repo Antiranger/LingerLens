@@ -31,7 +31,7 @@ try:
     from .ytdlp_ingest import YtDlpLiveIngest  # type: ignore[import-not-found]
     from .languages import LanguageNotSupportedError, canonicalize_target_tag, catalog_entries, language_catalog  # type: ignore[import-not-found]
     from .providers import create_asr, create_translation  # type: ignore[import-not-found]
-    from .providers.base import SourceLanguagePolicy, StreamMeta, validate_source_policy, validate_translation_pair  # type: ignore[import-not-found]
+    from .providers.base import SourceLanguagePolicy, StreamMeta, provider_currency, validate_source_policy, validate_translation_pair  # type: ignore[import-not-found]
     from .providers.config import load_config, masked_config, model_settings_view, update_config, update_model_settings  # type: ignore[import-not-found]
     from .providers.fallback import FallbackChain  # type: ignore[import-not-found]
     from .subtitle_pipeline import SubtitlePipeline  # type: ignore[import-not-found]
@@ -68,7 +68,7 @@ except ImportError:  # Direct script execution.
     from ytdlp_ingest import YtDlpLiveIngest  # type: ignore[import-not-found]
     from companion.languages import LanguageNotSupportedError, canonicalize_target_tag, catalog_entries, language_catalog  # type: ignore[import-not-found]
     from companion.providers import create_asr, create_translation  # type: ignore[import-not-found]
-    from companion.providers.base import SourceLanguagePolicy, StreamMeta, validate_source_policy, validate_translation_pair  # type: ignore[import-not-found]
+    from companion.providers.base import SourceLanguagePolicy, StreamMeta, provider_currency, validate_source_policy, validate_translation_pair  # type: ignore[import-not-found]
     from companion.providers.config import load_config, masked_config, model_settings_view, update_config, update_model_settings  # type: ignore[import-not-found]
     from companion.providers.fallback import FallbackChain  # type: ignore[import-not-found]
     from companion.subtitle_pipeline import SubtitlePipeline  # type: ignore[import-not-found]
@@ -928,6 +928,9 @@ class CompanionApplication:
                 "cachedInput": item.get("pricePerMillionCachedInputTokensCny"),
                 "cacheWrite": item.get("pricePerMillionCacheWriteTokensCny"),
                 "output": item.get("pricePerMillionOutputTokensCny"),
+                # The stored field names say Cny for historical reasons; this is
+                # what those numbers are actually denominated in.
+                "currency": provider_currency(item.get("kind"), item.get("currency")),
             }
             for item in translation_configs
         }
@@ -982,6 +985,7 @@ class CompanionApplication:
             translation_provider=primary_translation,
             fallback_translation_provider=translation_providers[1] if len(translation_providers) > 1 else None,
             translation_pricing_by_provider=translation_pricing,
+            asr_currency=provider_currency(asr_config.get("kind"), asr_config.get("currency")),
             cue_store=self.subtitle_store,
             meta=StreamMeta(
                 info.get("title"),
@@ -1167,6 +1171,7 @@ class CompanionApplication:
                 "cachedInput": item.get("pricePerMillionCachedInputTokensCny"),
                 "cacheWrite": item.get("pricePerMillionCacheWriteTokensCny"),
                 "output": item.get("pricePerMillionOutputTokensCny"),
+                "currency": provider_currency(item.get("kind"), item.get("currency")),
             }
             for item in translation_configs
         }

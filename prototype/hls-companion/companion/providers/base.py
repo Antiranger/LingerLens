@@ -6,6 +6,28 @@ from typing import AsyncIterator, Literal
 
 from ..languages import LanguageNotSupportedError, canonicalize_tag, primary_subtag
 
+# 币种跟着厂商走，不跟界面语言走：下面这些按人民币报价，其余按美元。
+# 配置里存下来的 pricePerSecondCny / pricePerMillion*Cny 是历史命名，那些
+# 数字真正的单位由 provider_currency() 决定，所以读代码时别看字段名就下结论。
+CNY_PROVIDER_KINDS = frozenset({
+    "dashscope-qwen-realtime",
+    "dashscope-task-asr",
+    "volcengine-sauc",
+    "tencent-asr",
+})
+SUPPORTED_CURRENCIES = ("CNY", "USD")
+
+
+def provider_currency(kind: object, override: object = None) -> str:
+    """Currency that a provider's configured prices are denominated in."""
+    if isinstance(override, str) and override.upper() in SUPPORTED_CURRENCIES:
+        return override.upper()
+    return "CNY" if kind in CNY_PROVIDER_KINDS else "USD"
+
+
+def format_currency_symbol(currency: object) -> str:
+    return "¥" if provider_currency(None, currency) == "CNY" else "$"
+
 
 class ProviderError(RuntimeError):
     """Normalized translation Provider failure (spec 5.4).
@@ -415,6 +437,9 @@ class ASRProvider(abc.ABC):
     label: str
     model: str
     price_per_second_cny: float | None
+    # Set from provider_currency() in each implementation; the pipeline reads it
+    # to label the cost, so a wrong value is a wrong money figure.
+    currency: str = "USD"
     requires_api_key: bool = False
     """Cloud Providers set True so a missing key is reported before playback
     starts; local/self-hosted endpoints may accept an empty key."""
