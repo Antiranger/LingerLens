@@ -26,6 +26,7 @@ if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
 try:
+    from . import logbook  # type: ignore[import-not-found]
     from .control_ipc import ControlServer  # type: ignore[import-not-found]
     from .ytdlp_ingest import YtDlpLiveIngest  # type: ignore[import-not-found]
     from .languages import LanguageNotSupportedError, canonicalize_target_tag, catalog_entries, language_catalog  # type: ignore[import-not-found]
@@ -62,6 +63,7 @@ try:
     from .media_anchor import MediaAnchor  # type: ignore[import-not-found]
     from .recovery_policy import RecoveryPolicy  # type: ignore[import-not-found]
 except ImportError:  # Direct script execution.
+    from companion import logbook  # type: ignore[import-not-found]
     from control_ipc import ControlServer  # type: ignore[import-not-found]
     from ytdlp_ingest import YtDlpLiveIngest  # type: ignore[import-not-found]
     from companion.languages import LanguageNotSupportedError, canonicalize_target_tag, catalog_entries, language_catalog  # type: ignore[import-not-found]
@@ -196,6 +198,7 @@ class CompanionApplication:
         app.router.add_get("/playback-recovery.js", self.static_file)
         app.router.add_get("/i18n.js", self.static_file)
         app.router.add_get("/control-bar.js", self.static_file)
+        app.router.add_get("/diagnostics-log.js", self.static_file)
         app.router.add_get("/style.css", self.static_file)
         app.router.add_get("/fonts.css", self.static_file)
         app.router.add_get("/fonts/{slug}/{name}", self.font_file)
@@ -218,6 +221,7 @@ class CompanionApplication:
         app.router.add_post("/api/probe", self.handle_probe)
         app.router.add_post("/api/start", self.handle_start)
         app.router.add_post("/api/stop", self.handle_stop)
+        app.router.add_get("/api/logs", self.handle_logs)
         app.on_startup.append(self.startup)
         app.on_cleanup.append(self.cleanup)
         return app
@@ -322,6 +326,18 @@ class CompanionApplication:
             status["state"] = "error"
             status["error"] = ingest_snapshot["sourceError"]
         return web.json_response(status, headers={"Cache-Control": "no-store"})
+
+    async def handle_logs(self, request: web.Request) -> web.Response:
+        """Poll the diagnostic ring.
+
+        ``afterSeq`` is parsed leniently on purpose: a UI that loses its cursor
+        (or sends garbage) gets the whole ring back instead of a 400, because
+        this route is how the user finds out what went wrong elsewhere.
+        """
+        return web.json_response(
+            logbook.snapshot(request.query.get("afterSeq")),
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def handle_subtitles(self, request: web.Request) -> web.Response:
         try:
@@ -681,6 +697,7 @@ class CompanionApplication:
                 except Exception as error:
                     # A subtitle failure must never fail playback; report it.
                     self.subtitle_last_error = f"{type(error).__name__}: {error}"
+                    logbook.record("error", "asr", f"subtitles unavailable: {self.subtitle_last_error}")
                     pending_subtitle_pipeline = None
             # Hand the extraction result to yt-dlp so the download leg does not
             # repeat it. Both the cookie file and this snapshot are secrets with
@@ -793,6 +810,7 @@ class CompanionApplication:
                     self.subtitle_pipeline = pending_subtitle_pipeline
                 except Exception as subtitle_error:
                     self.subtitle_last_error = f"{type(subtitle_error).__name__}: {subtitle_error}"
+                    logbook.record("error", "asr", f"subtitle pipeline did not start: {self.subtitle_last_error}")
                     self.private_hls_token = None
                     if self.asr_audio_ingest is not None:
                         # Never started or already dead: stop() still fires the
@@ -814,6 +832,7 @@ class CompanionApplication:
                     )
                 except Exception as msg_error:
                     self.message_last_error = f"{type(msg_error).__name__}: {msg_error}"
+                    logbook.record("error", "chat", f"live messages unavailable: {self.message_last_error}")
         except Exception:
             await self._stop_messages()
             await self._stop_subtitles()
@@ -1206,6 +1225,7 @@ class CompanionApplication:
             except Exception as error:
                 self.message_translator = None
                 self.message_last_error = f"Translator error: {type(error).__name__}: {error}"
+                logbook.record("error", "translation", self.message_last_error)
 
         def on_message(message: LiveMessage) -> None:
             if generation != self.message_generation:
@@ -1366,6 +1386,11 @@ class CompanionApplication:
             # player or its localhost model APIs. Cookie IPC can be restored by
             # closing the old Companion and restarting later.
             print(f"[LagLingo] Native control IPC unavailable: {error}", file=sys.stderr)
+            logbook.record(
+                "warn",
+                "desktop",
+                f"Native Messaging cookie bridge unavailable ({type(error).__name__}); restart the Companion to retry",
+            )
 
     def _usage_status(
         self,
@@ -1408,6 +1433,20 @@ class CompanionApplication:
             self.auth_snapshots.clear()
 
 
+def _request_target(request: web.Request) -> str:
+    """Name the failing route without echoing its path.
+
+    ``request.path`` can contain the private-HLS path token, which is the
+    credential that keeps FFmpeg's copy of the delayed stream private. The
+    route template (``/_private-hls/{token}/{name}``) identifies the failing
+    endpoint without carrying the token into a UI-visible log.
+    """
+    try:
+        return str(request.match_info.route.resource.canonical)
+    except (AttributeError, RuntimeError):
+        return "unmatched-route"
+
+
 @web.middleware
 async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
     try:
@@ -1415,9 +1454,19 @@ async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
     except web.HTTPException:
         raise
     except (ValueError, RuntimeError, asyncio.TimeoutError) as error:
+        # This branch used to answer 400 silently. A rejected request is
+        # exactly what the user needs to see when the UI shows nothing.
+        logbook.record("warn", "request", f"rejected {request.method} {_request_target(request)}: {error}")
         return web.json_response({"error": str(error)}, status=400)
     except Exception as error:  # Prototype boundary: return diagnostics, never secrets.
         print(f"[LagLingo] Unexpected request failure: {type(error).__name__}: {error}", file=sys.stderr)
+        # Type name only: an unexpected exception's text can embed the URL or
+        # credential that made it fail.
+        logbook.record(
+            "error",
+            "request",
+            f"unhandled {type(error).__name__} for {request.method} {_request_target(request)}",
+        )
         return web.json_response({"error": "Unexpected companion failure"}, status=500)
 
 

@@ -83,9 +83,25 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 
 ## 诊断：出问题时看哪里
 
-**后端日志开关 `LAGLINGO_BACKEND_LOG`**
+**诊断栏（用户可见的报错出口）**
 
-后端的 `print` 全部落在 stderr（`companion_entry.py:116` 把 stdout 改道到 stderr，stdout 只留给那一行 ready 握手），而 `backend.cjs` 默认把它排空丢弃——因为媒体和 provider 输出里可能带私有流地址。开关是按次运行的显式选项：
+顶栏正下方一条常驻细带（`.diagbar`，收起时 41px），默认收起；**只有 error 级记录会自动展开**，warn 和 info 只更新细带上的摘要与计数，不抢屏幕。展开后是：一句人话交代（黄色 callout）+ 可滚动的原始记录列表 + 「复制诊断信息」。复制出来的是一份纯文本报告（时间、界面语言、会话状态、目标延迟、页面、UA + 每条记录一行），用户可以直接贴进 issue。
+
+记录有三条来源，合成同一条时间线：
+
+1. **渲染进程事件** —— `player.js` 里所有用户可见的报错都经过 `showError()`，所以那**一个**钩子就覆盖了绝大部分故障（`diagnosticsBar?.push("error", "ui", …)`）。会话级错误另有一条（`updateStallOverlay`，source `"session"`）。
+2. **后端 `/api/logs`** —— `companion/logbook.py` 的环形缓冲，容量 500，`GET /api/logs?afterSeq=N` 返回 `{records, maxSeq, dropped, sessionId}`。渲染进程每秒轮询一次（隐藏时 5 秒），`seq` 去重，`sessionId` 变化即视为后端换进程并重置游标。
+3. **`ffmpegLogTail`** —— 不再单独处理：后端在会话出错时把 `core.py:1137` 那 6 行 FFmpeg 尾部输出**作为 source `"media"` 的 error 记录**发进同一本账。
+
+摘要选哪一条是刻意的：`logbook.lead()` 优先挑「能给出人话交代」的那条。后端会把 FFmpeg 的进度行也标成 error，按时间取最新会让 `frame= 12 fps=0 …` 顶掉真正的 `FFmpeg exited with code 1`。这条规则有测试守着。
+
+`logbook.py` 在写入端做清洗，而不是指望每个调用点自觉：CR/LF 拍平、**URL 全部替换成 `<REDACTED_URL>`**（签名过的流地址在有效期内等同于凭证）、控制字符剔除、单条上限 400 字符。级别会被夹到 info/warn/error 三值，未知级别降级成 `info` 而不是丢弃——一本会凭空发明 error 的日志会训练读者忽略它。
+
+UI 文案 25 个 key 覆盖 zh-CN / en / ja / de / ru。zh-CN 走两条路：静态节点由 `i18n.js` 的 BINDINGS 在初始化时从 DOM 捕获，动态的（级别标签、人话提示、复制报告的表头）在 `ZH_DYNAMIC` 里。**漏掉 `ZH_DYNAMIC` 会让中文用户看到英文**，因为 `t()` 在 zh-CN 分支上先查 `DICT.en` 再回退到 fallback。
+
+**后端 stderr 开关 `LAGLINGO_BACKEND_LOG`**
+
+上面那本账是给 UI 看的；stderr 开关是给**终端**看的，两者互补而不是重复。后端的 `print` 全部落在 stderr（`companion_entry.py:116` 把 stdout 改道到 stderr，stdout 只留给那一行 ready 握手），而 `backend.cjs` 默认把它排空丢弃——因为媒体和 provider 输出里可能带私有流地址。开关是按次运行的显式选项：
 
 | 取值 | 行为 |
 |---|---|
@@ -97,22 +113,9 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 
 注意 Electron 在 Windows 上是 GUI 子系统程序，`process.stderr` 不保证接在控制台上——实测 `npm run desktop:dev` 在后台作业里跑，终端一个字都收不到。**要长时间跑就用文件形式。**
 
-**但这个开关现在几乎打不出东西，先别指望它。** 实测证据（`.scratch/laglingo-audit/backend-stderr-probe.py`，手工拉起真后端 + 已知 token，走 13 条路由，其中 7 条是故意构造的畸形请求）：
+**这个开关单独用几乎打不出东西，它的价值在于接住 Python 异常。** 实测（`.scratch/laglingo-audit/backend-stderr-probe.py`，手工拉起真后端 + 已知 token，走 13 条路由，其中 7 条是故意构造的畸形请求）：加入诊断栏之前，同样的 13 条路由产出 **0 字符** stderr —— 因为 desktop 模式下后端只有一处写 stderr（500 分支），而 7 条错误请求全走了返回 400 JSON 但不打印的那条分支。现在这些失败进的是 `/api/logs`，不是 stderr。
 
-```
-POST /api/start  400  {"error": "Expecting value: line 1 column 1 (char 0)"}
-POST /api/probe  400  {"error": "Only HTTPS YouTube/Bilibili/Twitch live page URLs are accepted"}
-...
-=== backend stderr ===
-(empty)
-=== 0 characters ===
-```
-
-原因是后端在 desktop 模式下**只有一处**会写 stderr：`server.py:1420` 的「未预期请求失败」，也就是 500。而 7 条错误请求全部走了 `server.py:1417` 的 `ValueError/RuntimeError` 分支——那个分支返回 400 JSON 但**不打印**。另一处 `server.py:1368`（原生 IPC 不可用）在 desktop 里因为 `enable_native_control=False` 永远到不了。`companion/` 整个包没有任何 `logging` 配置，也没有日志文件。
-
-**已经存在但被丢掉的诊断数据**：`/api/status` 返回 `ffmpegLogTail`（`core.py:1137`，FFmpeg 最后 6 行输出，只在出错时非空）。后端**已经**在采集它，但 web-player 里没有任何一处读它——`ffmpegLogTail` 在整个 `web-player/` 里零命中。这恰好是长时运行最需要的那份数据。
-
-**要判断运行状况，现在只有两条路**：窗口里 `Ctrl+Shift+I` 开 DevTools（渲染进程的 console / network 是真的有内容），或者加 `--remote-debugging-port` 用 CDP 直接问渲染进程。
+**要判断渲染进程内部发生了什么**，仍然只有两条路：窗口里 `Ctrl+Shift+I` 开 DevTools，或者加 `--remote-debugging-port` 用 CDP 直接问渲染进程。
 
 ## 不变量
 

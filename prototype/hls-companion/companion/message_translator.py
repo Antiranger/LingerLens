@@ -9,6 +9,7 @@ from collections import OrderedDict, deque
 from typing import Any
 
 from .live_messages import LiveMessage, LiveMessageStore
+from .logbook import record as log_record
 from .providers.base import StreamMeta, TranslationProvider, TranslationRequest, ProviderRateLimitError, ProviderAuthError
 from .subtitle_pipeline import normalize_translation_usage
 
@@ -56,6 +57,9 @@ class MessageTranslationPipeline:
         self._failures = {}
         self._attempt_failures = {}
         self._last_failure = None
+        # One diagnostic record per failure episode: a failing batch drops up
+        # to 20 messages at once and the shared ring must stay readable.
+        self._failure_recorded: str | None = None
         self._calls = 0
         self._unknown_usage_calls = 0
         self._usage_by_provider: dict[str, dict[str, int]] = {}
@@ -235,6 +239,11 @@ class MessageTranslationPipeline:
                 elif translated is None:
                     self._failures[failure_reason] = self._failures.get(failure_reason, 0) + 1
                     self._last_failure = failure_reason
+                    if failure_reason != self._failure_recorded:
+                        # The messages are dropped from the overlay with no
+                        # other trace, so name the first failure of an episode.
+                        log_record("warn", "translation", f"live chat translation failed: {failure_reason}")
+                        self._failure_recorded = failure_reason
                     self.store.update_translation(message.id, state="failed")
                 else:
                     key = (message.text, meta.target_lang, revision)
@@ -243,6 +252,7 @@ class MessageTranslationPipeline:
                     while len(self._cache) > 500:
                         self._cache.popitem(last=False)
                     self.store.update_translation(message.id, translated[i], state="done")
+                    self._failure_recorded = None
 
     def _record_usage(self, provider_id: str, raw_usage: dict[str, Any] | None) -> None:
         self._calls += 1

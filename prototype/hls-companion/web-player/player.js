@@ -14,6 +14,7 @@
   let lastSessionState = "idle";
   let statusPoller = null;
   let subtitlePoller = null;
+  let diagnosticsPoller = null;
   let subtitleRenderTimer = null;
   let latestLevelDetails = null;
   let sourceWasStalled = false;
@@ -33,6 +34,88 @@
   let roleCatalog = null;
   let editingSection = "asr";
   const editingModel = {};
+
+  /* ── 运行诊断 ──────────────────────────────────────────────
+     渲染进程里每一个用户可见的报错都从 showError() 出去，所以那一个钩子就
+     覆盖了大部分故障；后端自己的记录走 /api/logs 轮询合并进来。两者共用一条
+     时间线：桌面后端就在本机，时钟一致。 */
+  const diagnosticsLog = window.LagLingoDiagnostics?.createDiagnosticsLog() || null;
+  let diagnosticsClient = null;
+  let diagnosticsBar = null;
+
+  function diagnosticsContext() {
+    const label = (key, fallback) => window.I18N?.t(key, null, fallback) || fallback;
+    return {
+      [label("diag.ctx.locale", "界面语言")]: window.I18N?.current || document.documentElement.lang || "zh-CN",
+      [label("diag.ctx.state", "会话状态")]: lastSessionState,
+      [label("diag.ctx.target", "目标延迟")]: `${el("targetDelay")?.value ?? "—"}s`,
+      [label("diag.ctx.page", "页面")]: location.href,
+      [label("diag.ctx.useragent", "用户代理")]: navigator.userAgent,
+    };
+  }
+
+  async function copyDiagnostics() {
+    if (!diagnosticsLog) return;
+    const text = window.LagLingoDiagnostics.formatDiagnostics({
+      log: diagnosticsLog,
+      title: window.I18N?.t("diag.report.title", null, "LagLingo 诊断信息") || "LagLingo 诊断信息",
+      timeLabel: window.I18N?.t("diag.report.time", null, "生成时间") || "生成时间",
+      countLabel: window.I18N?.t("diag.report.count", null, "记录") || "记录",
+      levelLabels: {
+        info: window.I18N?.t("diag.level.info", null, "信息") || "信息",
+        warn: window.I18N?.t("diag.level.warn", null, "警告") || "警告",
+        error: window.I18N?.t("diag.level.error", null, "错误") || "错误",
+      },
+      context: diagnosticsContext(),
+    });
+    const button = el("diagCopy");
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {
+      // 剪贴板 API 在非安全上下文里会拒绝；退回到一个临时 textarea。
+      const scratch = document.createElement("textarea");
+      scratch.value = text;
+      scratch.setAttribute("readonly", "");
+      scratch.style.position = "fixed";
+      scratch.style.opacity = "0";
+      document.body.append(scratch);
+      scratch.select();
+      try { copied = document.execCommand("copy"); } catch { copied = false; }
+      scratch.remove();
+    }
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = copied
+      ? window.I18N?.t("diag.copied", null, "已复制") || "已复制"
+      : window.I18N?.t("diag.copyFailed", null, "复制失败") || "复制失败";
+    setTimeout(() => { button.textContent = original; }, 1600);
+  }
+
+  diagnosticsClient = window.LagLingoDiagnostics?.createDiagnosticsClient({
+    onUpdate: (data) => {
+      if (!diagnosticsLog || !data.ok) return;
+      // sessionId 变了说明后端换了进程，seq 空间从头开始：必须清空去重表并
+      // 从 0 重新拉，否则新记录会被当成已见过的丢掉。
+      if (data.sessionId && diagnosticsLog.getSessionId() !== null && data.sessionId !== diagnosticsLog.getSessionId()) {
+        diagnosticsLog.clear();
+        diagnosticsClient.resetForRestart();
+        diagnosticsBar?.render();
+        return;
+      }
+      if (data.sessionId) diagnosticsLog.setSessionId(data.sessionId);
+      if (data.missed > 0) {
+        diagnosticsBar?.push("warn", "backend", `后端日志环形缓冲已覆盖 ${data.missed} 条较早记录`);
+      }
+      diagnosticsLog.merge(data.records);
+      diagnosticsBar?.render();
+    },
+  }) || null;
+  diagnosticsBar = window.LagLingoDiagnostics?.createDiagnosticsBar({
+    log: diagnosticsLog,
+    onCopy: copyDiagnostics,
+  }) || null;
   function providerHasCredential(provider) {
     return provider?.apiKeyConfigured === true
       || Boolean(provider?.apiKey && provider.apiKey !== "***");
@@ -651,7 +734,11 @@
       autoPausedForStall = false;
       setMediaLoading(false);
       banner.hidden = false;
-      banner.textContent = `直播会话出错：${String(data.error || "未知错误").slice(0, 80)}——请停止后重新启动`;
+      const detail = String(data.error || "未知错误").slice(0, 80);
+      banner.textContent = `直播会话出错：${detail}——请停止后重新启动`;
+      // 会话级错误不走 showError，而且后端随后就会把 FFmpeg 的尾部输出发到
+      // /api/logs；两条一起看才是完整现场，所以这里也记一条。
+      diagnosticsBar?.push("error", "session", detail);
       return;
     }
     const stall = Number(data.sourceStallSeconds);
@@ -1746,10 +1833,13 @@
   }
 
   function showError(error) {
+    const message = error.message || String(error);
+    // 所有用户可见的报错都在这里汇合，诊断栏因此只需要这一个钩子。
+    diagnosticsBar?.push("error", "ui", message);
     setMediaLoading(false);
     setState("错误", "error");
-    el("message").textContent = error.message || String(error);
-    el("setupFeedback").textContent = error.message || String(error);
+    el("message").textContent = message;
+    el("setupFeedback").textContent = message;
   }
 
   function setMediaLoading(visible, text) {
@@ -1923,6 +2013,13 @@
   window.__laglingoSubtitleCues = subtitleCues;
   window.__laglingoRenderSubtitle = renderSubtitle;
   window.__laglingoRenderTimelines = renderTimelines;
+  /* 与上面两个同类的测试钩子：诊断栏只在真出错时才动，没有它就只能靠制造
+     一次真实故障来验证展开路径。 */
+  window.__laglingoDiagnostics = {
+    log: diagnosticsLog,
+    bar: diagnosticsBar,
+    client: diagnosticsClient,
+  };
   window.__laglingoSetSubtitleTestWallTime = (value) => {
     window.__laglingoSubtitleTestWallTime = Number.isFinite(Number(value)) ? Number(value) : null;
   };
@@ -1942,8 +2039,16 @@
     hiddenIntervalMs: 2000,
     isHidden: () => document.hidden,
   });
+  /* 后端日志不是实时数据，1 秒够用；隐藏时进一步降频。 */
+  diagnosticsPoller = window.createSerialPoller?.({
+    run: () => diagnosticsClient?.poll(),
+    intervalMs: 1000,
+    hiddenIntervalMs: 5000,
+    isHidden: () => document.hidden,
+  });
   statusPoller?.start();
   subtitlePoller?.start();
+  diagnosticsPoller?.start();
   subtitleRenderTimer = setInterval(() => { if (!document.hidden) renderSubtitle(); }, 100);
   timelineRenderTimer = setInterval(() => { if (!document.hidden) { renderTimelines(); updatePlayerControls(); } }, 250);
   if (liveMessagesClient) liveMessagesClient.startPolling(500);
@@ -1951,14 +2056,18 @@
     if (!document.hidden) {
       statusPoller?.wake();
       subtitlePoller?.wake();
+      diagnosticsPoller?.wake();
       renderSubtitle();
       renderTimelines();
       updatePlayerControls();
     }
   });
+  /* 级别标签与复制文案都要跟着界面语言走。 */
+  el("localeSwitch")?.addEventListener("change", () => diagnosticsBar?.refreshLocale());
   window.addEventListener("beforeunload", () => {
     statusPoller?.stop();
     subtitlePoller?.stop();
+    diagnosticsPoller?.stop();
     clearInterval(subtitleRenderTimer);
     clearInterval(timelineRenderTimer);
     if (liveMessagesClient) liveMessagesClient.stopPolling();

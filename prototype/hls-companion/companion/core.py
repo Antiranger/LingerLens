@@ -35,6 +35,13 @@ except ImportError:
         from companion.capture_clock import CaptureClock  # type: ignore[import-not-found]
     except ImportError:
         from capture_clock import CaptureClock  # type: ignore[import-not-found]
+try:
+    from . import logbook  # type: ignore[import-not-found]
+except ImportError:
+    try:
+        from companion import logbook  # type: ignore[import-not-found]
+    except ImportError:
+        import logbook  # type: ignore[import-not-found,no-redef]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
 SUPPORTED_COOKIE_SUFFIXES = ("youtube.com", "google.com", "bilibili.com", "twitch.tv")
 VIDEO_CODEC_PREFIXES = ("avc1", "avc", "h264")
@@ -1027,16 +1034,22 @@ class LiveSession:
         self._stop_requested = False
         command = command_override or build_ffmpeg_command(inputs, self.private_dir)
         stdin_target: Any = subprocess.PIPE if ingests and len(ingests) == 1 else (source_process.stdout if source_process else None)
-        process = subprocess.Popen(
-            command,
-            # FFmpeg writes a relative hls_fmp4_init_filename against cwd,
-            # while all input URLs and segment/playlist paths remain absolute.
-            cwd=self.private_dir,
-            stdin=stdin_target,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=False,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                # FFmpeg writes a relative hls_fmp4_init_filename against cwd,
+                # while all input URLs and segment/playlist paths remain absolute.
+                cwd=self.private_dir,
+                stdin=stdin_target,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=False,
+            )
+        except OSError as error:
+            # A missing/unlaunchable FFmpeg is the one media failure with no
+            # other trace: nothing started, so no log thread and no exit code.
+            logbook.record("error", "media", f"FFmpeg could not be started: {type(error).__name__}: {error}")
+            raise
         if source_process and source_process.stdout:
             source_process.stdout.close()
         self.process = process
@@ -1044,6 +1057,11 @@ class LiveSession:
         self.page_url = page_url
         self.started_at = time.monotonic()
         self.error = None
+        logbook.record(
+            "info",
+            "media",
+            f"FFmpeg packaging started for quality {inputs.quality.qualityId} ({inputs.quality.label})",
+        )
         self.source_process = source_process or previous_source
         self.capture_clock = capture_clock or self.capture_clock or CaptureClock()
         self.publisher = DelayedPlaylistPublisher(
@@ -1061,6 +1079,22 @@ class LiveSession:
         self._log_thread = threading.Thread(target=self._read_log, name="ffmpeg-log", daemon=True)
         self._log_thread.start()
 
+    def _fail(self, message: str) -> None:
+        """Enter the error state once, and make it visible in the UI log.
+
+        ``status()`` recomposes this same message on every poll, so the record
+        is emitted at the state change (not per snapshot) -- otherwise a stalled
+        UI would be told the same failure forever. The FFmpeg tail that
+        ``/api/status`` exposes as ``ffmpegLogTail`` is copied into the log too,
+        because that payload is only read while a client is polling.
+        """
+        if self.error == message:
+            return
+        self.error = message
+        logbook.record("error", "media", message)
+        for line in list(self.log_tail)[-6:]:
+            logbook.record("error", "media", line)
+
     def _read_log(self) -> None:
         if not self.process or not self.process.stderr:
             return
@@ -1072,9 +1106,9 @@ class LiveSession:
         if code is not None and not self._stop_requested:
             detail = self.log_tail[-1] if self.log_tail else "no FFmpeg diagnostic"
             if code == 0:
-                self.error = f"FFmpeg stopped unexpectedly before the live session ended: {detail}"
+                self._fail(f"FFmpeg stopped unexpectedly before the live session ended: {detail}")
             else:
-                self.error = f"FFmpeg exited with code {code}: {detail}"
+                self._fail(f"FFmpeg exited with code {code}: {detail}")
 
     def request_stop(self) -> None:
         """Mark the packaging child as intentionally stopping before inputs close.
@@ -1121,7 +1155,7 @@ class LiveSession:
         running = bool(self.process and exit_code is None)
         if self.process and exit_code is not None and not self.error and not self._stop_requested:
             detail = self.log_tail[-1] if self.log_tail else "no FFmpeg diagnostic"
-            self.error = (
+            self._fail(
                 f"FFmpeg stopped unexpectedly before the live session ended: {detail}"
                 if exit_code == 0
                 else f"FFmpeg exited with code {exit_code}: {detail}"

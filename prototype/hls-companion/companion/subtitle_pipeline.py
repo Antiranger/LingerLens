@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 from .caption_chunker import CaptionChunk, CaptionChunker, ChunkerDecision
 from .context_manager import RollingContext
+from .logbook import record as log_record
 from .media_anchor import MediaAnchor
 from .languages import canonicalize_tag_or_none, canonicalize_target_tag
 from .providers.base import (
@@ -288,6 +289,11 @@ class SubtitlePipeline:
         self._generation = 0
         self._next_chunk_order = 1
         self._caption_exact_timing: dict[str, bool] = {}
+        # The diagnostic ring is shared with the media lifecycle, so a provider
+        # that stays down for minutes records one line per outage instead of
+        # one per cue or per reconnect attempt.
+        self._asr_failure_recorded = False
+        self._translation_failure_recorded = False
         self._begin_generation()
 
         self.media_epoch: float | None = None
@@ -635,11 +641,18 @@ class SubtitlePipeline:
                 self._begin_generation()
                 self._stream = stream
                 backoff = 0.5
+                self._asr_failure_recorded = False
                 await self._consume_asr_events(stream)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._record_error(exc)
+                if not self._asr_failure_recorded:
+                    # Subtitles simply stop appearing while this retries, so the
+                    # first failure of an outage is the only thing that explains
+                    # the silence to the user.
+                    log_record("warn", "asr", f"ASR stream failed, reconnecting: {self.stats.last_error}")
+                    self._asr_failure_recorded = True
             finally:
                 stream = self._stream
                 self._stream = None
@@ -1223,6 +1236,7 @@ class SubtitlePipeline:
                         ),
                     )
                 self._record_ready_lag(cue.id, success=True)
+                self._translation_failure_recorded = False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1253,6 +1267,15 @@ class SubtitlePipeline:
         self.stats.translation_provider_failures += 1
         self.stats.last_translation_error = self._error_text(exc)
         self._record_error(exc)
+        if not self._translation_failure_recorded:
+            # The cue is published as source-only, so nothing on screen says a
+            # translation was attempted and lost.
+            log_record(
+                "error",
+                "translation",
+                f"translation failed, showing source text only: {self.stats.last_translation_error}",
+            )
+            self._translation_failure_recorded = True
         with contextlib.suppress(KeyError, ValueError):
             self.store.update(cue.id, state="failed")
         self.stats.source_only_cues += 1

@@ -31,6 +31,11 @@ try:
 except ImportError:  # direct test/module loading
     from companion.source_timeline import MpegTsPtsProbe  # type: ignore[no-redef]
 
+try:
+    from .logbook import record as log_record
+except ImportError:  # direct test/module loading
+    from companion.logbook import record as log_record  # type: ignore[no-redef]
+
 ROOT = Path(__file__).resolve().parents[1]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
 
@@ -306,6 +311,20 @@ class YtDlpLiveIngest:
             self._log_threads.append(log_thread)
             log_thread.start()
             pump.start(process.stdout)
+        # One line per ingest object, not per leg: the legs are restarted
+        # together and the UI only needs to know acquisition began.
+        log_record("info", "media", f"yt-dlp {self.leg_role} ingest started ({len(self.pumps)} leg(s))")
+
+    def _fail(self, message: str) -> None:
+        """Set the ingest error state, recording only the transition.
+
+        A failing source keeps failing on every leg, and every retry would
+        otherwise push six near-identical lines into the 500-record ring.
+        """
+        if self.error == message:
+            return
+        self.error = message
+        log_record("error", "media", message)
 
     def _record_pts(self, index: int) -> Callable[[list[float]], None]:
         while len(self.source_pts) <= index:
@@ -430,7 +449,7 @@ class YtDlpLiveIngest:
                 self.last_output_at = time.monotonic()
         except (OSError, ValueError) as exc:
             if not self._stop_requested and process.poll() is None and not self.error:
-                self.error = f"yt-dlp log pipe failed: {type(exc).__name__}: {exc}"
+                self._fail(f"yt-dlp log pipe failed: {type(exc).__name__}: {exc}")
         code = process.poll()
         produced_media = index < len(self.pumps) and self.pumps[index].forwarded_chunks > 0
         # A leg that exited can no longer need its credentials. Note this is a
@@ -440,9 +459,9 @@ class YtDlpLiveIngest:
         if code is not None and not self._stop_requested and not self.error:
             detail = self.log_tail[-1] if self.log_tail else "no yt-dlp diagnostic"
             if code != 0:
-                self.error = f"yt-dlp live download exited with code {code}: {detail}"
+                self._fail(f"yt-dlp live download exited with code {code}: {detail}")
             elif not produced_media:
-                self.error = f"yt-dlp live download exited before producing media: {detail}"
+                self._fail(f"yt-dlp live download exited before producing media: {detail}")
 
     def _cleanup_auth(self) -> None:
         if self._auth_cleaned or not self.auth_cleanup:

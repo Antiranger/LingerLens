@@ -25,6 +25,14 @@ const FROZEN_SOURCES = [
   path.join(REPO_ROOT, "prototype", "hls-companion", "companion"),
   path.join(REPO_ROOT, "desktop", "companion_entry.py"),
 ];
+// Editor and OS leftovers. Windows' ReplaceFileW drops `<name>~RF<hex>.TMP`
+// next to the file it rewrites; git ignores them, but this script mirrors a
+// directory tree, so without this they would be copied into the packaged app.
+const JUNK = [/(^|[\\/])~\$/, /~RF[0-9a-f]+\.TMP$/i, /\.(tmp|swp|bak|orig)$/i, /(^|[\\/])\.DS_Store$/];
+
+function isJunk(relative) {
+  return JUNK.some((pattern) => pattern.test(relative));
+}
 
 function walk(directory, base = directory) {
   const out = [];
@@ -35,7 +43,8 @@ function walk(directory, base = directory) {
       if (entry.name === "__pycache__" || entry.name === "node_modules") continue;
       out.push(...walk(path.join(directory, entry.name), base));
     } else if (entry.isFile() && !entry.name.endsWith(".pyc")) {
-      out.push(path.relative(base, path.join(directory, entry.name)));
+      const relative = path.relative(base, path.join(directory, entry.name));
+      if (!isJunk(relative)) out.push(relative);
     }
   }
   return out;

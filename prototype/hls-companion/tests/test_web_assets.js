@@ -27,6 +27,7 @@ test("all prototype JavaScript parses", () => {
     "web-player/pane-resizer.js",
     "web-player/live-messages-client.js",
     "web-player/playback-recovery.js",
+    "web-player/diagnostics-log.js",
     "web-player/i18n.js",
     "web-player/control-bar.js",
     "web-player/language-selector.js",
@@ -295,6 +296,49 @@ test("hls.js is bundled locally and no CDN is referenced", () => {
   assert.match(html, /\/vendor\/hls\.min\.js/);
   assert.doesNotMatch(html, /<(script|link)[^>]+https?:\/\//i);
   assert.ok(fs.statSync(vendor).size > 100_000);
+});
+
+test("the diagnostics bar is wired end to end and every id it needs exists", () => {
+  const html = fs.readFileSync(path.join(root, "web-player/index.html"), "utf8");
+  const css = fs.readFileSync(path.join(root, "web-player/style.css"), "utf8");
+  const js = fs.readFileSync(path.join(root, "web-player/player.js"), "utf8");
+  const module = fs.readFileSync(path.join(root, "web-player/diagnostics-log.js"), "utf8");
+  const i18n = fs.readFileSync(path.join(root, "web-player/i18n.js"), "utf8");
+
+  assert.match(html, /id="diagnosticsBar"/);
+  assert.match(html, /id="diagToggle"/);
+  assert.match(html, /id="diagSummary"/);
+  assert.match(html, /id="diagList"/);
+  assert.match(html, /id="diagCopy"/);
+  assert.match(html, /id="diagClear"/);
+  assert.match(html, /diagnostics-log\.js/);
+  assert.match(css, /\.topstack\s*\{[^}]*position:\s*sticky/);
+  assert.match(css, /\.topstack \.topbar \{ position: static; \}/);
+  assert.match(css, /\.diagbar\s*\{/);
+
+  // The bar only reacts to errors, so player.js must not be able to swallow one
+  // silently: the single showError funnel is what makes that guarantee cheap.
+  assert.match(js, /function showError\(error\) \{[\s\S]{0,220}?diagnosticsBar\?\.push\("error", "ui"/);
+  assert.match(js, /diagnosticsBar\?\.push\("error", "session"/);
+  // push() is what expands the bar, so every call site must go through the bar.
+  assert.doesNotMatch(js, /diagnosticsLog\?\.record\(/, "player.js must push through the bar, never the raw log");
+  assert.match(js, /diagnosticsPoller = window\.createSerialPoller/);
+
+  // Every element the module looks up must actually exist in the document.
+  const wanted = [...module.matchAll(/getElementById\("([^"]+)"\)/g)].map((match) => match[1]);
+  assert.ok(wanted.length >= 8, `expected the module to name its elements, saw ${wanted.length}`);
+  for (const id of new Set(wanted)) {
+    assert.match(html, new RegExp(`id="${id}"`), `index.html is missing #${id}`);
+  }
+
+  // Static chrome is bound for translation; the dynamic strings are in all five
+  // locales. A key that resolves nowhere leaves Chinese text in an English UI.
+  for (const key of ["diag.title", "diag.ok", "diag.copy", "diag.clear", "diag.empty"]) {
+    assert.ok(i18n.includes(`"${key}"`), `i18n BINDINGS lost ${key}`);
+  }
+  for (const key of ["diag.hint.media", "diag.level.error", "diag.report.title", "diag.ctx.useragent"]) {
+    assert.ok(i18n.includes(`"${key}"`), `i18n is missing ${key}`);
+  }
 });
 
 test("realtime workbench UI elements and live message contracts are wired", () => {

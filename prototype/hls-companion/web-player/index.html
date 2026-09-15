@@ -12,6 +12,9 @@
 <body>
 
 <!-- ══════════════ 顶栏 ══════════════ -->
+<!-- topstack 承担 sticky，.topbar 因此改为 static；两者一起钉在顶部，
+     诊断栏才不需要一个写死的顶栏高度偏移量。 -->
+<div class="topstack">
 <header class="topbar">
   <div class="brand" aria-label="LagLingo">
     <span class="brand-mark">LL</span>
@@ -40,6 +43,29 @@
     <button id="openModelSettings" class="btn btn-primary btn-compact" type="button">连接与密钥</button>
   </nav>
 </header>
+
+<!-- ══════════════ 诊断栏 ══════════════ -->
+<!-- 默认收起成一条细带；只有 error 级记录会自动展开。内容来自渲染进程事件、
+     后端 /api/logs 环形缓冲，以及在会话出错时由后端发出的 ffmpegLogTail。 -->
+<section id="diagnosticsBar" class="diagbar" data-tone="idle" data-expanded="false" aria-label="运行诊断">
+  <button id="diagToggle" class="diagbar-head" type="button" aria-expanded="false" aria-controls="diagBody" title="显示或隐藏运行诊断">
+    <span class="diag-dot" aria-hidden="true"></span>
+    <b class="diag-title">诊断</b>
+    <span id="diagSummary" class="diag-summary" aria-live="polite">一切正常</span>
+    <span id="diagCount" class="diag-count mono" hidden>0</span>
+    <span class="diag-chevron" aria-hidden="true"></span>
+  </button>
+  <div id="diagBody" class="diagbar-body" hidden>
+    <p id="diagHint" class="diag-hint" hidden></p>
+    <div class="diag-actions">
+      <button id="diagCopy" class="btn btn-secondary btn-compact" type="button">复制诊断信息</button>
+      <button id="diagClear" class="btn btn-ghost btn-compact" type="button">清空</button>
+    </div>
+    <ol id="diagList" class="diag-list"></ol>
+    <p id="diagEmpty" class="diag-empty">还没有需要报告的运行信息。</p>
+  </div>
+</section>
+</div>
 
 <!-- ══════════════ 宣言带 ══════════════ -->
 <section class="hero" aria-label="产品介绍">
@@ -575,6 +601,7 @@
 <script src="/subtitle-window-controller.js?v=language-ui-2"></script>
 <script src="/media-clock.js?v=language-ui-2"></script>
 <script src="/poll-loop.js?v=language-ui-2"></script>
+<script src="/diagnostics-log.js?v=diagnostics-1"></script>
 <script src="/live-messages-client.js?v=language-ui-2"></script>
 <script src="/workbench-controller.js?v=language-ui-2"></script>
 <script src="/pane-resizer.js?v=pane-resize-1"></script>

@@ -274,6 +274,120 @@ button[aria-busy="true"]::before {
   box-shadow: var(--shadow-sm);
 }
 
+/* ════════════ 诊断栏（原型没有；新增的报错出口） ════════════ */
+/* sticky 由 .topstack 承担，.topbar 因此改回 static —— 否则诊断栏需要一个
+   写死的顶栏高度偏移量，而顶栏高度随品牌字与内边距变化。 */
+.topstack {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.topstack .topbar { position: static; }
+
+.diagbar {
+  border-bottom: var(--bw) solid var(--ink);
+  background: var(--paper);
+}
+.diagbar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  min-height: 38px;
+  padding: var(--s2) var(--s5);
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.diagbar-head:focus-visible { outline: var(--bw) solid var(--indigo); outline-offset: -3px; }
+.diag-dot {
+  width: 10px; height: 10px;
+  flex: 0 0 10px;
+  border: 2px solid var(--ink);
+  background: var(--ink-45);
+}
+.diagbar[data-tone="warn"] .diag-dot { background: var(--yellow); }
+.diagbar[data-tone="error"] .diag-dot { background: var(--red); animation: pulse-dot 1.2s ease-in-out infinite; }
+.diag-title { font: 700 13px/1 var(--font-ui); flex: 0 0 auto; }
+.diag-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink-70);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diagbar[data-tone="error"] .diag-summary { color: var(--camellia); font-weight: 700; }
+.diagbar[data-tone="warn"] .diag-summary { color: var(--ink); font-weight: 700; }
+.diag-count {
+  flex: 0 0 auto;
+  padding: 2px var(--s2);
+  border: 2px solid var(--ink);
+  background: var(--card);
+  font-size: 11px;
+  font-weight: 700;
+}
+.diagbar[data-tone="error"] .diag-count { background: var(--red); color: #fff; }
+.diagbar[data-tone="warn"] .diag-count { background: var(--yellow); }
+.diag-chevron {
+  flex: 0 0 auto;
+  width: 0; height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 7px solid var(--ink);
+  transition: transform var(--t-fast) var(--ease-pop);
+}
+.diagbar[data-expanded="true"] .diag-chevron { transform: rotate(180deg); }
+
+.diagbar-body {
+  display: grid;
+  gap: var(--s3);
+  padding: 0 var(--s5) var(--s4);
+}
+.diag-hint {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  border: var(--bw) solid var(--ink);
+  background: var(--yellow);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.diag-actions { display: flex; gap: var(--s2); }
+.diag-list {
+  margin: 0;
+  padding: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  border: var(--bw) solid var(--ink);
+  background: var(--card);
+  list-style: none;
+}
+.diag-row {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: baseline;
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid rgba(22,19,14,.16);
+  font-size: 12px;
+}
+.diag-row:last-child { border-bottom: none; }
+.diag-time { color: var(--ink-45); font-variant-numeric: tabular-nums; }
+.diag-level { font-weight: 700; }
+.diag-source { color: var(--ink-45); }
+.diag-text { min-width: 0; overflow-wrap: anywhere; }
+.diag-row[data-level="error"] .diag-level { color: var(--camellia); }
+.diag-row[data-level="error"] .diag-text { color: var(--camellia); }
+.diag-row[data-level="warn"] .diag-level { color: var(--indigo); }
+.diag-row[data-level="info"] .diag-level { color: var(--ink-45); }
+.diag-empty { margin: 0; font-size: 13px; color: var(--ink-70); }
+
 /* ════════════ 宣言带（原型 236-295） ════════════ */
 .hero {
   display: flex;
