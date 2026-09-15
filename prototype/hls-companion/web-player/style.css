@@ -923,6 +923,10 @@ video::-webkit-media-controls-fullscreen-button { display: none; }
 .chat-bullet.dm-lime { color: var(--lime); }
 .chat-bullet.dm-yellow { color: var(--yellow); }
 .chat-overlay.paused .chat-bullet { animation-play-state: paused; }
+/* 调滑块期间冻结弹幕。用独立类而不是复用 .paused：那个类每 250ms 会被
+   renderTimelines 按 video.paused 覆写，借它来做交互态会被立刻抹掉。
+   冻结之后，滑块的变化作用在一棵静止的树上，不再和几十个动画层抢合成器。 */
+.chat-overlay.adjusting .chat-bullet { animation-play-state: paused; }
 @keyframes chat-slide { from { transform: translateX(0); } to { transform: translateX(calc(-100cqw - 100%)); } }
 @media (prefers-reduced-motion: reduce) {
   .chat-bullet { animation-name: chat-still; left: 8px; }

@@ -414,16 +414,52 @@
   chatOverlayToggle.checked = localStorage.getItem("lingerlens.chatOverlay.enabled") !== "false";
   chatOverlayOpacity.value = localStorage.getItem("lingerlens.chatOverlay.opacity") || "0.8";
   chatOverlaySize.value = localStorage.getItem("lingerlens.chatOverlay.size") || "1";
+  /*
+   * 透明度滑块的写入路径。
+   *
+   * 原来每个 input 事件都做两件事：改 .chat-overlay 的 CSS 变量，外加一次**同
+   * 步的 localStorage 落盘**。拖一次滑块就是几十次落盘；而变量消费方是容器上
+   * 的 opacity，容器一旦 opacity<1 就成为一个不透明组，里面几十个正在做
+   * transform 动画的弹幕会被当作一个整体反复重新光栅化。
+   *
+   * 现在三件事：
+   *   1. 写入按帧合并——一帧最多写一次，而不是每个 input 一次；
+   *   2. localStorage 挪到松手/失焦，拖动过程中不落盘；
+   *   3. 指针按住期间给弹幕层加 .adjusting 冻结动画，让这次交互作用在静止的树
+   *      上；松手恢复。类的名字不能复用 .paused，那个每 250ms 会被覆写。
+   */
+  let chatOpacityFrame = 0;
   const applyChatOpacity = () => el("chatOverlay").style.setProperty("--chat-opacity", chatOverlayOpacity.value);
+  const flushChatOpacity = () => {
+    if (chatOpacityFrame) {
+      cancelAnimationFrame(chatOpacityFrame);
+      chatOpacityFrame = 0;
+    }
+    applyChatOpacity();
+  };
+  const scheduleChatOpacity = () => {
+    if (chatOpacityFrame) return;
+    chatOpacityFrame = requestAnimationFrame(() => {
+      chatOpacityFrame = 0;
+      applyChatOpacity();
+    });
+  };
+  const endChatOpacityAdjust = () => {
+    el("chatOverlay").classList.remove("adjusting");
+    flushChatOpacity();
+    localStorage.setItem("lingerlens.chatOverlay.opacity", chatOverlayOpacity.value);
+  };
   applyChatOpacity();
+  chatOverlayOpacity.addEventListener("input", scheduleChatOpacity);
+  chatOverlayOpacity.addEventListener("pointerdown", () => el("chatOverlay").classList.add("adjusting"));
+  chatOverlayOpacity.addEventListener("keydown", () => el("chatOverlay").classList.add("adjusting"));
+  for (const event of ["pointerup", "pointercancel", "change", "blur"]) {
+    chatOverlayOpacity.addEventListener(event, endChatOpacityAdjust);
+  }
   el("chatOverlay").style.setProperty("--chat-size", chatOverlaySize.value);
   chatOverlayToggle.addEventListener("change", () => {
     localStorage.setItem("lingerlens.chatOverlay.enabled", String(chatOverlayToggle.checked));
     chatOverlay.clear();
-  });
-  chatOverlayOpacity.addEventListener("input", () => {
-    applyChatOpacity();
-    localStorage.setItem("lingerlens.chatOverlay.opacity", chatOverlayOpacity.value);
   });
   chatOverlaySize.addEventListener("change", () => {
     localStorage.setItem("lingerlens.chatOverlay.size", chatOverlaySize.value);
