@@ -62,34 +62,34 @@
 
 ---
 
-## 3. 许可证合规 —— 真正的阻断项
+## 3. 许可证合规 —— 已于 2026-09-15 补齐
 
 这一节比上面都重要。**下面标「跟踪」的三项，一旦仓库公开就立刻触发**，跟发不发安装包无关。
 
-### 3.1 阻断项
+### 3.1 已修复
 
-| # | 组件 | 许可证 | 现状 |
+| # | 组件 | 原问题 | 处理 |
 |---|---|---|---|
-| **G1** | FFmpeg / ffprobe 9.0.1 | **GPLv3**（不是 LGPL） | 许可证全文已随附；但 **GPLv3 §6 要求的「对应源码」没有提供**——现在只有一个指向第三方**二进制** zip 的链接，那不是源码要约。仅安装包触发。 |
-| **G2** | `yt-dlp.exe` 内含 **mutagen** | **GPL-2.0-or-later** | **零声明**。整个 `yt-dlp.exe` 只标了 Unlicense，而 PyInstaller 模块表里能读到 `mutagen` 的约 40 个子模块。GPLv2 §1/§3 义务触发。**跟踪在 git 里** |
-| **G3** | 396 个 `.woff2` 字体 | OFL-1.1 | OFL 条件 2 要求**随附许可证全文**；现在只有一句"OFL-1.1"和链接，**链接不是副本**。**跟踪在 git 里** |
-| **G4** | `hls.min.js` | Apache-2.0 | §4(a) 要求随附许可证副本；缺失。且该文件里还打包了一个**未列出的 MIT 组件**（regenerator-runtime）。**跟踪在 git 里** |
+| **G1** | FFmpeg 9.0.1 | GPLv3，且 GPLv3 §6 要求的对应源码没有提供 | **换成 LGPL 构建**。产品只用 `-c copy`，从不编码，所以 LGPL 构建功能等价——已用真实媒体链路验证（H.264+AAC MPEG-TS → `-c copy` + `aac_adtstoasc` → fMP4 EVENT）。GPL 义务随之消失 |
+| **G2** | `yt-dlp.exe` 内含 **mutagen** GPL-2.0-or-later | 零声明 | 完整清单已写入声明（含 `requests` 2.34.2、`certifi` MPL-2.0、`cffi` **MIT-0**、`pycryptodomex` **Unlicense AND BSD-2**），许可证文本随 exe 一起发布，并写明**由本项目**给出的三年源码书面要约（上游自己的要约不能替我们履行） |
+| **G3** | 396 个字体缺 OFL 全文 | OFL 条件 2 要求文本随副本一起走 | `OFL.txt` 放在**字体目录里**，同时进 `licenses/` |
+| **G4** | `hls.js` 缺 Apache-2.0 全文 | §4(a) | `LICENSE.hls.js` 放在**同目录**。顺带发现上游 LICENSE 里还有两条**本仓库完全没有**的署名：`Copyright (c) 2017 Dailymotion`，以及 `mp4-generator.js`/`exp-golomb.ts` 派生自 videojs-contrib-hls（`Copyright (c) 2013-2015 Brightcove`）——Apache-2.0 §4 要求这两条 |
+| G5/G6 | OpenSSL 3.5.7、libffi | 从未被提及 | 已列入声明，文本进 `licenses/` |
+| G7 | UniDic 三许可未声明选择 | 接收方可按 LGPL/GPL 理解 | 明确**选择 BSD-3-Clause 分支** |
+| G10 | `fugashi` 版本写 1.4.0，实际 1.5.2 | 声明漂移 | 已改正，并加 CI 门禁防止再漂移 |
 
-### 3.2 其他缺口
+### 3.2 门禁
 
-- **OpenSSL 3.5.7**（Apache-2.0）与 **libffi**（MIT）随 PyInstaller 一起发布，从未被提及。
-- **UniDic 词典**（260 MB）是三许可 GPL/LGPL/BSD，**BSD 分支可以只用署名义务**，但文档没有声明选择哪一支——不声明的话接收方可以合理地按 LGPL/GPL 理解。
-- `fugashi` 文档写 1.4.0，实际冻结的是 1.5.2。
-- **`elevate.exe`**（electron-builder 的 NSIS 组件）无署名文件，上游仓库没有 LICENSE，许可证**无法确认**。
-- 许可证声明文件虽然随安装包发布了，但**产品里没有任何入口能看到它**（`Menu.setApplicationMenu(null)`，UI 里没有"关于"）。
-- **没有任何 CI 步骤校验「冻结进 `_internal` 的包都被声明覆盖了」**，所以 `requirements-build.txt` 可以随便漂移。
+`npm run guard:licences` 在**每次 CI** 中运行：任何被再分发的东西没在声明里点名、或某个必需的许可证文本缺失/内容不对，直接失败。
+`npm run guard:licences:frozen` 额外遍历冻结进桌面后端的每一个 Python 发行包，并检查许可证文本是否**真的贴在组件旁边**——`companion.spec` 曾经只把 `yt-dlp.exe` 打进去，源码树里加的许可证文件根本到不了构建产物，正是这道检查抓出来的。两个 workflow 都接上了。
 
-### 3.3 好消息
+### 3.3 仍未解决
 
-- UniDic 词典**是可以再分发的**（三许可里有 BSD），最初担心的"日文词典不能随包发布"不成立。
-- 三个字体包**都没有 Reserved Font Name 条款**，文件名重命名不构成改名。
-- 跟踪的二进制只有 `yt-dlp.exe`、`hls.min.js` 和字体，都是正当 vendoring，没有杂物。
-- 模型文件一个都没随包发布（`.onnx`/`.pt` 只存在于已忽略的 `.scratch/`）。
+- **`elevate.exe`**（electron-builder 的 NSIS 组件）：上游仓库没有 LICENSE，二进制里也没有许可文本。**无法确认**，已在声明里如实标注而不是猜。
+- **`typing-extensions` 4.16.0**：确实被打进 `yt-dlp.exe`，但 yt-dlp 自己的 `THIRD_PARTY_LICENSES.txt` 漏了它（那个版本不定义 `__version__`）。我们补上了 PSF-2.0 的说明。
+- **Unicode/CLDR 许可证版本**：`companion/data/languages.json` 由 langcodes 生成，具体适用哪个版本的 Unicode 许可证没有确定。
+- yt-dlp 自带的 `THIRD_PARTY_LICENSES.txt` 是**跨构建变体的超集**，列了本 Windows 构建里并不存在的 Readline/ncurses/Tornado 等。多声明是安全方向，保持原样，但在声明里写明了这个事实。
+
 
 ---
 
@@ -117,10 +117,10 @@
 
 ## 6. 开源前必须做的（按优先级）
 
-1. **提交身份止血。** 立刻把 `user.email` 换成 GitHub 的 noreply 地址，新提交不再累积真实邮箱。**现在只有 39 个提交、一个贡献者，是重写历史最便宜的时刻。**
-2. **补 G2/G3/G4 的许可证文本与声明** —— 这三项公开源码即触发，跟发不发安装包无关。
-3. **G1：** FFmpeg 要么给出对应源码/书面要约，要么换成 LGPL-only 构建（如 BtbN 的 lgpl 变体）并删掉 GPL 声明。
-4. **重写历史**，一次清掉：提交邮箱、4 个 `.err` blob、已删除文档里的家目录路径。
-5. 给 UniDic 加一句"选择 BSD 分支"；修正 fugashi 版本号。
-6. 给 CI 加一道门禁：冻结进 `_internal` 的发行包若未在 `THIRD_PARTY_NOTICES.md` 中声明，直接失败。
-7. 给产品加一个能看到许可证的入口（"关于"），别让声明文件只能靠翻安装目录找到。
+1. ~~**提交身份止血。**~~ **已完成** —— `user.email` 已换成 GitHub noreply 地址，新提交不再累积真实邮箱。
+2. ~~**补 G2/G3/G4 的许可证文本与声明。**~~ **已完成**，并加了 CI 门禁。
+3. ~~**G1：** FFmpeg 换成 LGPL 构建。~~ **已完成。**
+4. **重写历史** —— 一次清掉：40 个提交里的真实邮箱、4 个 `.err` blob（含真实公网 IP）、已删除文档里的家目录路径。**这是唯一还没做的一项**，而且**现在做最便宜**：仓库还只有 40 个提交、一个贡献者；越往后越贵。
+5. 给产品加一个能看到许可证的入口（"关于"），别让声明文件只能靠翻安装目录找到。
+6. `elevate.exe` 的许可证需要向 electron-builder 上游确认。
+7. Unicode/CLDR 的许可证版本需要确定。
