@@ -516,13 +516,16 @@
     // 币种缺失时宁可只给数字，也不默认成人民币——猜错币种比不写币种更糟。
     return symbol ? `${symbol}${amount}` : code ? `${amount} ${code}` : amount;
   };
-  const costText = (value, currency, reason) => hasCost(value)
+  /* 只显示结论，不显示后端给的原因。原因是一句英文诊断（例如
+     "subtitle usage unavailable while subtitles are not running"），
+     放在卡片正面是噪音；它改由 title 悬停提示承载。 */
+  const costText = (value, currency) => (hasCost(value)
     ? money(value, currency)
-    : `${updateLabel("cost.notEstimable", "不可估算")}${reason ? `（${reason}）` : ""}`;
+    : updateLabel("cost.notEstimable", "不可估算"));
   /* 主力与兜底可能是不同币种，这时没有「一个」合计，逐币种列出。 */
-  const costsText = (entries, reason) => (Array.isArray(entries) && entries.length
+  const costsText = (entries) => (Array.isArray(entries) && entries.length
     ? entries.map((entry) => money(entry.amount, entry.currency)).join(" + ")
-    : costText(null, null, reason));
+    : costText(null, null));
 
   async function request(path, body) {
     const timeout = path === "/api/probe" ? 20000 : 30000;
@@ -862,9 +865,18 @@
         : "<span class=\"usage-empty\">未运行</span>";
       const asrUsage = subtitles.asrUsage || { seconds: subtitles.asrSeconds || 0 };
       const translationUsage = subtitles.translationUsage || {};
-      el("asrUsageCost").innerHTML = `<span><small>${updateLabel("cost.audio", "音频")}</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${updateLabel("unit.seconds", "秒")}</span><span><small>${updateLabel("cost.costLabel", "费用")}</small>${costText(subtitles.asrEstimatedCostCny, subtitles.asrCostCurrency, subtitles.asrEstimateReason)}</span>`;
-      el("translationUsageCost").innerHTML = `<span><small>${updateLabel("cost.input", "输入")}</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>${updateLabel("cost.cached", "缓存")}</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>${updateLabel("cost.output", "输出")}</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>${updateLabel("cost.costLabel", "费用")}</small>${costsText(translationUsage.costsByCurrency, subtitles.translationEstimateReason)}</span>`;
-      el("totalUsageCost").textContent = costsText(subtitles.costsByCurrency, subtitles.totalEstimateReason);
+      el("asrUsageCost").innerHTML = `<span><small>${updateLabel("cost.audio", "音频")}</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${updateLabel("unit.seconds", "秒")}</span><span><small>${updateLabel("cost.costLabel", "费用")}</small>${costText(subtitles.asrEstimatedCostCny, subtitles.asrCostCurrency)}</span>`;
+      el("translationUsageCost").innerHTML = `<span><small>${updateLabel("cost.input", "输入")}</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>${updateLabel("cost.cached", "缓存")}</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>${updateLabel("cost.output", "输出")}</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>${updateLabel("cost.costLabel", "费用")}</small>${costsText(translationUsage.costsByCurrency)}</span>`;
+      el("totalUsageCost").textContent = costsText(subtitles.costsByCurrency);
+      // 后端给的原因仍要能看到，只是不占卡片正面。
+      for (const [id, reason] of [
+        ["asrUsageCost", subtitles.asrEstimateReason],
+        ["translationUsageCost", subtitles.translationEstimateReason],
+        ["totalUsageCost", subtitles.totalEstimateReason],
+      ]) {
+        const node = el(id);
+        if (node) node.title = reason || "";
+      }
       const latency = subtitles.avgTranslationLatencyMs;
       el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} ${updateLabel("unit.seconds", "秒")}` : "—";
       updateSubtitleBudget(subtitles, measuredDelay, Number(data.targetDelaySeconds));
