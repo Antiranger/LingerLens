@@ -346,8 +346,10 @@
     const fallbackSelect = el("roleFallback");
     if (fallbackSelect) {
       const fallbackActive = fallback.find((id) => id !== translation.active) || "";
-      const fallbackProviders = roleProviders(translation, [fallbackActive, translation.active])
-        .filter((provider) => provider.id !== translation.active);
+      // 和上面三个选择器用同一条规则、同一个列表。以前这里额外把当前生效的
+      // Provider 滤掉，于是只配了一个翻译 Provider 时兜底永远是空的——那不像
+      // 「没得选」，更像坏掉了。
+      const fallbackProviders = roleProviders(translation, [fallbackActive, translation.active]);
       fallbackSelect.innerHTML = `<option value="">不选</option>${fallbackProviders.map((provider) => providerOption(provider, provider.id === fallbackActive)).join("")}`;
     }
   }
@@ -1084,6 +1086,10 @@
     if (!providerCatalog) return;
     document.querySelector(".asr-section").hidden = editingSection !== "asr";
     document.querySelector(".translation-section").hidden = editingSection !== "translation";
+    // 两个页签的高亮以前是写死在 HTML 里的，切过去以后没人搬，所以高亮永远
+    // 停在「语音识别配置」上。状态在 editingSection，这里跟着它走。
+    el("editAsrConnections")?.classList.toggle("active", editingSection === "asr");
+    el("editTranslationConnections")?.classList.toggle("active", editingSection === "translation");
     renderProviderSection("asr", el("asrProfiles"));
     renderProviderSection("translation", el("translationProfiles"));
   }
