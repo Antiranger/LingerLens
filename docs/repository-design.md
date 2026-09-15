@@ -73,8 +73,18 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 **重新打包**
 
 - 只改了 `web-player/` 用 `npm run desktop:sync-ui`（秒级）。改了 `desktop/main.cjs`、`desktop/backend.cjs` 或任何 Python 才需要 `npm run desktop:refresh`（`desktop:backend && desktop:pack`）。
+- **`desktop:sync-ui` 必须同时写两份**：`build-desktop\backend\laglingo-backend\_internal\web-player`（重打包读的那份）和 `release\win-unpacked\...\web-player`（正在跑的那份）。`desktop:pack` / `desktop:dist` 是从**冻结产物**里取 web-player 的，不是从源码树取——只写后者的话，下一次重打包会静默把它覆盖回旧 UI。这个坑真的发生过：改完 UI → `sync-ui` → `dist`，安装包里出来的是改动之前的 `index.html` 和 `style.css`，而且一句警告都没有。现在脚本自己写两份，并跳过尚未构建的那一份。
 - **`desktop:refresh` 必须先把 dev 实例关掉。** 它会重新解压 Electron 到 `build-desktop\electron\`，而正在运行的 dev 进程锁着那些 DLL，必然失败在 `PermissionError: [Errno 13] ... d3dcompiler_47.dll`。这个报错不提 Electron、也不提 dev 实例，很容易被误读成磁盘或杀软问题。
-- `release\LagLingo-0.1.0-windows-x64-setup.exe` **不会**被 `desktop:refresh` 更新，它是 `npm run desktop:dist` 的产物。2026-09-15 时它还是 09-08 的旧版本，比 `win-unpacked` 落后一周。
+- **`desktop:dist` 之前也要关掉打包版**，理由同上（它要重写 `release\win-unpacked`）。
+- `release\LagLingo-0.1.0-windows-x64-setup.exe` **不会**被 `desktop:refresh` 更新，它是 `npm run desktop:dist` 的产物。
+
+**发行版怎么更新到用户手里**
+
+目前**没有自动更新**：`desktop/main.cjs` 里没有 `autoUpdater`，`builder.cjs` 也没有 publish 配置（`release\latest.yml` 和 `.blockmap` 是 electron-builder 默认产出的，没人消费）。所以每次修复都要求用户**手动重装**。
+
+这不是理论问题。2026-09-15 就踩了：桌面和开始菜单的快捷方式指向 `%LOCALAPPDATA%\Programs\laglingo\LagLingo.exe`，那是 09-08 的安装版，它的 `app.asar` 里连 `diagnosticsBar` 都没有 —— 于是「发行版有没有诊断栏」这个问题的答案是「有，但你手上那份是旧的」，而用户完全无从分辨。
+
+在接上自动更新之前，**判断一份构建是不是当前版，只能看文件时间或者去问 `/diagnostics-log.js` 在不在**。真要根治得做两件事：给应用加一个能显示版本+构建时间的入口（打包时戳进去），以及接 electron-updater。在那之前，每次发版都得提醒用户重装。
 
 **贡献者路径**
 

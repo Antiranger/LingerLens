@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 "use strict";
 
-// Copy the web UI into an already-unpacked desktop build.
+// Copy the web UI into an already-built desktop tree.
 //
 // The packaged backend is a PyInstaller COLLECT tree, so
 // resources/backend/_internal/web-player is a plain directory of real files and
 // the Electron window loads the UI over laglingo://app/ from that backend. Pure
 // HTML/CSS/JS edits therefore need no freeze and no electron-builder run.
+//
+// It has to write BOTH copies. `npm run desktop:pack` (and `desktop:dist`) take
+// web-player from the freeze output, not from the source tree, and overwrite
+// the unpacked build with it. Syncing only the unpacked build therefore looked
+// like it worked and was silently reverted by the next repack -- which is how a
+// build was shipped with an older UI than the tree it came from.
 //
 // What this CANNOT do: add or remove backend HTTP routes. companion/server.py
 // is compiled into the frozen archive, so a new asset URL (say, a new script tag
@@ -18,7 +24,13 @@ const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SOURCE = path.join(REPO_ROOT, "prototype", "hls-companion", "web-player");
-const TARGET = path.join(REPO_ROOT, "release", "win-unpacked", "resources", "backend", "_internal", "web-player");
+const RELATIVE_UI = path.join("backend", "_internal", "web-player");
+// The freeze output is what a repack copies from; the unpacked build is what is
+// running right now. Both have to agree with the source.
+const TARGETS = [
+  path.join(REPO_ROOT, "build-desktop", "backend", "laglingo-backend", "_internal", "web-player"),
+  path.join(REPO_ROOT, "release", "win-unpacked", "resources", RELATIVE_UI),
+];
 const BACKEND_EXE = path.join(REPO_ROOT, "release", "win-unpacked", "resources", "backend", "laglingo-backend.exe");
 // Sources that get compiled into the frozen backend rather than copied.
 const FROZEN_SOURCES = [
@@ -62,44 +74,54 @@ function newestMtime(targets) {
   return newest;
 }
 
+function syncInto(target, sources, dryRun) {
+  const existing = new Set(walk(target));
+  const wanted = new Set(sources);
+  const counts = { copied: 0, unchanged: 0, removed: 0 };
+  for (const relative of sources) {
+    const from = path.join(SOURCE, relative);
+    const to = path.join(target, relative);
+    const same = fs.existsSync(to) && fs.statSync(to).size === fs.statSync(from).size
+      && fs.readFileSync(to).equals(fs.readFileSync(from));
+    if (same) { counts.unchanged += 1; continue; }
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to);
+    }
+    counts.copied += 1;
+  }
+  // Mirror, so an asset deleted in the source cannot linger and keep being served.
+  for (const relative of existing) {
+    if (wanted.has(relative)) continue;
+    if (!dryRun) fs.rmSync(path.join(target, relative), { force: true });
+    counts.removed += 1;
+  }
+  return counts;
+}
+
 function main() {
   const dryRun = process.argv.includes("--dry-run");
   if (!fs.existsSync(SOURCE)) throw new Error(`Missing UI source: ${SOURCE}`);
   // Refuse to scatter files into anything that is not an unpacked backend.
-  if (!fs.existsSync(path.join(TARGET, "index.html"))) {
-    console.error(`Not an unpacked build (no index.html in ${TARGET}).`);
+  const targets = TARGETS.filter((target) => fs.existsSync(path.join(target, "index.html")));
+  if (!targets.length) {
+    console.error(`No unpacked build found. Looked in:\n  ${TARGETS.join("\n  ")}`);
     console.error("Run: npm run desktop:backend && npm run desktop:pack");
     return 2;
   }
 
   const sources = walk(SOURCE);
-  const existing = new Set(walk(TARGET));
-  const wanted = new Set(sources);
-  let copied = 0;
-  let unchanged = 0;
-  let removed = 0;
-
-  for (const relative of sources) {
-    const from = path.join(SOURCE, relative);
-    const to = path.join(TARGET, relative);
-    const same = fs.existsSync(to) && fs.statSync(to).size === fs.statSync(from).size
-      && fs.readFileSync(to).equals(fs.readFileSync(from));
-    if (same) { unchanged += 1; continue; }
-    if (!dryRun) {
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.copyFileSync(from, to);
-    }
-    copied += 1;
+  console.log(`${dryRun ? "[dry-run] would sync" : "synced"} web-player (${sources.length} files)`);
+  for (const target of targets) {
+    const counts = syncInto(target, sources, dryRun);
+    const verb = dryRun ? "would copy" : "copied";
+    const drop = dryRun ? "would remove" : "removed";
+    console.log(`  ${path.relative(REPO_ROOT, target)}: ${verb} ${counts.copied} | unchanged ${counts.unchanged} | ${drop} ${counts.removed}`);
   }
-  // Mirror, so an asset deleted in the source cannot linger and keep being served.
-  for (const relative of existing) {
-    if (wanted.has(relative)) continue;
-    if (!dryRun) fs.rmSync(path.join(TARGET, relative), { force: true });
-    removed += 1;
+  if (targets.length < TARGETS.length) {
+    const missing = TARGETS.filter((target) => !targets.includes(target));
+    console.log(`  (skipped, not built: ${missing.map((t) => path.relative(REPO_ROOT, t)).join(", ")})`);
   }
-
-  console.log(`${dryRun ? "[dry-run] would sync" : "synced"} web-player -> ${path.relative(REPO_ROOT, TARGET)}`);
-  console.log(`  ${dryRun ? "would copy" : "copied"} ${copied} | unchanged ${unchanged} | ${dryRun ? "would remove" : "removed"} ${removed} | total ${sources.length}`);
 
   const frozenNewer = fs.existsSync(BACKEND_EXE) && newestMtime(FROZEN_SOURCES) > fs.statSync(BACKEND_EXE).mtimeMs;
   if (frozenNewer) {
