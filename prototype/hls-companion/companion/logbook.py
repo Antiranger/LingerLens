@@ -35,8 +35,12 @@ LEVELS = ("info", "warn", "error")
 SOURCES = ("request", "media", "asr", "chat", "translation", "desktop")
 REDACTED_URL = "<REDACTED_URL>"
 
-# Same habit as ytdlp_ingest._redact, which strips stream URLs before they reach
-# /api/status: a signed live URL is a credential for as long as it is valid.
+# A signed live URL is a credential for as long as it is valid, so *every* URL on
+# a line is replaced, not just the first one. `ytdlp_ingest._redact` delegates
+# here rather than keeping its own copy: it used to hand-roll a `str.find` loop
+# that replaced one URL per scheme, so a yt-dlp stderr line carrying two of them
+# leaked the second into /api/status -- and from there into the diagnostics bar
+# and the on-disk log file.
 _URL_RE = re.compile(r"https?://\S+")
 # NUL/ESC and friends would either corrupt the JSON poll or drive the terminal
 # of whoever pastes the payload into a bug report.
@@ -44,10 +48,15 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _SOURCE_RE = re.compile(r"[^a-z0-9-]+")
 
 
+def redact_urls(text: object) -> str:
+    """Replace every URL in ``text`` with a placeholder."""
+    return _URL_RE.sub(REDACTED_URL, str(text))
+
+
 def _one_line(message: object) -> str:
     """Flatten, redact and cap one message so it is safe to hand to the UI."""
     text = str(message).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-    text = _URL_RE.sub(REDACTED_URL, _CONTROL_RE.sub(" ", text)).strip()
+    text = redact_urls(_CONTROL_RE.sub(" ", text)).strip()
     if len(text) > MAX_MESSAGE_CHARS:
         # The ellipsis counts towards the cap: the field never exceeds 400
         # characters, which is what the client sizes its column against.

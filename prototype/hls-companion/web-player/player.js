@@ -2225,6 +2225,35 @@
   window.__lingerlensSetSubtitleTestWallTime = (value) => {
     window.__lingerlensSubtitleTestWallTime = Number.isFinite(Number(value)) ? Number(value) : null;
   };
+  /*
+   * 长时间实测的采样钩子。要回答「这条字幕有没有在对的时间出现在屏幕上」，
+   * 必须同时拿到两样东西：**屏幕上的字**（DOM 里真正渲染出来的行）和**那一刻
+   * 的媒体时钟**。前者可以从外面读 DOM，后者不行——`mediaClock` 只在渲染进程
+   * 里。所以这里把两者一次性交出去，让外部只管轮询，不必复制任何渲染逻辑。
+   *
+   * 只读：不写状态、不触发渲染。返回的是快照。
+   */
+  window.__lingerlensSoakProbe = () => {
+    const layer = el("subtitleLayer");
+    const content = layer?.querySelector(".subtitle-content");
+    return {
+      at: Date.now() / 1000,
+      wall: playingWallClock(),
+      currentTime: Number.isFinite(video?.currentTime) ? video.currentTime : null,
+      paused: video?.paused ?? null,
+      playbackRate: video?.playbackRate ?? null,
+      readyState: video?.readyState ?? null,
+      sessionState: lastSessionState,
+      // 图层带 off 类时说明这一帧什么都没显示——这是"字幕空窗"的权威信号，
+      // 比"行数为 0"更准，因为它区分了"清空了"和"从没渲染过"。
+      hidden: layer ? layer.classList.contains("off") : null,
+      rows: content ? [...content.children].map((row) => ({
+        id: row.dataset.cueId || null,
+        src: row.querySelector(".subtitle-src")?.textContent || "",
+        zh: row.querySelector(".subtitle-zh")?.textContent || "",
+      })) : [],
+    };
+  };
 
   loadLanguageSettings();
   updateFullscreenControl();

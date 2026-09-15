@@ -188,6 +188,8 @@ backend log after:  195 bytes  (delta 0)      ← 文件一个字都没多
 
 **要判断渲染进程内部发生了什么**，仍然只有两条路：窗口里 `Ctrl+Shift+I` 开 DevTools，或者加 `--remote-debugging-port` 用 CDP 直接问渲染进程。
 
+**长时真实直播实测**是另一件事，用另一套仪器：`docs/live-soak-testing.md`。那里也写清了为什么上面这本日志**不适合**回答"延迟多稳、字幕准不准时"——它记的是事件，不是时间序列。
+
 ## 不变量
 
 上面所有规则可以压缩成一句可检查的话：

@@ -369,6 +369,36 @@ test("the diagnostics bar is wired end to end and every id it needs exists", () 
   assert.match(js, /addEventListener\("i18n:changed"/);
 });
 
+/*
+ * The long-run soak measures whether subtitles reach the screen, and it can only
+ * do that from outside the renderer. `__lingerlensSoakProbe` is the one seam it
+ * reads, and `soak-onscreen-sampler.py` reads these exact field names -- so a
+ * rename here breaks a two-hour measurement silently, at the end, with nothing
+ * to show for it. Pin the contract rather than trusting the two to stay in step.
+ */
+test("the soak probe seam exists and matches what the sampler reads", () => {
+  const js = fs.readFileSync(path.join(root, "web-player/player.js"), "utf8");
+  const sampler = fs.readFileSync(path.join(root, "scripts/soak-onscreen-sampler.py"), "utf8");
+
+  assert.match(sampler, /window\.__lingerlensSoakProbe/, "the sampler must call the probe");
+  assert.match(js, /window\.__lingerlensSoakProbe = \(\) => \{/, "player.js must define it");
+  // Read from the rendered DOM, not from scheduler state: the question is what is
+  // on the glass, and internal state can disagree with it.
+  assert.match(js, /__lingerlensSoakProbe[\s\S]{0,600}?el\("subtitleLayer"\)/);
+  assert.match(js, /subtitle-content/);
+  assert.match(js, /subtitle-src/);
+  assert.match(js, /subtitle-zh/);
+  assert.match(js, /dataset\.cueId/);
+  // The media clock is the half that cannot be observed from outside; without it
+  // the samples record what was on screen but not *when* on the media timeline.
+  assert.match(js, /__lingerlensSoakProbe[\s\S]{0,600}?wall: playingWallClock\(\)/);
+
+  for (const field of ["at", "wall", "currentTime", "paused", "playbackRate",
+    "readyState", "sessionState", "hidden", "rows"]) {
+    assert.ok(new RegExp(`\\b${field}:`).test(js), `the probe must expose ${field}`);
+  }
+});
+
 test("realtime workbench UI elements and live message contracts are wired", () => {
   const html = fs.readFileSync(path.join(root, "web-player/index.html"), "utf8");
   const css = fs.readFileSync(path.join(root, "web-player/style.css"), "utf8");

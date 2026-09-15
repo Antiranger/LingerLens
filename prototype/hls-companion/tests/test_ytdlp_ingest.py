@@ -127,6 +127,20 @@ class YtDlpLiveIngestTests(unittest.TestCase):
         self.assertNotIn("secret", redacted)
         self.assertIn("<REDACTED_URL>", redacted)
 
+    def test_redacts_every_url_on_a_line_not_just_the_first(self) -> None:
+        # The previous implementation replaced one URL per scheme, so the second
+        # https:// on a line reached /api/status, the diagnostics bar, and the
+        # log file verbatim. A single-URL fixture is what let that ship.
+        line = ("[hlsnative] Downloading https://rr1.example.com/a?sig=one "
+                "and https://rr2.example.com/b?sig=two then http://c.example.com/c?k=three")
+        redacted = MODULE.YtDlpLiveIngest._redact(line)
+        for secret in ("one", "two", "three", "example.com"):
+            self.assertNotIn(secret, redacted)
+        self.assertEqual(redacted.count("<REDACTED_URL>"), 3)
+        # The prose around the URLs must survive: this is a diagnostic tail.
+        self.assertIn("Downloading", redacted)
+        self.assertIn("then", redacted)
+
     def test_snapshot_exposes_leg_throughput_and_log_tail(self) -> None:
         ingest = MODULE.YtDlpLiveIngest(
             "https://www.youtube.com/watch?v=test",

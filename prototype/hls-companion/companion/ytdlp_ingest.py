@@ -33,8 +33,10 @@ except ImportError:  # direct test/module loading
 
 try:
     from .logbook import record as log_record
+    from .logbook import redact_urls
 except ImportError:  # direct test/module loading
     from companion.logbook import record as log_record  # type: ignore[no-redef]
+    from companion.logbook import redact_urls  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
@@ -475,9 +477,8 @@ class YtDlpLiveIngest:
 
     @staticmethod
     def _redact(line: str) -> str:
-        for marker in ("https://", "http://"):
-            start = line.find(marker)
-            if start >= 0:
-                end = line.find(" ", start)
-                line = line[:start] + "<REDACTED_URL>" + (line[end:] if end >= 0 else "")
-        return line
+        # Delegated to the logbook so the two cannot drift apart again. The
+        # hand-rolled `str.find` loop this replaced replaced only the first URL
+        # per scheme, and a yt-dlp stderr line can carry several -- the rest went
+        # to /api/status, the diagnostics bar, and the on-disk log in clear.
+        return redact_urls(line)
