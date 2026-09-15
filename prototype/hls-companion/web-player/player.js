@@ -587,7 +587,7 @@
     }
     el("quality").disabled = true;
     el("setupPlayback").hidden = true;
-    el("probe").textContent = "解析中…";
+    el("probe").textContent = updateLabel("action.probing", "解析中…");
     el("probe").setAttribute("aria-busy", "true");
     el("setupFeedback").textContent = "正在读取直播信息和可用清晰度…";
     setBusy(true);
@@ -618,7 +618,7 @@
     } catch (error) {
       showError(error);
     } finally {
-      el("probe").textContent = "解析";
+      el("probe").textContent = updateLabel("action.probe", "解析");
       el("probe").removeAttribute("aria-busy");
       setBusy(false);
     }
@@ -656,7 +656,7 @@
       el("stop").disabled = false;
       const quality = data.quality;
       el("resolution").textContent = `${quality.width || "?"}×${quality.height || "?"}${quality.fps ? ` @ ${quality.fps}fps` : ""}`;
-      el("message").textContent = "正在建立播放缓冲，画面就绪后自动播放。";
+      el("message").textContent = updateLabel("msg.buffering", "正在建立播放缓冲，画面就绪后自动播放。");
       setState("建立延迟缓冲", "waiting");
       setMediaLoading(true, "正在建立直播缓冲…");
       authToken = null;
@@ -963,7 +963,7 @@
       setMediaLoading(false);
       banner.hidden = false;
       const detail = String(data.error || "未知错误").slice(0, 80);
-      banner.textContent = `直播会话出错：${detail}。请停止后重新开始播放`;
+      banner.textContent = updateLabel("msg.sessionError", `直播会话出错：${detail}。请停止后重新开始播放`, { error: detail });
       // 会话级错误不走 showError，而且后端随后就会把 FFmpeg 的尾部输出发到
       // /api/logs；两条一起看才是完整现场，所以这里也记一条。
       diagnosticsBar?.push("error", "session", detail);
@@ -986,9 +986,9 @@
     if (health.active) {
       banner.hidden = false;
       const message = health.kind === "packaging"
-        ? "本地媒体切片处理较慢，正在自动恢复…"
-        : "网络端未收到直播流数据，正在尝试重新连接…";
-      banner.textContent = `${message}（已停 ${Math.round(health.stallSeconds)} 秒）`;
+        ? updateLabel("msg.stallPackaging", "本地媒体切片处理较慢，正在自动恢复…")
+        : updateLabel("msg.stallUpstream", "网络端未收到直播流数据，正在尝试重新连接…");
+      banner.textContent = updateLabel("msg.stalled", `${message}（已停 ${Math.round(health.stallSeconds)} 秒）`, { text: message, seconds: Math.round(health.stallSeconds) });
       if (!video.paused && bufferAhead() < 3) {
         autoPausedForStall = true;
         video.pause();
@@ -1002,7 +1002,7 @@
         if (video.paused) video.play().catch(() => {});
       } else {
         banner.hidden = false;
-        banner.textContent = "直播流已恢复，正在补充播放缓冲…";
+        banner.textContent = updateLabel("msg.recovered", "直播流已恢复，正在补充播放缓冲…");
       }
       return;
     }
@@ -1467,7 +1467,7 @@
       chip.type = "button";
       chip.className = "language-chip";
       chip.dir = "auto";
-      chip.textContent = `${index === 0 ? "首选 " : ""}${parts.autonym} · ${tag} ×`;
+      chip.textContent = `${index === 0 ? updateLabel("section.primary", "首选") + " " : ""}${parts.autonym} · ${tag} ×`;
       chip.setAttribute("aria-label", `移除候选语言 ${parts.primary}`);
       chip.addEventListener("click", () => removeCandidate(tag));
       container.append(chip);
