@@ -86,7 +86,9 @@ function openDevLog(env = process.env) {
     // neither can be used as a writability probe here. Only the real append
     // fails, with EISDIR. Check the one case the OS will not report.
     if (fs.statSync(log.path, { throwIfNoEntry: false })?.isDirectory()) {
-      throw Object.assign(new Error(`EISDIR: ${log.path} is a directory`), { code: 'EISDIR' });
+      // No "EISDIR:" prefix in the message: describe() adds the code, and
+      // spelling it twice reads like a bug in the error itself.
+      throw Object.assign(new Error(`${log.path} is a directory`), { code: 'EISDIR' });
     }
     fs.appendFileSync(log.path, ''); // create it now rather than one hour into a run
     log.writable = true;
