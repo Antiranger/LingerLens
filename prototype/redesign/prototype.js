@@ -1,4 +1,4 @@
-/* LagLingo 新野兽派原型 —— 模拟交互（无真实后端） */
+/* LingerLens 新野兽派原型 —— 模拟交互（无真实后端） */
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);

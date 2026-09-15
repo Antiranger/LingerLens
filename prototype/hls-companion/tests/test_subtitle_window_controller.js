@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const { createSubtitleWindowController } = require("../web-player/subtitle-window-controller.js");
 
 function fixture(saved = null) {
-  const values = new Map(saved ? [["laglingo.subtitle.window.v1", JSON.stringify(saved)]] : []);
+  const values = new Map(saved ? [["lingerlens.subtitle.window.v1", JSON.stringify(saved)]] : []);
   const storage = {
     getItem: (key) => values.get(key) ?? null,
     setItem: (key, value) => values.set(key, value),
@@ -24,7 +24,7 @@ function fixture(saved = null) {
   return { storage, stage, windowElement, values };
 }
 
-test("LagLingo fullscreen requests the stage that owns video and subtitles", async () => {
+test("LingerLens fullscreen requests the stage that owns video and subtitles", async () => {
   const { storage, stage, windowElement } = fixture();
   const controller = createSubtitleWindowController({ stage, windowElement, storage });
   await controller.toggleFullscreen({ fullscreenElement: null });
@@ -57,7 +57,7 @@ test("subtitle window restores safe preferences, clamps position, and persists n
   const moved = controller.preferences();
   assert.equal(moved.x, 0.8);
   assert.equal(moved.y, 0.88);
-  assert.deepEqual(JSON.parse(values.get("laglingo.subtitle.window.v1")), moved);
+  assert.deepEqual(JSON.parse(values.get("lingerlens.subtitle.window.v1")), moved);
 });
 
 test("keyboard movement, reset, opacity, scale, and colors update the public preferences", () => {

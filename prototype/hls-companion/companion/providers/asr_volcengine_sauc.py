@@ -219,7 +219,7 @@ class _VolcengineSaucStream(ASRStream):
         if options.get("corpus") is not None:
             request["corpus"] = options["corpus"]
         return {
-            "user": {"uid": str(options.get("uid", "laglingo"))},
+            "user": {"uid": str(options.get("uid", "lingerlens"))},
             "audio": {"format": "pcm", "rate": self.sample_rate, "bits": 16, "channel": 1, "codec": "raw"},
             "request": request,
         }

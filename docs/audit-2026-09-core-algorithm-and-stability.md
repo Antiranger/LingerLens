@@ -1,6 +1,6 @@
-# LagLingo 核心算法与长时稳定性审查报告
+# LingerLens 核心算法与长时稳定性审查报告
 
-审查对象：`F:\Projects\LagLingo`，git rev `07dc338`
+审查对象：`F:\Projects\LingerLens`，git rev `07dc338`
 审查方式：**只认代码与实跑数据**。仓库内 `README.md` / `docs/*.md` / `docs/notes/findings.md` / `docs/notes/progress.md` 的全部结论一律不作为证据，仅用于"知道该验证什么"。
 本报告分两级标注：**【实测】**＝本次亲自跑出来的数据；**【代码确认】**＝逐行读到、行号可复核但未单独跑复现脚本。
 
@@ -35,7 +35,7 @@
 
 1. 在 Python 3.10（项目要求 3.10+，本机默认是 3.9）建独立环境，跑全部 43 个 Python 测试文件。
 2. 五路并行代码深审：分句算法 / Provider 适配层 / 媒体与延迟发布 / 前端播放器 / 管线本体。
-3. 对关键结论**全部自己写脚本复现**，脚本落在 `.scratch/laglingo-audit/`，可重跑。
+3. 对关键结论**全部自己写脚本复现**，脚本落在 `.scratch/lingerlens-audit/`，可重跑。
 
 复现脚本清单：
 
@@ -557,20 +557,20 @@ minDwell: 1.2
 # 环境（项目要求 3.10+；本机默认 python 是 3.9，会误报）
 py -3.10 -m venv .venv-audit
 .\.venv-audit\Scripts\python.exe -m pip install -r prototype\hls-companion\companion\requirements.txt
-$env:PYTHONPATH = "F:\Projects\LagLingo\prototype\hls-companion"
+$env:PYTHONPATH = "F:\Projects\LingerLens\prototype\hls-companion"
 
 # 全量测试（正确姿势）
 Get-ChildItem prototype\hls-companion\tests\test_*.py | ForEach-Object { & .\.venv-audit\Scripts\python.exe $_.FullName }
 
 # 本次实测脚本
-python .scratch\laglingo-audit\soak_chunker.py          # 容器 1h/8h 增长
-python .scratch\laglingo-audit\soak_cpu_curve.py        # 8h CPU 劣化曲线
-python .scratch\laglingo-audit\soak_attribution.py      # 归因到具体行
-python .scratch\laglingo-audit\soak_pipeline.py         # 端到端管线 soak
-python .scratch\laglingo-audit\verify_asr_leak.py       # ASR 会话泄漏
-node   .scratch\laglingo-audit\verify_poll_fork.js      # 前端轮询链分叉
-python .scratch\laglingo-audit\verify_provider_swap.py  # 热切换状态泄漏
-pwsh   -File .scratch\laglingo-audit\verify_gop_alignment.ps1   # 分片关键帧对齐
+python .scratch\lingerlens-audit\soak_chunker.py          # 容器 1h/8h 增长
+python .scratch\lingerlens-audit\soak_cpu_curve.py        # 8h CPU 劣化曲线
+python .scratch\lingerlens-audit\soak_attribution.py      # 归因到具体行
+python .scratch\lingerlens-audit\soak_pipeline.py         # 端到端管线 soak
+python .scratch\lingerlens-audit\verify_asr_leak.py       # ASR 会话泄漏
+node   .scratch\lingerlens-audit\verify_poll_fork.js      # 前端轮询链分叉
+python .scratch\lingerlens-audit\verify_provider_swap.py  # 热切换状态泄漏
+pwsh   -File .scratch\lingerlens-audit\verify_gop_alignment.ps1   # 分片关键帧对齐
 ```
 
 ---

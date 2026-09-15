@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("laglingo_ytdlp_ingest", ROOT / "companion" / "ytdlp_ingest.py")
+SPEC = importlib.util.spec_from_file_location("lingerlens_ytdlp_ingest", ROOT / "companion" / "ytdlp_ingest.py")
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
@@ -58,9 +58,9 @@ class YtDlpLiveIngestTests(unittest.TestCase):
 
     def test_ffmpeg_proxy_forwarding_is_opt_in_via_env(self) -> None:
         previous_proxy = os.environ.get("ALL_PROXY")
-        previous_flag = os.environ.get("LAGLINGO_FFMPEG_PROXY")
+        previous_flag = os.environ.get("LINGERLENS_FFMPEG_PROXY")
         os.environ["ALL_PROXY"] = "http://127.0.0.1:7890"
-        os.environ["LAGLINGO_FFMPEG_PROXY"] = "1"
+        os.environ["LINGERLENS_FFMPEG_PROXY"] = "1"
         try:
             ingest = MODULE.YtDlpLiveIngest(
                 "https://www.youtube.com/watch?v=test", "301", [], yt_dlp="yt-dlp.exe"
@@ -72,9 +72,9 @@ class YtDlpLiveIngestTests(unittest.TestCase):
             else:
                 os.environ["ALL_PROXY"] = previous_proxy
             if previous_flag is None:
-                os.environ.pop("LAGLINGO_FFMPEG_PROXY", None)
+                os.environ.pop("LINGERLENS_FFMPEG_PROXY", None)
             else:
-                os.environ["LAGLINGO_FFMPEG_PROXY"] = previous_flag
+                os.environ["LINGERLENS_FFMPEG_PROXY"] = previous_flag
         downloader_args = [command[i + 1] for i, a in enumerate(command) if a == "--downloader-args"]
         self.assertTrue(any("ffmpeg_i:-http_proxy http://127.0.0.1:7890" in args for args in downloader_args))
 

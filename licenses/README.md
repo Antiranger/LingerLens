@@ -1,6 +1,6 @@
 # Third-party licence texts
 
-Verbatim licence texts for everything LagLingo redistributes. Every file here is either a copy of an authoritative artifact that already ships in this repository, or the verbatim body of a canonical upstream URL. No licence text in this directory was written from memory.
+Verbatim licence texts for everything LingerLens redistributes. Every file here is either a copy of an authoritative artifact that already ships in this repository, or the verbatim body of a canonical upstream URL. No licence text in this directory was written from memory.
 
 `npm run guard:licences` (`scripts/check-licence-coverage.js`) reads this directory and fails if any of the texts it requires is missing or does not look like the licence it claims to be.
 
@@ -17,7 +17,7 @@ Verbatim licence texts for everything LagLingo redistributes. Every file here is
 | [`Unlicense.txt`](Unlicense.txt) | `Unlicense` | yt-dlp 2026.08.19 (`prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe`) | fetched: <https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/LICENSE> (tag pinned to the shipped build) | 1,211 |
 | [`UniDic-COPYING.txt`](UniDic-COPYING.txt) | `LicenseRef-UniDic-triple` | UniDic dictionary data (`unidic_lite/dicdir/`) — states that the data is offered under GPL, LGPL *or* BSD | shipped: `release/win-unpacked/resources/backend/_internal/unidic_lite/dicdir/COPYING` | 194 |
 | [`OFL-1.1-fonts.txt`](OFL-1.1-fonts.txt) | `OFL-1.1` | Noto Sans SC, Archivo Black, JetBrains Mono (the webfonts vendored under `prototype/hls-companion/web-player/fonts/`) | fetched: `https://cdn.jsdelivr.net/npm/@fontsource/<pkg>@5.3.0/LICENSE` for `noto-sans-sc`, `archivo-black`, `jetbrains-mono` | 5,075 |
-| [`MIT-LagLingo.txt`](MIT-LagLingo.txt) | `MIT` | LagLingo itself (this repository's own `LICENSE`, not a third-party component) | shipped: `LICENSE` at the repository root | 1,067 |
+| [`MIT-LingerLens.txt`](MIT-LingerLens.txt) | `MIT` | LingerLens itself (this repository's own `LICENSE`, not a third-party component) | shipped: `LICENSE` at the repository root | 1,067 |
 | [`MIT-Electron.txt`](MIT-Electron.txt) | `MIT` | Electron 44.2.0 (which also brings Chromium and Node.js) | shipped: `release/win-unpacked/LICENSE.electron.txt` | 1,096 |
 | [`MIT-attrs.txt`](MIT-attrs.txt) | `MIT` | attrs 26.1.0 (`License-Expression: MIT`) | shipped: `release/win-unpacked/resources/backend/_internal/attrs-26.1.0.dist-info/licenses/LICENSE` | 1,109 |
 | [`MIT-fugashi.txt`](MIT-fugashi.txt) | `MIT` | fugashi 1.5.2 Python packaging (`License-Expression: MIT AND BSD-3-Clause`) | shipped: `release/win-unpacked/resources/backend/_internal/fugashi-1.5.2.dist-info/licenses/LICENSE` | 1,076 |

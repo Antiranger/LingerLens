@@ -1,4 +1,4 @@
-/* LagLingo 原型 · UI Locale 层
+/* LingerLens 原型 · UI Locale 层
    机制：BINDINGS 把 DOM 绑定到语义 key；zh-CN 默认文案在初始化时从 DOM 捕获，
    其余语言查 DICT。原型演示 5 种语言（zh-CN/en/ja/de/ru），机制上覆盖全部 10 种。 */
 const I18N = (() => {

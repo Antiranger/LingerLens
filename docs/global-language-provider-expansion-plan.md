@@ -1,4 +1,4 @@
-# LagLingo 全球语言与 Provider 扩展实施方案
+# LingerLens 全球语言与 Provider 扩展实施方案
 
 > 状态：实施前方案
 > 日期：2026-09-01
@@ -7,7 +7,7 @@
 
 ## 1. 决策摘要
 
-LagLingo 不承诺“静态支持所有语言”，而采用 **Provider-driven language support**：用户选择源语言策略、目标语言和 Provider，系统根据当前模型的有效能力给出可用、实验性或不支持状态。
+LingerLens 不承诺“静态支持所有语言”，而采用 **Provider-driven language support**：用户选择源语言策略、目标语言和 Provider，系统根据当前模型的有效能力给出可用、实验性或不支持状态。
 
 确定以下原则：
 
@@ -18,7 +18,7 @@ LagLingo 不承诺“静态支持所有语言”，而采用 **Provider-driven l
 5. **复杂私有传输使用官方 SDK。** Azure Speech、Google Speech-to-Text、AWS Transcribe 分别通过官方 SDK/官方样例实现，作为可选依赖，避免逆向私有帧格式。
 6. **翻译保留现有 `openai-compatible`，新增 `anthropic-messages` 和 `google-genai`。** 不做破坏性重命名；OpenAI 官方与兼容端点共用现有协议，Claude/Gemini 使用各自正式 REST schema。
 7. **语言列表不手写。** 后端使用 `langcodes` 规范化 BCP 47；仓库提交一份由固定版本 CLDR/IANA 数据生成的紧凑 catalog；浏览器用 `Intl.DisplayNames` 根据 UI locale 显示本地化名称。
-8. **语言支持分三级。** `verified`（LagLingo 实测）、`provider_claimed`（官方声明）、`experimental`（通用 LLM best-effort）。UI 不把实验性语言伪装成已保证支持。
+8. **语言支持分三级。** `verified`（LingerLens 实测）、`provider_claimed`（官方声明）、`experimental`（通用 LLM best-effort）。UI 不把实验性语言伪装成已保证支持。
 9. **先扩展契约，再写 Provider。** 音频采样率、源语言策略和 usage 统一契约是所有后续 adapter 的共同前置工作。
 
 ## 2. 当前代码与目标之间的差距
@@ -146,7 +146,7 @@ class TranslationLanguageCapabilities:
 - 默认 preset：`gpt-live-transcribe`，用于增量 delta；需要 detected-language 时可选 `gpt-transcribe`。
 - 音频：当前官方示例 24 kHz PCM；因此先完成 Pipeline sample-rate negotiation。
 - 语言：`gpt-live-transcribe` 使用 `languages` 候选提示但不返回 detected-language；`gpt-transcribe` completion 可返回 `languages`。
-- 时间戳：当前实时模型不返回 word timestamps，使用 server VAD + LagLingo audio clock 的现有 fallback。
+- 时间戳：当前实时模型不返回 word timestamps，使用 server VAD + LingerLens audio clock 的现有 fallback。
 
 ### 4.2 第一批中的 DashScope 工作
 
@@ -297,7 +297,7 @@ prototype/hls-companion/companion/data/languages.json
 
 - IANA Language Subtag Registry / BCP 47
 - Unicode CLDR display/language/script/territory 数据
-- LagLingo Provider model presets 声明的 tags
+- LingerLens Provider model presets 声明的 tags
 
 生成输出至少包含：
 

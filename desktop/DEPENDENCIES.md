@@ -1,4 +1,4 @@
-# LagLingo desktop dependencies
+# LingerLens desktop dependencies
 
 Windows x64 desktop builds include Chromium and Node.js through Electron, a frozen
 Python 3.11 interpreter, the Companion's Python packages, Japanese dictionary,
@@ -19,7 +19,7 @@ optional external services and are not installed or downloaded automatically.
   `n9.0.1-29-gad500d59cb`, autobuild `2026-09-14-13-17`). It is an **LGPL v3**
   build: `ffmpeg -version` reports `--enable-version3` and no `--enable-gpl`,
   no `--enable-nonfree`, and `--disable-libx264` / `--disable-libx265` /
-  `--disable-libxvid`. LagLingo only ever stream-copies (`-c copy`), so the
+  `--disable-libxvid`. LingerLens only ever stream-copies (`-c copy`), so the
   encoders an LGPL build omits were never used. Its `LICENSE.txt` is copied to
   `backend/_internal/third-party/ffmpeg/LICENSE`, and the binary's own
   `configuration:` line is written to `BUILD-CONFIGURATION.txt` beside it, so the

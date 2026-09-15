@@ -2,15 +2,15 @@
 
 > **Target File:** `docs/research/realtime-stt-provider-adapters.md`  
 > **Date:** 2026-08-31  
-> **Scope:** Architectural evaluation, canonical wire protocols, SDK tradeoffs, session lifecycles, VAD/interim semantics, and integration strategy for live streaming STT providers in the LagLingo companion service.
+> **Scope:** Architectural evaluation, canonical wire protocols, SDK tradeoffs, session lifecycles, VAD/interim semantics, and integration strategy for live streaming STT providers in the LingerLens companion service.
 >
-> **Verification note:** This is a preliminary subagent research artifact. Primary-source reconciliation found several time-sensitive corrections: current OpenAI Realtime transcription starts with `gpt-live-transcribe` and the current transcription-session schema, while `gpt-transcribe` is the option that returns detected-language output; AssemblyAI Streaming v3 now advertises multilingual/code-switching models and must not be dismissed as English-only; Speechmatics' ordinary realtime examples still configure one language, so automatic realtime code-switching is not assumed without a model-specific contract; the existing LagLingo `dashscope-task-asr` adapter already implements the documented `run-task`/binary audio/`result-generated` flow, so new DashScope models may need presets and capability metadata rather than a new protocol kind. Exact price, latency, and maximum-session-duration claims are benchmark inputs, not implementation contracts. The final implementation plan supersedes priority statements in this report.
+> **Verification note:** This is a preliminary subagent research artifact. Primary-source reconciliation found several time-sensitive corrections: current OpenAI Realtime transcription starts with `gpt-live-transcribe` and the current transcription-session schema, while `gpt-transcribe` is the option that returns detected-language output; AssemblyAI Streaming v3 now advertises multilingual/code-switching models and must not be dismissed as English-only; Speechmatics' ordinary realtime examples still configure one language, so automatic realtime code-switching is not assumed without a model-specific contract; the existing LingerLens `dashscope-task-asr` adapter already implements the documented `run-task`/binary audio/`result-generated` flow, so new DashScope models may need presets and capability metadata rather than a new protocol kind. Exact price, latency, and maximum-session-duration claims are benchmark inputs, not implementation contracts. The final implementation plan supersedes priority statements in this report.
 
 ---
 
 ## 1. Executive Summary & Prioritized Recommendations
 
-LagLingo operates as a low-latency live subtitle companion service built on `aiohttp` and `asyncio`. Audio chunks (typically 16 kHz 16-bit mono PCM, ~100ms–200ms per frame) arrive continuously from live HLS streams. The current ASR abstraction (`companion/providers/base.py`) defines `ASRProvider`, `ASRStream`, and `ASREvent` (`event_type in {"interim", "final", "error"}`).
+LingerLens operates as a low-latency live subtitle companion service built on `aiohttp` and `asyncio`. Audio chunks (typically 16 kHz 16-bit mono PCM, ~100ms–200ms per frame) arrive continuously from live HLS streams. The current ASR abstraction (`companion/providers/base.py`) defines `ASRProvider`, `ASRStream`, and `ASREvent` (`event_type in {"interim", "final", "error"}`).
 
 ### Top 5 Recommended Provider Priority
 
@@ -36,7 +36,7 @@ LagLingo operates as a low-latency live subtitle companion service built on `aio
 
 5. **OpenAI Realtime Transcription (`openai-realtime-transcribe`, Priority 3 / Native WebSocket):**
    * *Verdict:* **Adopt as specialized Tier-2 provider; defer as default.**
-   * *Rationale:* The current transcription-session workflow uses `gpt-live-transcribe` for incremental low-latency deltas; `gpt-transcribe` is the specialized realtime option when detected-language output is needed. Audio is base64-encoded in JSON `input_audio_buffer.append` events. It is valuable for users already in the OpenAI ecosystem, but its lack of word timestamps requires LagLingo's approximate/VAD timing fallback.
+   * *Rationale:* The current transcription-session workflow uses `gpt-live-transcribe` for incremental low-latency deltas; `gpt-transcribe` is the specialized realtime option when detected-language output is needed. Audio is base64-encoded in JSON `input_audio_buffer.append` events. It is valuable for users already in the OpenAI ecosystem, but its lack of word timestamps requires LingerLens's approximate/VAD timing fallback.
    * *Implementation:* Native `aiohttp` WebSocket client following the current official transcription-session schema.
 
 ### Secondary / Excluded Providers
@@ -62,7 +62,7 @@ LagLingo operates as a low-latency live subtitle companion service built on `aio
   * Orderly termination: `{"type": "CloseStream"}`.
 * **Interim / Final / VAD Events:**
   * Server sends `{"type": "Results", "is_final": bool, "speech_final": bool, "channel": {"alternatives": [{"transcript": "...", "confidence": 0.98, "words": [...]}]}}`.
-  * `is_final=false` maps directly to LagLingo `ASREvent(event_type="interim")`.
+  * `is_final=false` maps directly to LingerLens `ASREvent(event_type="interim")`.
   * `is_final=true` (or `speech_final=true`) maps to `ASREvent(event_type="final")`.
   * Utterance boundary detection via `UtteranceEnd` events when `utterance_end_ms` is set.
 * **Language Handling:**
@@ -177,7 +177,7 @@ LagLingo operates as a low-latency live subtitle companion service built on `aio
 
 ---
 
-## 4. Architectural Evolution for LagLingo Provider Seam
+## 4. Architectural Evolution for LingerLens Provider Seam
 
 ### 4.1 Current Seam Inspection (`companion/providers/base.py`)
 The current base classes define:
@@ -211,7 +211,7 @@ To support rich live broadcast subtitling across the shortlisted providers witho
    Wrap provider streams in a reconnecting proxy wrapper (`ReconnectingASRStream`) to handle transient WebSocket drops and the Google 305s limitation transparently.
 4. **Native Protocol vs. SDK Adapters:**
    * **Native Protocol Kinds (`deepgram`, `dashscope-realtime`, `speechmatics`, `openai-realtime`):** Implement entirely using `aiohttp.ClientSession.ws_connect`. No extra pip dependencies; lightweight, memory-efficient, and easy to run in embedded companion environments.
-   * **SDK-Backed Adapters (`azure-speech`):** Keep behind optional extras (e.g. `pip install laglingo[azure]`) with worker thread event loop synchronization.
+   * **SDK-Backed Adapters (`azure-speech`):** Keep behind optional extras (e.g. `pip install lingerlens[azure]`) with worker thread event loop synchronization.
 
 ---
 

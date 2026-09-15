@@ -205,7 +205,7 @@ class RecognitionToken:
     Adapters must exclude protocol/control tokens before constructing this
     value. Times are seconds on the provider session audio timeline; callers
     may replace them with pipeline PCM coordinates before chunking.
-    ``provider_stable=False`` means LagLingo may only publish the token after
+    ``provider_stable=False`` means LingerLens may only publish the token after
     LocalAgreement policy commits it.
     """
 

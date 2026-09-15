@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Core of LagLingo Prototype 2: probe, select, remux, and delay-publish live HLS."""
+"""Core of LingerLens Prototype 2: probe, select, remux, and delay-publish live HLS."""
 
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ class BrowserCookieSnapshot(AuthenticationProvider):
         rows = [row for row in rows if row]
         if not rows:
             return
-        fd, raw_path = tempfile.mkstemp(prefix="laglingo-cookies-", suffix=".txt")
+        fd, raw_path = tempfile.mkstemp(prefix="lingerlens-cookies-", suffix=".txt")
         self._path = Path(raw_path)
         try:
             os.chmod(self._path, stat.S_IRUSR | stat.S_IWUSR)
@@ -218,7 +218,7 @@ class ProbeInfoSnapshot:
 
     def __init__(self, info: dict[str, Any], selected_format_ids: Iterable[str] = ()):
         self._path: Path | None = None
-        fd, raw_path = tempfile.mkstemp(prefix="laglingo-info-", suffix=".json")
+        fd, raw_path = tempfile.mkstemp(prefix="lingerlens-info-", suffix=".json")
         self._path = Path(raw_path)
         selected = {str(value) for value in selected_format_ids}
         snapshot = info
@@ -658,7 +658,7 @@ PRIVATE_HLS_DELETE_THRESHOLD = 60
 
 
 def hls_output_args(private_dir: Path, list_size: int = PRIVATE_HLS_LIST_SIZE) -> list[str]:
-    """The single source of truth for how LagLingo packages its private HLS.
+    """The single source of truth for how LingerLens packages its private HLS.
 
     Every packager -- production, the synthetic smoke test, and the subtitle
     alignment smoke test -- must call this. They previously hand-rolled their

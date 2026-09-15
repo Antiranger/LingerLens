@@ -1,5 +1,5 @@
 /**
- * LagLingo MediaClock & Timeline Utilities
+ * LingerLens MediaClock & Timeline Utilities
  *
  * Provides a unified wall clock for video playback derived from HLS PROGRAM-DATE-TIME (PDT).
  * NEVER falls back to Date.now() if PDT is not present.
@@ -163,7 +163,7 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = exported;
   } else {
-    global.LagLingoMediaClock = exported;
+    global.LingerLensMediaClock = exported;
     Object.assign(global, exported);
   }
 })(typeof window !== "undefined" ? window : globalThis);

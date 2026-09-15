@@ -2,7 +2,7 @@
 
 > **文档状态**：官方来源全面重审版（Ticket 01，状态 `in_review`）
 > **最后核验日期**：2026-09-03（所有外部引用均在本次会话中读取原文）
-> **适用范围**：LagLingo HLS Companion ASR Provider 扩展；为 Ticket 02（adapters/presets/API plan）提供协议依据
+> **适用范围**：LingerLens HLS Companion ASR Provider 扩展；为 Ticket 02（adapters/presets/API plan）提供协议依据
 > **写作约定**：
 > - **[verified]**：本会话已读取官方页面/官方 SDK 源码原文，并给出 URL；
 > - **[code]**：本仓库当前代码观察（引用文件与行为），不是官方契约；
@@ -49,7 +49,7 @@
 
 ## 2. 11 家协议卡
 
-每张卡按同一结构给出：身份 → 传输/端点 → 鉴权 → 会话开始 → 音频契约 → 响应契约（含 fixture）→ 时间戳语义 → 结束/finalize → 说话人分离 → 语言策略 → 错误与限制 → 价格 → LagLingo 映射 → 裁决。
+每张卡按同一结构给出：身份 → 传输/端点 → 鉴权 → 会话开始 → 音频契约 → 响应契约（含 fixture）→ 时间戳语义 → 结束/finalize → 说话人分离 → 语言策略 → 错误与限制 → 价格 → LingerLens 映射 → 裁决。
 
 ---
 
@@ -64,7 +64,7 @@
 **Transport 与 endpoint** [verified]
 - `wss://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference`（新加坡）
 - `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`（北京）
-- 官方推荐迁移到 workspace 专属域名；旧域名 `dashscope.aliyuncs.com` / `dashscope-intl.aliyuncs.com` 仍可用（当前 LagLingo config 使用旧域名形式 `wss://dashscope.aliyuncs.com/api-ws/v1/inference`，仍有效）。
+- 官方推荐迁移到 workspace 专属域名；旧域名 `dashscope.aliyuncs.com` / `dashscope-intl.aliyuncs.com` 仍可用（当前 LingerLens config 使用旧域名形式 `wss://dashscope.aliyuncs.com/api-ws/v1/inference`，仍有效）。
 - `/api-v1/tasks` 属于**非实时文件转写**的 HTTP 提交/轮询接口，与实时流式协议无关，不得混用。
   - 来源：https://www.alibabacloud.com/help/en/model-studio/fun-asr-realtime-websocket-api
 
@@ -124,7 +124,7 @@
 
 **Pricing**：**Unknown**（本次未在官方页面取证到 qwen-audio-3.0-asr-flash-streaming 精确单价；`config.py` 中 `paraformer-realtime-v2` 0.00024 元/秒为既有配置值，非本次核验）。
 
-**LagLingo mapping** [code]：`asr_dashscope_task.py` 已实现 `run-task/task-started/result-generated/finish-task`、`header.event` 解析、`begin_time/end_time` 毫秒转秒、`sentence_id` 作 `item_id`、`heartbeat` 过滤、UUID task_id、`X-DashScope-DataInspection` Header、等待 task-started 后再发音频。
+**LingerLens mapping** [code]：`asr_dashscope_task.py` 已实现 `run-task/task-started/result-generated/finish-task`、`header.event` 解析、`begin_time/end_time` 毫秒转秒、`sentence_id` 作 `item_id`、`heartbeat` 过滤、UUID task_id、`X-DashScope-DataInspection` Header、等待 task-started 后再发音频。
 真实剩余差异：
 1. `language_hints` 硬编码为单个主子语言标签 [code: `stream()` 中只传 `primary_subtag(policy.tag)`]；对 qwen-audio-3.0 应允许最多 4 个候选；
 2. 发送的 `parameters.hotwords` 不在当前官方参数表中（当前文档为 `vocabulary_id`/`vocabulary`）[code: `connect()`]；需按模型区分或移除；
@@ -170,7 +170,7 @@
 **控制消息** [verified]（官方 SDK `stt.py`/`types/realtime.py`）
 - 保活：文本帧 `{"type": "keepalive"}`（全小写）；
 - 手动 finalize：文本帧 `{"type": "finalize"}`（已完成 token 不变，未定 token 转为 `is_final=true`，连接保持）；
-- 结束流：**发送零长度帧**（官方 SDK `close()`/`FINISH` 用 `send("")`，即零长度文本帧；零长度二进制帧同为空帧——LagLingo adapter 发 `b""`）。之后继续消费剩余 token 直到连接关闭。
+- 结束流：**发送零长度帧**（官方 SDK `close()`/`FINISH` 用 `send("")`，即零长度文本帧；零长度二进制帧同为空帧——LingerLens adapter 发 `b""`）。之后继续消费剩余 token 直到连接关闭。
 
 **Response contract** [verified]（SDK `RealtimeEvent`/`Token` 类型）
 ```json
@@ -188,7 +188,7 @@
 
 **控制 token 与时间戳语义** [verified]
 - `TOKEN_TEXT_END = "<end>"`、`TOKEN_TEXT_FIN = "<fin>"` 为 SDK 常量：`<end>` 由端点检测生成（一句话边界），`<fin>` 由 finalize 生成（手动边界）。二者是控制边界，不是发音词汇。
-- 词汇时间以 lexical token 的 `start_ms`/`end_ms` 为准；控制 token 的时间戳字段不参与语音时间计算（LagLingo adapter 对其取 0 值时已按此处理，见 `_finish_utterance` 注释）[code]。
+- 词汇时间以 lexical token 的 `start_ms`/`end_ms` 为准；控制 token 的时间戳字段不参与语音时间计算（LingerLens adapter 对其取 0 值时已按此处理，见 `_finish_utterance` 注释）[code]。
 
 **Finalization / 停流顺序** [verified]：`{"type":"finalize"}`（中途收束）→ 或零长度帧（结束）；服务端以 `finished=true` 的事件收尾后关闭连接。错误以 `error_code`/`error_message` 平铺字段出现（**不是** `{"type": "error"}` 包装）。
 
@@ -199,7 +199,7 @@
 **Pricing** [verified]：实时流式 **$0.12/小时**，异步 $0.10/小时；diarization/时间戳/confidence 含在费率内；翻译/自定义上下文等高级用法按 token 另计。
   - 来源：https://soniox.com/pricing
 
-**LagLingo mapping / 真实剩余差异** [code]（`asr_soniox_realtime.py` + `test_soniox_realtime.py`）
+**LingerLens mapping / 真实剩余差异** [code]（`asr_soniox_realtime.py` + `test_soniox_realtime.py`）
 已正确：v5、`start_ms/end_ms`、`<end>/<fin>` 过滤（`_END_TOKENS`）、控制 token 时间戳不覆盖词汇时间、小写 `{"type":"keepalive"}` 定时保活（`keepAliveSeconds`）、`{"type":"finalize"}`、停流发送 `b""`、`finished`/`error_code` 平铺事件解析、token `language` 主导语言、`max_endpoint_delay_ms`/`endpoint_sensitivity`/`endpoint_latency_adjustment_level` 透传。
 剩余差异（真实待办）：
 1. **`aclose()` 发送 `b""` 后立即调用 `ws.close()`，没有继续接收直到 `finished=true`**，可能丢失停流时最后一批 final tokens；
@@ -259,7 +259,7 @@
 - 流式 Speaker Diarization 附加：**$0.0020/分钟**；Smart Formatting 含在基价内。
 - （预录制 mono $0.0043/min 为另一列，勿与流式混用——旧报告数字即此混用错误。）
 
-**LagLingo mapping / 真实剩余差异** [code]（`asr_deepgram_streaming.py` + `test_deepgram_streaming.py`）
+**LingerLens mapping / 真实剩余差异** [code]（`asr_deepgram_streaming.py` + `test_deepgram_streaming.py`）
 已正确：`nova-3`、`Authorization: Token`、query 组装（model/encoding/sample_rate/channels/interim_results/smart_format/endpointing/vad_events/language 或 multi）、`KeepAlive`/`Finalize`/`CloseStream`、`Results` 的 `is_final`/`speech_final` 映射（speech_final 先发 speech_stopped 再发 final，靠 `item_id` 对齐）、`SpeechStarted`/`UtteranceEnd`、`alternatives[].languages` + 词级语言主导语言、nova-3 multi 10 语种 `detection_tags` 校验。
 剩余差异（真实待办）：
 1. **未发送 `diarize=true`、未解析词级 `speaker`**；
@@ -276,7 +276,7 @@
 - **禁止作为当前依据**：`gpt-4o-realtime-preview`、`whisper-1`（REST 离线模型）、`OpenAI-Beta` 旧 header/旧 flat session schema。当前指南全文不含这些名称。
   - 来源：https://platform.openai.com/docs/guides/realtime-transcription （2026-09-03 原文）
 
-**Transport 与 endpoint** [verified]：WebSocket（服务端音频管道）或 WebRTC（浏览器）；LagLingo 用 `wss://api.openai.com/v1/realtime` [code config]。
+**Transport 与 endpoint** [verified]：WebSocket（服务端音频管道）或 WebRTC（浏览器）；LingerLens 用 `wss://api.openai.com/v1/realtime` [code config]。
 
 **Authentication** [code/official]：握手 Header `Authorization: Bearer <key>`（adapter 现行实现；Realtime 参考文档口径）。
 
@@ -326,7 +326,7 @@
 
 **Pricing**：**Unknown**（本次未取证当前两个转写模型单价；旧 `gpt-4o-*` 代际数字不得沿用）。
 
-**LagLingo mapping / 真实剩余差异** [code]（`asr_openai_realtime_transcription.py` + `test_openai_realtime_transcription.py`）
+**LingerLens mapping / 真实剩余差异** [code]（`asr_openai_realtime_transcription.py` + `test_openai_realtime_transcription.py`）
 已正确：`session.type="transcription"` 嵌套 schema、`audio/pcm` 24kHz、`gpt-live-transcribe` languages 提示 / `gpt-transcribe` 检测输出两个 preset、delta 累积为 interim、completed 为 final、`item_id` 关联、`speech_started/stopped` 毫秒偏移转秒、`.failed`/`error`、`input_audio_buffer.commit` 用于 flush 与手动切轮、completed 的 `usage` 透传。
 剩余差异：无协议级缺陷；`input_audio_buffer.commit` 后 completed 可能与下一轮事件交错的顺序问题已由 `item_id` 化解 [code docstring 引官方“ordering not guaranteed”]。
 
@@ -383,7 +383,7 @@
 
 **Pricing** [verified]：Universal-3.5 Pro Realtime **$0.45/小时**（官方博客/定价口径，https://www.assemblyai.com/blog/real-time-speech-to-text-best-for-voice-agents ）。
 
-**LagLingo mapping**：无现有 adapter。映射建议：`Turn.end_of_turn=false` → `interim`（覆盖式），`end_of_turn && turn_is_formatted` → `final`；`turn_order` 作 `item_id`；`SpeechStarted.timestamp`/词时间作 `begin_pcm/end_pcm`；`speaker_label` 作 speaker。
+**LingerLens mapping**：无现有 adapter。映射建议：`Turn.end_of_turn=false` → `interim`（覆盖式），`end_of_turn && turn_is_formatted` → `final`；`turn_order` 作 `item_id`；`SpeechStarted.timestamp`/词时间作 `begin_pcm/end_pcm`；`speaker_label` 作 speaker。
 
 **裁决**：native-aiohttp（协议完全公开；fixture 见 §4）。
 
@@ -688,7 +688,7 @@ class ASRCapabilities:
 
 | Provider | 正确（已验证实现） | 待修（有官方依据的差异） | 未验证 / Unknown |
 | :-- | :-- | :-- | :-- |
-| Soniox `soniox-realtime` | v5；`start_ms/end_ms`；`<end>/<fin>` 过滤且其时间戳不覆盖词汇时间；小写 keepalive；finalize；发送空帧；`finished`/`error_code` 平铺事件解析；endpoint 三参数透传 [code+官方 SDK] | ① 空帧后立即 close，未等 `finished=true` 排空尾部 final；② 未发 `enable_speaker_diarization`、未解析 token `speaker`（字符串）；③ token `confidence` 未透传 | 停流空帧官方 SDK 用零长度文本帧、LagLingo 用零长度二进制帧——live 验证网关是否等价 |
+| Soniox `soniox-realtime` | v5；`start_ms/end_ms`；`<end>/<fin>` 过滤且其时间戳不覆盖词汇时间；小写 keepalive；finalize；发送空帧；`finished`/`error_code` 平铺事件解析；endpoint 三参数透传 [code+官方 SDK] | ① 空帧后立即 close，未等 `finished=true` 排空尾部 final；② 未发 `enable_speaker_diarization`、未解析 token `speaker`（字符串）；③ token `confidence` 未透传 | 停流空帧官方 SDK 用零长度文本帧、LingerLens 用零长度二进制帧——live 验证网关是否等价 |
 | Alibaba `dashscope-task-asr` | run-task→task-started→binary→result-generated→finish-task；服务端 `header.event`；`begin_time/end_time`；`sentence_id`；heartbeat 过滤；UUID task_id；DataInspection header；先等 task-started [code+官方文档] | ① qwen-audio-3.0 的 `language_hints` 最多 4 个，当前只传 1 个；② `parameters.hotwords` 不在当前文档（应为 `vocabulary_id`/`vocabulary`，且即时热词仅 qwen-audio-3.0 支持）；③ 缺 qwen-audio-3.0 内置 preset | qwen-audio-3.0 真机 result 字段（words/punctuation）未见 live fixture；价格 Unknown |
 | Deepgram `deepgram-streaming` | nova-3；`Token` 鉴权；query 全集；KeepAlive/Finalize/CloseStream；is_final/speech_final 语义；SpeechStarted/UtteranceEnd 映射；`alternatives[].languages`；multi 10 语种校验 [code+官方文档] | ① 未发 `diarize=true`、未解析词级 `speaker`；② 未发 `utterance_end_ms`（`UtteranceEnd` 是否触发存疑） | 单连接时长上限；`UtteranceEnd` 在现参数组合下的实际触发行为 |
 | OpenAI `openai-realtime-transcription` | `session.type="transcription"` 嵌套 schema；24kHz `audio/pcm`；gpt-live-transcribe（languages 提示）/gpt-transcribe（检测输出）双 preset；delta/completed + `item_id` 关联；VAD 毫秒偏移；`.failed`；commit [code+官方指南] | 无协议级缺陷 | 当前模型单价 Unknown；`languages` 提示对识别质量的影响需 live 验证 |

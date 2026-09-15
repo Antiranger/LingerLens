@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, "..");
 const guard = path.join(root, "scripts", "release-guard.js");
 
 function runGuard(files) {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "laglingo-release-guard-"));
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "lingerlens-release-guard-"));
   for (const [relative, contents] of Object.entries(files)) {
     const target = path.join(fixture, relative);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -55,7 +55,7 @@ test("release guard rejects media, logs, caches, and agent state", () => {
     ".playwright-cli/session.json",
     ".planning/state.json",
     "prototype/hls-companion/.benchmark-data/result.json",
-    "release/LagLingo-setup.exe",
+    "release/LingerLens-setup.exe",
     "build-desktop/backend/runtime.json",
     ".venv-desktop/pyvenv.cfg",
   ]) {

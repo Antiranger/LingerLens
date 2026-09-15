@@ -4,7 +4,7 @@
   // 侧栏宽度拖拽。原型里侧栏是死宽 320px，这是原型没有的交互，所以硬约束是：
   // 没拖过的时候必须与原型逐像素一致 —— 手柄透明、不占位，宽度只在用户真的
   // 拖过之后才写进 --pane-left-w / --pane-right-w。
-  const STORAGE_KEY = "laglingo.paneWidths";
+  const STORAGE_KEY = "lingerlens.paneWidths";
   // 左栏手柄挂在它右缘，右栏手柄挂在它左缘；拖左栏右移变宽，右栏相反。
   const EDGES = {
     subtitles: { side: "left", variable: "--pane-left-w", pane: "paneSubtitles", other: "chat" },
@@ -290,5 +290,5 @@
     createPaneResizer,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
-  else Object.assign(global, exported, { LagLingoPaneResizer: exported });
+  else Object.assign(global, exported, { LingerLensPaneResizer: exported });
 })(typeof window !== "undefined" ? window : globalThis);

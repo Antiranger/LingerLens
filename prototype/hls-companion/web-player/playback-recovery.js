@@ -165,6 +165,6 @@
   } else {
     global.decidePlaybackRecovery = decidePlaybackRecovery;
     global.classifySourceHealth = classifySourceHealth;
-    global.LagLingoPlaybackRecovery = exported;
+    global.LingerLensPlaybackRecovery = exported;
   }
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,4 +1,4 @@
-# LagLingo Language Domain & Internationalization Architecture
+# LingerLens Language Domain & Internationalization Architecture
 **Document Reference:** `docs/research/language-i18n-architecture.md`  
 **Status:** Preliminary research proposal; final implementation plan is authoritative  
 **Scope:** Companion Server (Python 3.11+), Web Player (Vanilla JS / Browser), Provider Subsystems (ASR & MT)
@@ -7,10 +7,10 @@
 
 ## 1. Executive Summary & Current State Audit
 
-LagLingo is a local streaming companion that captures live HLS/DASH media streams, performs real-time Automated Speech Recognition (ASR), and translates utterances into live subtitles (Machine Translation, MT) with synchronized playback delay.
+LingerLens is a local streaming companion that captures live HLS/DASH media streams, performs real-time Automated Speech Recognition (ASR), and translates utterances into live subtitles (Machine Translation, MT) with synchronized playback delay.
 
 ### 1.1 Current Codebase Bottlenecks
-A comprehensive audit of the LagLingo prototype identifies several tightly-coupled language assumptions:
+A comprehensive audit of the LingerLens prototype identifies several tightly-coupled language assumptions:
 1. **Hardcoded Language Defaults**:
    - `prototype/hls-companion/companion/providers/config.py`: Hardcoded `subtitle.sourceLanguage = "ja"` and `subtitle.targetLanguage = "zh"`.
    - `prototype/hls-companion/companion/server.py`: Fallback extraction in `_prepare_subtitles` defaults to `"ja"` and `"zh"` without tag validation.
@@ -26,7 +26,7 @@ A comprehensive audit of the LagLingo prototype identifies several tightly-coupl
 
 ## 2. Standards Baseline: BCP 47 & Unicode CLDR
 
-To achieve rock-solid interoperability across diverse ASR engines, Machine Translation APIs, Large Language Models (LLMs), and frontend display components, LagLingo must adopt formal internationalization specifications.
+To achieve rock-solid interoperability across diverse ASR engines, Machine Translation APIs, Large Language Models (LLMs), and frontend display components, LingerLens must adopt formal internationalization specifications.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -86,13 +86,13 @@ Languages such as Arabic (`ar`), Hebrew (`he`), Persian (`fa`), and Urdu (`ur`) 
      <bdi class="cue-target">...</bdi>
    </div>
    ```
-4. **Direction Detection**: `Intl.Locale.prototype.getTextInfo()` provides runtime `'ltr' | 'rtl'` data in current browsers, but it remains a newly available ECMA-402 feature. LagLingo must retain `dir="auto"`/`<bdi>` and a small script fallback rather than treating this method as universally available; older implementations may expose the former `textInfo` accessor.
+4. **Direction Detection**: `Intl.Locale.prototype.getTextInfo()` provides runtime `'ltr' | 'rtl'` data in current browsers, but it remains a newly available ECMA-402 feature. LingerLens must retain `dir="auto"`/`<bdi>` and a small script fallback rather than treating this method as universally available; older implementations may expose the former `textInfo` accessor.
 
 ---
 
 ## 4. UI vs. Subtitle Target vs. Source Language
 
-To ensure clean user ergonomics, LagLingo must maintain three distinct language contexts:
+To ensure clean user ergonomics, LingerLens must maintain three distinct language contexts:
 1. **Application UI Language (`ui_lang`)**: The language of the web player controls, tooltips, dialogs, and diagnostic labels.
 2. **Subtitle Source Language (`source_lang`)**: The audio language spoken in the video stream (used to configure ASR acoustic models, VAD sensitivity, and MT source prompting).
 3. **Subtitle Target Language (`target_lang`)**: The language into which subtitles are translated and displayed on screen.
@@ -137,9 +137,9 @@ Different AI providers expect wildly disparate language identifiers:
 - **Generic LLMs (OpenAI-compatible / Qwen3.5)**: Work best with natural language display names in the prompt (e.g., `"Japanese"`, `"Simplified Chinese"`).
 
 ### 6.1 Provider Support Tiers
-LagLingo categorizes language-pair support into three explicit tiers:
-- **Tier 1 (Verified / Native)**: Rigorously benchmarked by LagLingo. Known latency, optimal VAD parameters, high BLEU/COMET subtitle accuracy. Displayed with a verified badge in UI.
-- **Tier 2 (Provider-Claimed)**: Explicitly listed in the provider's official capabilities or documentation, but unverified by LagLingo integration tests.
+LingerLens categorizes language-pair support into three explicit tiers:
+- **Tier 1 (Verified / Native)**: Rigorously benchmarked by LingerLens. Known latency, optimal VAD parameters, high BLEU/COMET subtitle accuracy. Displayed with a verified badge in UI.
+- **Tier 2 (Provider-Claimed)**: Explicitly listed in the provider's official capabilities or documentation, but unverified by LingerLens integration tests.
 - **Tier 3 (Experimental / Best-Effort)**: Accessible via generic LLM translation models with arbitrary BCP 47 prompts. Flagged with an experimental warning.
 
 ### 6.2 Matrix Intersection & Validation
@@ -150,7 +150,7 @@ If a user selects an incompatible pair, the UI highlights the conflict and sugge
 
 ---
 
-## 7. Zero-Maintenance Catalog & Architecture for LagLingo
+## 7. Zero-Maintenance Catalog & Architecture for LingerLens
 
 A small local Python + browser application must **not** maintain language metadata by hand. The final recommendation is a generated, pinned CLDR-derived catalog committed with the app, plus the small `langcodes` runtime for canonical BCP 47 validation; browser `Intl` localizes display labels at runtime.
 
@@ -232,7 +232,7 @@ The backend needs a lightweight, rock-solid validation and aliasing engine witho
 
 ---
 
-## 8. Concrete Implementation Plan for LagLingo
+## 8. Concrete Implementation Plan for LingerLens
 
 ### 8.1 Data Models (Pydantic / Dataclasses)
 ```python

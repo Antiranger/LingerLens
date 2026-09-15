@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 env:
-  RELEASES_REPO: Antiranger/LagLingo-releases
+  RELEASES_REPO: Antiranger/LingerLens-releases
 
 jobs:
   release:
@@ -70,7 +70,7 @@ jobs:
       - name: Build the update manifest from the artifact just produced
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $name = "LagLingo-$version-windows-x64-setup.exe"
+          $name = "LingerLens-$version-windows-x64-setup.exe"
           $url = "https://github.com/$env:RELEASES_REPO/releases/download/v$version/$name"
           node scripts/make-update-manifest.js "release/$name" "$url"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -83,8 +83,8 @@ jobs:
             exit 1
           }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $name = "LagLingo-$version-windows-x64-setup.exe"
-          gh release create "v$version" --repo "$env:RELEASES_REPO" --title "LagLingo $version" `
+          $name = "LingerLens-$version-windows-x64-setup.exe"
+          gh release create "v$version" --repo "$env:RELEASES_REPO" --title "LingerLens $version" `
             --notes "Unsigned preview build. Windows SmartScreen may warn on first run." `
             "release/$name" "release/manifest.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

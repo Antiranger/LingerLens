@@ -7,7 +7,7 @@ The first text frame configures ``stt-rt-v5`` and 16 kHz mono PCM. Audio uses
 binary frames. Soniox returns mutable non-final tokens plus final tokens; the
 special final tokens ``<end>`` and ``<fin>`` mark an utterance boundary and a
 manual-finalization boundary respectively. The adapter exposes the accumulated
-final prefix as LagLingo's interim text, and emits one final cue at each boundary.
+final prefix as LingerLens's interim text, and emits one final cue at each boundary.
 """
 
 from __future__ import annotations

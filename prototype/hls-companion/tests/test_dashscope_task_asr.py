@@ -137,7 +137,7 @@ class DashScopeTaskASRTests(unittest.IsolatedAsyncioTestCase):
         stream = await self.provider().stream(
             policy=SourceLanguagePolicy.specified("ja"),
             sample_rate=16000,
-            hotwords=["LagLingo"],
+            hotwords=["LingerLens"],
             context=["context is off for this preset"],
         )
         await self.server.wait_for(lambda: bool(self.server.start_requests))

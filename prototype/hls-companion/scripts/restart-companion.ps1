@@ -23,7 +23,7 @@ function Get-ListeningProcessIds {
     )
 }
 
-function Test-IsLagLingoCompanion {
+function Test-IsLingerLensCompanion {
     param($Process)
 
     if ($null -eq $Process -or $Process.Name -notmatch '^python(?:\.exe)?$') {
@@ -41,30 +41,30 @@ $listenerIds = Get-ListeningProcessIds -LocalPort $Port
 $listenerProcesses = @()
 foreach ($processId in $listenerIds) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$processId"
-    if (-not (Test-IsLagLingoCompanion -Process $process)) {
+    if (-not (Test-IsLingerLensCompanion -Process $process)) {
         $description = if ($null -eq $process) {
             "PID $processId"
         } else {
             "PID $processId ($($process.Name)): $($process.CommandLine)"
         }
-        throw "Port $Port is occupied by a non-LagLingo process. Refusing to terminate it: $description"
+        throw "Port $Port is occupied by a non-LingerLens process. Refusing to terminate it: $description"
     }
     $listenerProcesses += $process
 }
 
 if ($CheckOnly) {
     if ($listenerProcesses.Count -eq 0) {
-        Write-Host "[LagLingo] Port $Port is free. A new Companion can start safely."
+        Write-Host "[LingerLens] Port $Port is free. A new Companion can start safely."
     } else {
         foreach ($process in $listenerProcesses) {
-            Write-Host "[LagLingo] Would replace old Companion PID $($process.ProcessId) on port $Port."
+            Write-Host "[LingerLens] Would replace old Companion PID $($process.ProcessId) on port $Port."
         }
     }
     exit 0
 }
 
 foreach ($process in $listenerProcesses) {
-    Write-Host "[LagLingo] Stopping old Companion process PID $($process.ProcessId)..."
+    Write-Host "[LingerLens] Stopping old Companion process PID $($process.ProcessId)..."
     Stop-Process -Id $process.ProcessId -Force
 }
 
@@ -84,7 +84,7 @@ if (-not (Test-Path $serverPath -PathType Leaf)) {
     throw "Companion server not found: $serverPath"
 }
 
-Write-Host "[LagLingo] Starting a fresh Companion on port $Port..."
+Write-Host "[LingerLens] Starting a fresh Companion on port $Port..."
 Set-Location $projectRoot
 & $Python $serverRelative --port $Port
 exit $LASTEXITCODE

@@ -3,19 +3,20 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const { spawn } = require('node:child_process');
-const { startBackend } = require('./backend.cjs');
+const { startBackend, openDevLog } = require('./backend.cjs');
 const { createUpdater } = require('./updater.cjs');
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'laglingo', privileges: {
+protocol.registerSchemesAsPrivileged([{ scheme: 'lingerlens', privileges: {
   standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true,
 } }]);
-const smoke = process.argv.includes('--smoke-test') && process.env.LAGLINGO_SMOKE_OUTPUT;
+const smoke = process.argv.includes('--smoke-test') && process.env.LINGERLENS_SMOKE_OUTPUT;
 // Some Windows environments lack a usable Chromium GPU DLL. The player is
 // video-streaming work for FFmpeg, so software rendering is a safe fallback.
 app.commandLine.appendSwitch('disable-gpu');
 if (smoke) app.setPath('userData', path.resolve(smoke, 'user-data'));
 let window;
 let backend;
+let devLog;
 let quitting = false;
 let endpoint;
 let updater;
@@ -61,7 +62,7 @@ async function handleAppUpdate(request, url) {
     return json(await updater.check());
   }
   if (url.pathname === '/api/app-update/install' && request.method === 'POST') {
-    const destination = path.join(app.getPath('temp'), `LagLingo-${updater.getState().update?.version || 'update'}-setup.exe`);
+    const destination = path.join(app.getPath('temp'), `LingerLens-${updater.getState().update?.version || 'update'}-setup.exe`);
     const state = await updater.download(destination);
     if (state.status !== 'ready') return json(state, 502);
     try {
@@ -81,6 +82,36 @@ async function handleAppUpdate(request, url) {
   return json({ error: 'not found' }, 404);
 }
 
+/*
+ * The renderer's diagnostic timeline, persisted to the dev log file.
+ *
+ * The renderer is sandboxed with no filesystem access, and the main process is
+ * the only side that already owns the log file. So this rides the existing
+ * `lingerlens://` protocol intercept rather than adding a preload script or an
+ * IPC channel -- the renderer's privilege set stays exactly as it was.
+ *
+ * A GET doubles as the feature query: when no log file is configured the
+ * renderer sees `enabled: false` and never posts anything at all.
+ */
+async function handleDiagnostics(request) {
+  const json = (body, status = 200) => new Response(JSON.stringify(body), {
+    status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+  const state = devLog
+    ? devLog.state()
+    : { enabled: false, file: null, error: null, lines: 0, terminalOnly: false };
+  if (request.method === 'GET') return json(state);
+  if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+  if (!devLog) return json({ ...state, written: 0 });
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ...state, written: 0, error: state.error || 'invalid JSON body' }, 400);
+  }
+  return json({ ...state, written: devLog.writeLines(payload?.lines) });
+}
+
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => {
@@ -89,7 +120,7 @@ else {
   app.on('before-quit', event => {
     if (quitting) return;
     event.preventDefault(); quitting = true;
-    void (async () => { try { await backend?.stop(); } finally { app.exit(); } })();
+    void (async () => { try { await backend?.stop(); } finally { app.exit(process.exitCode ?? 0); } })();
   });
   app.on('window-all-closed', () => app.quit());
   app.whenReady().then(start).catch(fail);
@@ -100,10 +131,13 @@ async function fail(error) {
   if (smoke) {
     await fs.mkdir(smoke, { recursive: true });
     await fs.writeFile(path.join(smoke, 'failure.json'), JSON.stringify({ error: error?.message || 'desktop startup or smoke failed' }));
+    // A runner reads this exit code; quitting with zero made a failed smoke run
+    // look exactly like a passing one.
+    process.exitCode = 1;
     app.quit(); return;
   }
-  await dialog.showMessageBox({ type: 'error', title: 'LagLingo',
-    message: '播放器启动失败', detail: '请退出后重新打开。若仍然失败，请重新安装完整的 LagLingo 安装包。', buttons: ['退出'] });
+  await dialog.showMessageBox({ type: 'error', title: 'LingerLens',
+    message: '播放器启动失败', detail: '请退出后重新打开。若仍然失败，请重新安装完整的 LingerLens 安装包。', buttons: ['退出'] });
   app.quit();
 }
 
@@ -124,7 +158,7 @@ async function start() {
     width: Math.min(workAreaSize.width, 1680),
     height: Math.min(workAreaSize.height, 1000),
     minWidth: 1080, minHeight: 700,
-    backgroundColor: '#151719', title: 'LagLingo', show: false,
+    backgroundColor: '#151719', title: 'LingerLens', show: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true,
       webSecurity: true, spellcheck: false } });
   window.once('ready-to-show', () => {
@@ -136,27 +170,31 @@ async function start() {
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('laglingo://app/')) event.preventDefault();
+    if (!url.startsWith('lingerlens://app/')) event.preventDefault();
   });
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  devLog = openDevLog();
   backend = startBackend({ packaged: app.isPackaged, resources: process.resourcesPath,
     root: path.join(__dirname, '..'), dataDir: app.getPath('userData'),
-    proxy: await desktopProxy(),
+    proxy: await desktopProxy(), log: devLog,
     onExit: () => { if (endpoint && !quitting) void fail(); } });
   endpoint = await backend.ready;
   if (quitting) return;
   updater = createUpdater({ currentVersion: app.getVersion() });
   // Stable origin preserves localStorage even though the private backend port
   // changes. HLS stays streaming HTTP internally; no renderer Node privileges.
-  protocol.handle('laglingo', async request => {
+  protocol.handle('lingerlens', async request => {
     const url = new URL(request.url);
     if (url.hostname !== 'app' || url.port || url.username || url.password) return new Response('', { status: 403 });
     // Update control belongs to the main process: it is the only side that can
     // replace the executable, and nothing it does belongs in the backend.
     if (url.pathname.startsWith('/api/app-update')) return handleAppUpdate(request, url);
+    // Diagnostics persistence is a main-process concern for the same reason:
+    // only this side owns the log file.
+    if (url.pathname === '/api/diagnostics') return handleDiagnostics(request);
     const target = endpoint.origin + url.pathname + url.search;
     const headers = new Headers(request.headers);
-    headers.set('X-LagLingo-Session', endpoint.token);
+    headers.set('X-LingerLens-Session', endpoint.token);
     headers.set('Origin', endpoint.origin);
     headers.delete('Host');
     try {
@@ -167,7 +205,7 @@ async function start() {
       return new Response(response.body, { status: response.status, headers: resultHeaders });
     } catch { return new Response('Backend unavailable', { status: 503 }); }
   });
-  await window.loadURL('laglingo://app/');
+  await window.loadURL('lingerlens://app/');
   // Check once per run, well after startup so it never competes with the first
   // stream a user opens. Failures are reported, never retried in a loop: an
   // update check that hammers a dead host is worse than no update check.

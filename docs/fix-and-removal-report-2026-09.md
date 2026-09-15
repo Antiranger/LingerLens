@@ -1,4 +1,4 @@
-# LagLingo 修复与删除交付报告
+# LingerLens 修复与删除交付报告
 
 承接 `docs/audit-2026-09-core-algorithm-and-stability.md` 的审查结论。
 本报告只记录**实际改了什么、怎么验证的**，全部数据来自实跑。
@@ -185,18 +185,18 @@ qwen-realtime   LEAK (False/False)   clean (True/True)
 ## 9. 复现方式
 
 ```powershell
-cd F:\Projects\LagLingo
+cd F:\Projects\LingerLens
 npm run ci          # 全绿：guard + python + js + 503 测试 + 13 根测试
 
 # 各项实测（全部可重跑）
-python .scratch\laglingo-audit\soak_cpu_curve.py        # 8h CPU 曲线（应为 ~1.0x）
-python .scratch\laglingo-audit\soak_pipeline.py         # 端到端管线 soak
-python .scratch\laglingo-audit\verify_asr_leak.py       # 应为 0 泄漏
-node   .scratch\laglingo-audit\verify_poll_fork.js      # 应为 1 条链 / stop 后 0
-python .scratch\laglingo-audit\verify_provider_swap.py  # 应为 0 卡死
-python .scratch\laglingo-audit\verify_legacy_unreachable.py
-pwsh   -File .scratch\laglingo-audit\verify_gop_alignment.ps1
-node   .scratch\laglingo-audit\verify_desktop_dev_serves_fixed_source.js
+python .scratch\lingerlens-audit\soak_cpu_curve.py        # 8h CPU 曲线（应为 ~1.0x）
+python .scratch\lingerlens-audit\soak_pipeline.py         # 端到端管线 soak
+python .scratch\lingerlens-audit\verify_asr_leak.py       # 应为 0 泄漏
+node   .scratch\lingerlens-audit\verify_poll_fork.js      # 应为 1 条链 / stop 后 0
+python .scratch\lingerlens-audit\verify_provider_swap.py  # 应为 0 卡死
+python .scratch\lingerlens-audit\verify_legacy_unreachable.py
+pwsh   -File .scratch\lingerlens-audit\verify_gop_alignment.ps1
+node   .scratch\lingerlens-audit\verify_desktop_dev_serves_fixed_source.js
 ```
 
 ---
@@ -208,9 +208,9 @@ node   .scratch\laglingo-audit\verify_desktop_dev_serves_fixed_source.js
 | 建议叫法 | 仓库依据 | 实质 |
 |---|---|---|
 | **桌面版**（Desktop） | `desktop/README.md:1`「Windows 桌面版」 | Electron 打包应用，双击运行；随机端口 + 会话令牌 |
-| **源码版 / Prototype** | `start-laglingo.cmd:26`「For the source Companion」 | 直接跑 `companion/server.py`；固定 8765；浏览器打开 |
+| **源码版 / Prototype** | `start-lingerlens.cmd:26`「For the source Companion」 | 直接跑 `companion/server.py`；固定 8765；浏览器打开 |
 
-`start-laglingo.cmd` 的分工已经是：默认启动桌面版，`-Prototype` 才启动源码版。口语上叫**「桌面版 vs Prototype 版」**最不容易混。
+`start-lingerlens.cmd` 的分工已经是：默认启动桌面版，`-Prototype` 才启动源码版。口语上叫**「桌面版 vs Prototype 版」**最不容易混。
 
 ### 10.2 桌面版此前跑的是修复前的代码（已实测确认）
 
@@ -218,13 +218,13 @@ node   .scratch\laglingo-audit\verify_desktop_dev_serves_fixed_source.js
 |---|---|
 | 构建时间 | `release/win-unpacked` 与 `build-desktop/backend` 均为 **2026-09-14 18:12**，早于本次源码修改（22:24） |
 | 内嵌前端 | 冻结的 `_internal/web-player/player.js` = 95597 B，仍含 `liveSyncDurationCount: 12`；源码 = 96524 B，已改为 `liveSyncDuration: 12` |
-| 内嵌后端 | `desktop/companion.spec:25` 的 `Analysis()` 直接指向 `prototype/hls-companion`，Python 代码编译进 `laglingo-backend.exe` |
+| 内嵌后端 | `desktop/companion.spec:25` 的 `Analysis()` 直接指向 `prototype/hls-companion`，Python 代码编译进 `lingerlens-backend.exe` |
 
 即桌面版**同时**缺少分句器回收、分片关键帧对齐、播放器秒制延迟、hls.js 恢复上限、ASR 泄漏修复与轮询链修复。
 
 ### 10.3 数据目录互不相通（易踩的坑）
 
-- 桌面版：`%APPDATA%\LagLingo\runtime\`（`companion_entry.py:22`，来自 Electron `userData`）
+- 桌面版：`%APPDATA%\LingerLens\runtime\`（`companion_entry.py:22`，来自 Electron `userData`）
 - 源码版：`prototype\hls-companion\runtime\`
 
 **两边的 Provider Key、语言设置、Cookie 完全独立。** 在一边配置不会出现在另一边。
@@ -283,7 +283,7 @@ yt-dlp 校验和                            ✓
 
 各实验的**脚本、报告、结果数据仍留在原处**，只移动了源码副本。
 
-**一个差点犯的错误**：最初的匹配器按文件名扫描，命中了 411 个第三方文件——`.scratch/boundary-model-evaluation` 与 `.scratch/fbk-english-evaluation` 里 vendored 的评估 venv 中存在同名的 `config.py`/`base.py`/`core.py`。已加入"必须位于 LagLingo 目录布局内"与 vendor 路径排除，最终只识别出 32 个真实快照。
+**一个差点犯的错误**：最初的匹配器按文件名扫描，命中了 411 个第三方文件——`.scratch/boundary-model-evaluation` 与 `.scratch/fbk-english-evaluation` 里 vendored 的评估 venv 中存在同名的 `config.py`/`base.py`/`core.py`。已加入"必须位于 LingerLens 目录布局内"与 vendor 路径排除，最终只识别出 32 个真实快照。
 
 ### 11.3 验证
 

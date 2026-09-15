@@ -1,5 +1,5 @@
 {
-  "name": "laglingo",
+  "name": "lingerlens",
   "version": "0.1.0",
   "private": true,
   "description": "Windows-first local delayed live player with real-time ASR and translated subtitles.",
@@ -17,6 +17,7 @@
     "prototype:delay": "python prototype/delayed_live_player.py",
     "prototype:hls": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/hls-companion/scripts/restart-companion.ps1",
     "desktop:dev": "build-desktop\\electron\\electron.exe .",
+    "desktop:dev:log": "node scripts/dev-log-run.js",
     "desktop:backend": ".venv-desktop\\Scripts\\python.exe desktop/prepare_backend.py",
     "desktop:pack": "electron-builder --config desktop/builder.cjs --dir --win --x64",
     "desktop:refresh": "npm run desktop:backend && npm run desktop:pack",

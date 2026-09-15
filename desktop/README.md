@@ -1,7 +1,7 @@
 # Windows 桌面版
 
 桌面版复用现有网页播放器与 Python Companion，通过 Electron 提供独立窗口。
-用户安装后双击 LagLingo 即可使用，无需控制台或本地网址。
+用户安装后双击 LingerLens 即可使用，无需控制台或本地网址。
 
 ## 用户依赖与数据
 
@@ -10,8 +10,8 @@
 用户自行提供云模型 Key。可选本地 Whisper 服务及模型不随包安装。
 桌面版使用 Cookie 手动导入；现有 Chrome/Edge Native Messaging 扩展目前仅用于开发者浏览器模式。
 
-配置、Cookie 和媒体缓存保存在 Electron 的用户数据目录（Windows 通常为 `%APPDATA%/LagLingo`）。
-网页偏好保存在固定 `laglingo://app` 来源中，不受后台动态端口影响。
+配置、Cookie 和媒体缓存保存在 Electron 的用户数据目录（Windows 通常为 `%APPDATA%/LingerLens`）。
+网页偏好保存在固定 `lingerlens://app` 来源中，不受后台动态端口影响。
 不自动读取开发目录中的密钥或 Cookie；首次使用需重新配置。升级和默认卸载保留用户数据。
 关闭窗口会停止直播、ASR、翻译和后台；重复启动只唤起已有窗口。
 
@@ -35,14 +35,14 @@ npm run desktop:dist
 使用 PyInstaller onedir 打包。`desktop:pack` 生成可直接打开的应用目录；
 `desktop:dist` 生成当前用户安装的 NSIS 安装包。两者均不会上传 GitHub。
 `npm run desktop:dev` 使用 .venv-desktop 和源码；开发模式仍需要 PATH 上有 FFmpeg。
-开发解释器可通过 `LAGLINGO_PYTHON` 指定。
+开发解释器可通过 `LINGERLENS_PYTHON` 指定。
 
 ## 验证与发布
 
 ```powershell
 npm run desktop:test
-$env:LAGLINGO_SMOKE_OUTPUT = "$PWD/output/desktop-smoke"
-& .\release\win-unpacked\LagLingo.exe --smoke-test
+$env:LINGERLENS_SMOKE_OUTPUT = "$PWD/output/desktop-smoke"
+& .\release\win-unpacked\LingerLens.exe --smoke-test
 ```
 
 烟测使用随包 FFmpeg 生成 H.264/AAC 的 fMP4 HLS，验证实际解码播放、窗口、

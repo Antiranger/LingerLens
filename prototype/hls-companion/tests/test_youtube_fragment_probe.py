@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "laglingo_youtube_fragment_probe",
+    "lingerlens_youtube_fragment_probe",
     ROOT / "scripts" / "youtube_fragment_403_probe.py",
 )
 assert SPEC and SPEC.loader

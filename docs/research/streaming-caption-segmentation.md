@@ -2,7 +2,7 @@
 
 > **Scope:** research only. This note reviews primary papers, standards, official vendor documentation, and source code from established open-source projects. It does not propose product-code changes in this task.
 >
-> **LagLingo context:** Soniox `stt-rt-v5` emits token-level `is_final`, `start_ms`, and `end_ms`; playback trails live media by a target **15 seconds**. A live Twitch diagnosis observed utterances up to **33.9 s**, translation-ready lag of **3.873 s p50 / 9.76 s p95**, and punctuation-only prefix splitting that still left many overlong cues. Those measurements are repository evidence, not external claims.
+> **LingerLens context:** Soniox `stt-rt-v5` emits token-level `is_final`, `start_ms`, and `end_ms`; playback trails live media by a target **15 seconds**. A live Twitch diagnosis observed utterances up to **33.9 s**, translation-ready lag of **3.873 s p50 / 9.76 s p95**, and punctuation-only prefix splitting that still left many overlong cues. Those measurements are repository evidence, not external claims.
 >
 > **Security note:** external pages and repositories were treated as untrusted data. No instructions from external content were executed.
 
@@ -16,7 +16,7 @@
    hard_span = min(6.0 s, max(4.0 s, D - rolling_p95(post_cut_ready_lag) - 1.0 s safety))
    ```
 
-   With LagLingo's observed `D=15` and `p95=9.76`, the defensible initial hard span is **about 4.0 s**. If post-cut p95 falls to 8 s or below, the cap may relax toward **6.0 s**, which also matches DCMP's maximum caption duration.[S23]
+   With LingerLens's observed `D=15` and `p95=9.76`, the defensible initial hard span is **about 4.0 s**. If post-cut p95 falls to 8 s or below, the cap may relax toward **6.0 s**, which also matches DCMP's maximum caption duration.[S23]
 4. **Use a hierarchy, not one trigger:** final strong punctuation or a clear word gap first; weak punctuation/gap next; then the best stable word boundary before the time/size deadline; Soniox `finalize` only when the stable frontier itself cannot reach the deadline.
 5. **Cut on word timestamps.** The source interval is the first committed lexical token's `start_ms` through the last one's `end_ms`. Never derive speech time from Soniox `<end>`/`<fin>` control-token timestamps. Small inter-cue gaps can be hidden by the renderer; timestamps should remain lexical and truthful.[S3]
 6. **Use punctuation as evidence, not as the only gate.** Streaming punctuation models intentionally retain a mutable tail. A punctuation mark is safe for commitment only when it is itself in the stable/final prefix. At the hard time limit, punctuation must yield to a word-boundary cut.[S19]
@@ -52,9 +52,9 @@ A caption boundary exists to meet a display/readiness contract. It may legitimat
 - BBC recommends no more than two lines for landscape/square video and emphasizes breaks that preserve phrases and grammatical units; its legacy Teletext limit is 37 fixed-width characters per line, while proportional-font systems should measure rendered width rather than rely only on character counts.[S24]
 - Subtitle-segmentation research commonly models separate end-of-line and end-of-block decisions, combining formal length constraints with syntactic/semantic boundaries, pauses, and other multimodal evidence.[S27][S28][S29]
 
-**Consequence for LagLingo:** an ASR `<end>` is one high-quality caption candidate, not the only event allowed to create a cue.
+**Consequence for LingerLens:** an ASR `<end>` is one high-quality caption candidate, not the only event allowed to create a cue.
 
-## 2. Industrial patterns worth carrying into LagLingo
+## 2. Industrial patterns worth carrying into LingerLens
 
 ### 2.1 Stable prefix plus replaceable tail
 
@@ -70,13 +70,13 @@ A final token is confirmed and will never change; a non-final token can change, 
 
 When a provider does not label stable tokens, **LocalAgreement-2** is the established fallback: decode successive input updates and commit their longest common prefix. Whisper-Streaming uses this policy, plus word timestamps and bounded buffer trimming, and reports 3.3 s average latency on its long-form test setup.[S13][S14]
 
-For LagLingo, provider-labeled finality is stronger than inferred LocalAgreement. LocalAgreement remains relevant for incremental **translation**, not for re-proving Soniox token stability.
+For LingerLens, provider-labeled finality is stronger than inferred LocalAgreement. LocalAgreement remains relevant for incremental **translation**, not for re-proving Soniox token stability.
 
 ### 2.2 Periodic partials prevent bursty UX, but do not imply commitment
 
 AssemblyAI retranscribes the whole current turn for each partial and says each new `Turn` message supersedes the prior one. It also emits continuous partials roughly every **3 seconds** during uninterrupted speech.[S10] This is useful for live feedback, but the replacement semantics are unsuitable for immutable scheduling unless a committed prefix is extracted first.
 
-LagLingo's 15-second hidden playback window reduces the need to show unstable text. The better policy is to use the window for speculative work, then expose only immutable source/translation cues.
+LingerLens's 15-second hidden playback window reduces the need to show unstable text. The better policy is to use the window for speculative work, then expose only immutable source/translation cues.
 
 ### 2.3 Progressive endpoint rules plus a deterministic cap
 
@@ -90,7 +90,7 @@ Kaldi's mature online endpoint implementation is a useful non-neural reference. 
 
 The general pattern is more important than the historical values: **strong decoder/semantic evidence permits a short wait; weaker evidence needs more silence; a hard duration rule prevents unbounded latency.** For captions, the hard rule must be much shorter than Kaldi's 20 s because the display budget is 15 s.
 
-## 3. Recommended LagLingo algorithm
+## 3. Recommended LingerLens algorithm
 
 ### 3.1 Required stream state
 
@@ -104,7 +104,7 @@ chunk_start_ms       start_ms of the first pending final token
 latest_audio_ms      total_audio_proc_ms or local PCM media cursor
 ```
 
-Ignore `<end>` and `<fin>` as text. They close the ASR utterance but are not lexical timing anchors. The current LagLingo adapter already advertises `stable_prefix=true`, but its normalized event exposes accumulated text and utterance-level begin/end rather than the individual final tokens. A timestamp-aware caption chunker therefore needs access to the token ledger (directly or through normalized committed-token events); splitting a concatenated string cannot recover exact word boundaries.
+Ignore `<end>` and `<fin>` as text. They close the ASR utterance but are not lexical timing anchors. The current LingerLens adapter already advertises `stable_prefix=true`, but its normalized event exposes accumulated text and utterance-level begin/end rather than the individual final tokens. A timestamp-aware caption chunker therefore needs access to the token ledger (directly or through normalized committed-token events); splitting a concatenated string cannot recover exact word boundaries.
 
 ### 3.2 Budget controller
 
@@ -141,7 +141,7 @@ Initial limits for the observed system:
 | Hard word cap | 16 words | Safety ceiling for unusually fast speech |
 | Lines | 2 | BBC/DCMP recommendation[S23][S24] |
 | Fallback width | 36–37 Latin characters per line | Conservative legacy compatibility; measure rendered width for proportional fonts[S24] |
-| CJK fallback | 20 grapheme clusters per line, 40 per block | LagLingo starting heuristic, not a cited universal standard; validate against actual font/viewport |
+| CJK fallback | 20 grapheme clusters per line, 40 per block | LingerLens starting heuristic, not a cited universal standard; validate against actual font/viewport |
 
 The time budget is authoritative. Word/width caps may cut earlier, but must never defer a cut beyond the hard time trigger.
 
@@ -195,7 +195,7 @@ def on_soniox_result(result):
 
 ### 3.5 Soniox endpoint controls are quality controls, not the chunk deadline
 
-LagLingo's built-in Soniox profile currently uses `maxEndpointDelayMs=700` and `endpointSensitivity=0.3`. The 700 ms setting is close to Soniox's allowed minimum of 500 ms and limits delay **after an actual end of speech**; it does not cut a continuously spoken 20–35 s turn.[S5]
+LingerLens's built-in Soniox profile currently uses `maxEndpointDelayMs=700` and `endpointSensitivity=0.3`. The 700 ms setting is close to Soniox's allowed minimum of 500 ms and limits delay **after an actual end of speech**; it does not cut a continuously spoken 20–35 s turn.[S5]
 
 Recommended experiment order:
 
@@ -204,7 +204,7 @@ Recommended experiment order:
 3. Prefer the setting with fewer semantically bad `<end>` splits, because the local caption chunker already enforces the display deadline. Endpoint latency can use the remaining playback budget.
 4. Treat `endpointLatencyAdjustmentLevel` as a measured tuning dimension, starting at **1**, then trying **2** if endpoint lag remains material. Higher/aggressive settings may reduce recognition accuracy.[S5]
 
-This separates two controls that otherwise fight each other: Soniox optimizes natural utterance boundaries; LagLingo optimizes caption readiness.
+This separates two controls that otherwise fight each other: Soniox optimizes natural utterance boundaries; LingerLens optimizes caption readiness.
 
 ## 4. Punctuation restoration and semantic segmentation
 
@@ -217,7 +217,7 @@ CT-Transformer was designed to freeze partial punctuation output with controllab
 - carry punctuation-model state across caption chunks;
 - do not use punctuation from the mutable tail as an irreversible boundary.
 
-A final/offline punctuation pass may revise punctuation **inside a not-yet-displayed cue**, but must not move its lexical timestamps or join it with an adjacent scheduled cue. In LagLingo's delayed pipeline, punctuation cleanup has until the cue's playback deadline; after publication, text stability takes priority over cosmetic correction.
+A final/offline punctuation pass may revise punctuation **inside a not-yet-displayed cue**, but must not move its lexical timestamps or join it with an adjacent scheduled cue. In LingerLens's delayed pipeline, punctuation cleanup has until the cue's playback deadline; after publication, text stability takes priority over cosmetic correction.
 
 ### 4.2 Semantic score under a hard constraint
 
@@ -246,7 +246,7 @@ Re-translation can match or outperform specialized streaming MT even with few re
 - **Revision window:** allow changes only in the last `RW` displayed target tokens. Revision-controllable beam search reports that `RW=0` can eliminate flicker with a minor quality loss, while `RW=3` approached unconstrained beam-search quality in its experiments.[S21]
 - **Biased re-translation:** bias decoding toward the previous output and add a wait policy. Evaluate with normalized erasure (NE), the average number of intermediate target tokens deleted per final target token.[S20]
 
-For LagLingo's ordinary captions, use **revision window 0 after cue publication**. Before publication, hidden output may revise freely. If a mutable preview is ever shown, start with `RW=3`, update at no more than 1 Hz, visually distinguish the mutable suffix, and set an acceptance target such as `NE <= 0.2`; that NE threshold is a product target, not a literature standard.
+For LingerLens's ordinary captions, use **revision window 0 after cue publication**. Before publication, hidden output may revise freely. If a mutable preview is ever shown, start with `RW=3`, update at no more than 1 Hz, visually distinguish the mutable suffix, and set an acceptance target such as `NE <= 0.2`; that NE threshold is a product target, not a literature standard.
 
 ### 5.3 Chunk context versus chunk independence
 
@@ -393,4 +393,4 @@ All links below are primary/first-party unless marked otherwise.
 - The arXiv API endpoint failed repeatedly; canonical arXiv/ACL/ISCA paper pages and PDFs were retrieved through web fetch instead.
 - Soniox documentation search exposed an error string for `max_non_final_tokens_duration_ms`, but no authoritative field description/range was found in the official SDK type model. This note therefore does **not** recommend relying on that field.
 - BBC's page is very large and focused fetches returned broad page content; exact 37-character and 160–180 wpm statements were separately recovered from the same official page's search index. DCMP provides the firmer numeric duration limit.
-- The concrete LagLingo thresholds above are starting policies derived from the cited mechanisms plus LagLingo's measured delay/latency distribution. They require live replay evaluation across languages, speech rates, and translation providers before being treated as production defaults.
+- The concrete LingerLens thresholds above are starting policies derived from the cited mechanisms plus LingerLens's measured delay/latency distribution. They require live replay evaluation across languages, speech rates, and translation providers before being treated as production defaults.

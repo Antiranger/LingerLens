@@ -1,38 +1,8 @@
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const { randomBytes } = require('node:crypto');
-const fs = require('node:fs');
 const path = require('node:path');
-
-// The backend writes everything to stderr: `companion_entry.py` redirects
-// stdout there and keeps stdout for the one-line ready handshake. That stderr
-// stays drained by default, because media and provider output can carry private
-// stream URLs. `LAGLINGO_BACKEND_LOG` unlocks it, opt-in and per run:
-//
-//   unset / 0 / off   discard it (default, nothing is written anywhere)
-//   1 / on / true     write it to this process's stderr
-//   anything else     treat it as a file path and tee it there as well
-//
-// Electron is a GUI-subsystem binary on Windows, so `process.stderr` is not
-// always attached to a console. When it is missing, use the file form for a run
-// long enough that you cannot watch the terminal.
-function backendLogSink(env = process.env) {
-  const value = String(env.LAGLINGO_BACKEND_LOG ?? '').trim();
-  if (!value || value === '0' || /^off$/i.test(value)) return null;
-  let file = null;
-  if (!/^(1|on|true|yes|stdout|stderr)$/i.test(value)) {
-    file = path.resolve(value);
-    // Fail here rather than mid-run, and fall back to the terminal.
-    try { fs.appendFileSync(file, ''); } catch { file = null; }
-  }
-  // Appends are synchronous on purpose: this log is low-volume (unexpected
-  // request failures), and a buffered stream can lose its tail when the app is
-  // killed. A broken sink must never take the player down with it.
-  return chunk => {
-    if (process.stderr) process.stderr.write(chunk);
-    if (file) { try { fs.appendFileSync(file, chunk); } catch { /* ignore */ } }
-  };
-}
+const { openDevLog } = require('./devlog.cjs');
 
 // Local wall-clock rather than UTC: a long-run log gets read against what the
 // clock on the wall said when something went wrong.
@@ -42,10 +12,11 @@ function localStamp(date = new Date()) {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function startBackend({ packaged, resources, root, dataDir, proxy = null, onExit = () => {} }) {
+function startBackend({ packaged, resources, root, dataDir, proxy = null, log = openDevLog(),
+  onExit = () => {} }) {
   const command = packaged
-    ? path.join(resources, 'backend', 'laglingo-backend.exe')
-    : (process.env.LAGLINGO_PYTHON || path.join(root, '.venv-desktop', 'Scripts', 'python.exe'));
+    ? path.join(resources, 'backend', 'lingerlens-backend.exe')
+    : (process.env.LINGERLENS_PYTHON || path.join(root, '.venv-desktop', 'Scripts', 'python.exe'));
   const args = packaged ? [] : [path.join(root, 'desktop', 'companion_entry.py')];
   args.push('--data-dir', dataDir);
   const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
@@ -55,13 +26,17 @@ function startBackend({ packaged, resources, root, dataDir, proxy = null, onExit
   const child = spawn(command, args, { cwd: packaged ? resources : root, env,
     windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const token = randomBytes(32).toString('hex');
-  const log = backendLogSink();
   let stopped = false;
   let stopPromise;
   if (log) {
     // A timestamped header keeps an eight-hour log navigable.
-    log(`\n[LagLingo ${localStamp()}] backend: ${command} ${args.join(' ')}\n`);
-    child.stderr.on('data', log);
+    log.write(`\n[LingerLens ${localStamp()}] backend: ${command} ${args.join(' ')}\n`);
+    if (log.error) {
+      // Someone asked for a file and did not get one. Say so in the log's own
+      // place, because the UI reads this back through /api/diagnostics.
+      log.write(`[LingerLens] dev log file unavailable -> ${log.error}\n`);
+    }
+    child.stderr.on('data', chunk => log.write(chunk));
   } else {
     child.stderr.resume(); // Do not persist media/provider output containing private URLs.
   }
@@ -87,7 +62,7 @@ function startBackend({ packaged, resources, root, dataDir, proxy = null, onExit
         // Ignore all non-protocol output on stdout. The backend redirects its
         // own prints to stderr, so anything landing here is stray; surface it
         // only when logging is on rather than dropping it silently.
-        if (log) log(`${line}\n`);
+        if (log) log.write(`${line}\n`);
       }
     });
   });
@@ -117,4 +92,4 @@ function startBackend({ packaged, resources, root, dataDir, proxy = null, onExit
   }
   return { ready, stop, pid: child.pid };
 }
-module.exports = { startBackend, backendLogSink, localStamp };
+module.exports = { startBackend, openDevLog, localStamp };

@@ -1,6 +1,6 @@
 # 说话人语调鲁棒性：五张 ticket 为什么没有效果 —— 复盘与重做方案
 
-> 本文所有数字都是在 `F:/Projects/LagLingo` 本机实测的，数据源是
+> 本文所有数字都是在 `F:/Projects/LingerLens` 本机实测的，数据源是
 > `.benchmark-data/crema-mini/AudioWAV`（240 条 / 20 actor / 16k mono / 中位 2.34s）
 > 和 `vendor/models/diarization/campplus.onnx`。实验脚本见文末附录。
 >

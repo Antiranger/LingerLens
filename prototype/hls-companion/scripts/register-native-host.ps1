@@ -6,10 +6,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$HostName = 'com.laglingo.hls_companion'
+$HostName = 'com.lingerlens.hls_companion'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Launcher = (Resolve-Path (Join-Path $PSScriptRoot 'native-host.cmd')).Path
-$ManifestPath = Join-Path $PSScriptRoot 'com.laglingo.hls_companion.json'
+$ManifestPath = Join-Path $PSScriptRoot 'com.lingerlens.hls_companion.json'
 $RegistryPaths = @(
   "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName",
   "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$HostName"
@@ -24,7 +24,7 @@ if ($Unregister) {
 
 $Manifest = @{
   name = $HostName
-  description = 'LagLingo Prototype 2 local cookie bridge'
+  description = 'LingerLens Prototype 2 local cookie bridge'
   path = $Launcher
   type = 'stdio'
   allowed_origins = @("chrome-extension://$ExtensionId/")

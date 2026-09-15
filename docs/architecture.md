@@ -1,6 +1,6 @@
 # Architecture
 
-LagLingo is a Windows-first local application composed of a loopback Companion, a self-contained browser player, and optional browser-extension bridges.
+LingerLens is a Windows-first local application composed of a loopback Companion, a self-contained browser player, and optional browser-extension bridges.
 
 ```text
 YouTube/Bilibili URL

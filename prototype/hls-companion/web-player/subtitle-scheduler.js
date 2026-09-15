@@ -1,5 +1,5 @@
 /*
- * LagLingo subtitle cue scheduler (redesign Fix D + Fix H).
+ * LingerLens subtitle cue scheduler (redesign Fix D + Fix H).
  *
  * Pure, DOM-free decision logic so it can be unit-tested under node
  * (tests/test_cue_scheduler.js) and driven by player.js's 100ms tick.

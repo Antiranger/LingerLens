@@ -37,7 +37,11 @@
     { test: /FFmpeg exited with code|FFmpeg stopped unexpectedly|ffmpeg exited/i, key: "diag.hint.media",
       fallback: "直播源下载中断。多数是直播已结束，或平台限制了这次拉流——停止后重新启动会话即可。" },
     { test: /Failed to fetch|NetworkError|ERR_NETWORK|Backend unavailable|HTTP 5\d\d/, key: "diag.hint.network",
-      fallback: "本地后台没有响应。确认 LagLingo 仍在运行，然后重试。" },
+      fallback: "本地后台没有响应。确认 LingerLens 仍在运行，然后重试。" },
+    /* 必须排在 network 之后：`Backend unavailable` 会被上面那条接住，而它的
+       处置办法（重试）和这条（换链接）完全不同。 */
+    { test: /probe failed|no video formats|video is unavailable|live event has ended|unable to extract|not available in your country|requested format is not available|private video/i, key: "diag.hint.source",
+      fallback: "这个链接拉不到直播。多半是链接已失效、直播已经结束，或者平台要求登录、限制了访问——换一个正在直播的链接再试。" },
     { test: /hls\.js fatal|MEDIA_ERROR|无法恢复|不支持 MSE/i, key: "diag.hint.decode",
       fallback: "播放器无法解码这路直播。试一下更低的清晰度。" },
     { test: /翻译失败|translation.*fail|translationLastFailure/i, key: "diag.hint.translation",
@@ -403,6 +407,24 @@
     };
   }
 
+  /* 本地时间的秒级时间戳。复制报告和落盘日志共用同一个格式。 */
+  function stampSeconds(epochSeconds) {
+    const date = new Date(epochSeconds * 1000);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+      + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  /*
+   * 落盘用的行格式。故意不做本地化：这份文件是拿来 grep 和转交的，所以级别
+   * 保持 `error` 这样的稳定 token，哪怕界面是中文。给人读的那份是
+   * formatDiagnostics —— 那个要贴进 issue，所以它才需要翻译。
+   */
+  function formatRecordLines(rows) {
+    return (Array.isArray(rows) ? rows : []).map((entry) =>
+      `${stampSeconds(entry.t)}  [${entry.level}] ${entry.source}  ${entry.message}`);
+  }
+
   /*
    * 复制到剪贴板的诊断文本。故意用纯文本而不是 JSON：用户会直接贴进 issue，
    * 而 issue 里需要的是能读的上下文，不是让人再去解析一遍的结构。
@@ -410,19 +432,13 @@
   function formatDiagnostics(options = {}) {
     const log = options.log;
     const context = options.context || {};
-    const title = options.title || "LagLingo 诊断信息";
+    const title = options.title || "LingerLens 诊断信息";
     const timeLabel = options.timeLabel || "生成时间";
     const countLabel = options.countLabel || "记录";
     const levelLabels = options.levelLabels || LEVEL_FALLBACK;
     const rows = log ? log.list() : [];
     const counts = log ? log.counts() : { info: 0, warn: 0, error: 0, total: 0 };
-    const stamp = (epochSeconds) => {
-      const date = new Date(epochSeconds * 1000);
-      const pad = (value) => String(value).padStart(2, "0");
-      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
-        + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-    };
-    const header = [title, `${timeLabel}: ${stamp(Date.now() / 1000)}`];
+    const header = [title, `${timeLabel}: ${stampSeconds(Date.now() / 1000)}`];
     for (const [label, value] of Object.entries(context)) {
       if (value === null || value === undefined || value === "") continue;
       header.push(`${label}: ${value}`);
@@ -431,8 +447,54 @@
       + ` (${levelLabels.error} ${counts.error} / ${levelLabels.warn} ${counts.warn} / ${levelLabels.info} ${counts.info})`;
     header.push(summary, "");
     const body = rows.map((entry) =>
-      `${stamp(entry.t)}  [${levelLabels[entry.level] || entry.level}] ${entry.source}  ${entry.message}`);
+      `${stampSeconds(entry.t)}  [${levelLabels[entry.level] || entry.level}] ${entry.source}  ${entry.message}`);
     return header.concat(body).join("\n");
+  }
+
+  /*
+   * 开发日志落盘。文件归主进程所有，渲染进程在沙箱里既没有文件系统也没有
+   * preload/IPC，所以记录只能走 lingerlens:// 这条早就存在的通道交过去。
+   *
+   * status() 顺带当特性开关用：没配日志文件时 enabled 为 false，之后一条
+   * 都不会发。send() 返回真正落盘的行数——调用方只有在它等于待发条数时才能
+   * 推进游标，否则记录就永久丢了。
+   */
+  function createDevLogClient(options = {}) {
+    const fetchFn = options.fetch || (typeof global.fetch === "function" ? global.fetch.bind(global) : null);
+    const off = { enabled: false, file: null, error: null, lines: 0, terminalOnly: false };
+    let state = null;
+
+    async function status() {
+      try {
+        const response = await fetchFn("/api/diagnostics", { cache: "no-store" });
+        const data = await response.json().catch(() => ({}));
+        state = { ...off, ...data };
+      } catch {
+        state = { ...off };
+      }
+      return state;
+    }
+
+    return {
+      status,
+      get: () => state,
+      async send(lines) {
+        const payload = Array.isArray(lines) ? lines.filter(Boolean) : [];
+        if (!state?.enabled || !payload.length) return 0;
+        try {
+          const response = await fetchFn("/api/diagnostics", {
+            method: "POST", cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ lines: payload }),
+          });
+          const data = await response.json().catch(() => ({}));
+          state = { ...state, ...data };
+          return Number(data.written) || 0;
+        } catch {
+          return 0;
+        }
+      },
+    };
   }
 
   const exported = {
@@ -440,9 +502,11 @@
     createDiagnosticsClient,
     createDiagnosticsBar,
     createUpdateClient,
+    createDevLogClient,
     formatDiagnostics,
+    formatRecordLines,
     hintFor,
   };
-  global.LagLingoDiagnostics = exported;
+  global.LingerLensDiagnostics = exported;
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
 })(typeof window !== "undefined" ? window : globalThis);

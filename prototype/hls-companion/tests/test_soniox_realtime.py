@@ -126,7 +126,7 @@ class SonioxRealtimeTests(unittest.IsolatedAsyncioTestCase):
             policy=SourceLanguagePolicy.specified("ja"),
             sample_rate=16000,
             hotwords=[],
-            context=["LagLingo", "配信者"],
+            context=["LingerLens", "配信者"],
         )
         await stream.push_pcm(b"\x01\x00" * 1600, 0.0)
         await self.server.wait_for(lambda: len(self.server.audio) == 3200)
@@ -138,7 +138,7 @@ class SonioxRealtimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start["num_channels"], 1)
         self.assertEqual(start["language_hints"], ["ja"])
         self.assertTrue(start["language_hints_strict"])
-        self.assertEqual(start["context"], {"terms": ["LagLingo", "配信者"]})
+        self.assertEqual(start["context"], {"terms": ["LingerLens", "配信者"]})
         await stream.aclose()
 
     async def test_endpoint_tuning_options_map_to_official_wire_names(self) -> None:

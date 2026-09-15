@@ -37,7 +37,7 @@ TESTS_DIR = PKG_ROOT / "tests"
 # older, so re-exec under a suitable interpreter instead of reporting failures
 # that are not code defects.
 MIN_PYTHON = (3, 10)
-_REEXEC_FLAG = "LAGLINGO_TEST_REEXEC"
+_REEXEC_FLAG = "LINGERLENS_TEST_REEXEC"
 
 
 def _find_modern_interpreter() -> str | None:

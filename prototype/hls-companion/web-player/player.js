@@ -39,7 +39,7 @@
      渲染进程里每一个用户可见的报错都从 showError() 出去，所以那一个钩子就
      覆盖了大部分故障；后端自己的记录走 /api/logs 轮询合并进来。两者共用一条
      时间线：桌面后端就在本机，时钟一致。 */
-  const diagnosticsLog = window.LagLingoDiagnostics?.createDiagnosticsLog() || null;
+  const diagnosticsLog = window.LingerLensDiagnostics?.createDiagnosticsLog() || null;
   let diagnosticsClient = null;
   let diagnosticsBar = null;
   let updateClient = null;
@@ -64,16 +64,27 @@
       [label("diag.ctx.target", "目标延迟")]: `${el("targetDelay")?.value ?? "—"}s`,
       [label("diag.ctx.build", "构建")]: buildIdentity
         ? `${buildIdentity.version} · ${buildIdentity.builtAt} · ${buildIdentity.packaged ? "packaged" : "dev"}` : "—",
+      [label("diag.ctx.devlog", "开发日志")]: describeDevLog(),
       [label("diag.ctx.page", "页面")]: location.href,
       [label("diag.ctx.useragent", "用户代理")]: navigator.userAgent,
     };
   }
 
+  /* 报告里带上开发日志的去向：这样一份贴出来的报告自己就说清了它是不是
+     也落了盘，以及落在哪里。没配就返回空串，报告里不会多出一行噪音。 */
+  function describeDevLog() {
+    const state = devLogClient?.get();
+    if (!state) return "";
+    if (state.error) return `${updateLabel("diag.devlog.failed", "日志写入失败", {})} — ${state.error}`;
+    if (state.enabled && state.file) return state.file;
+    return "";
+  }
+
   async function copyDiagnostics() {
     if (!diagnosticsLog) return;
-    const text = window.LagLingoDiagnostics.formatDiagnostics({
+    const text = window.LingerLensDiagnostics.formatDiagnostics({
       log: diagnosticsLog,
-      title: window.I18N?.t("diag.report.title", null, "LagLingo 诊断信息") || "LagLingo 诊断信息",
+      title: window.I18N?.t("diag.report.title", null, "LingerLens 诊断信息") || "LingerLens 诊断信息",
       timeLabel: window.I18N?.t("diag.report.time", null, "生成时间") || "生成时间",
       countLabel: window.I18N?.t("diag.report.count", null, "记录") || "记录",
       levelLabels: {
@@ -108,7 +119,7 @@
     setTimeout(() => { button.textContent = original; }, 1600);
   }
 
-  diagnosticsClient = window.LagLingoDiagnostics?.createDiagnosticsClient({
+  diagnosticsClient = window.LingerLensDiagnostics?.createDiagnosticsClient({
     onUpdate: (data) => {
       if (!diagnosticsLog || !data.ok) return;
       // sessionId 变了说明后端换了进程，seq 空间从头开始：必须清空去重表并
@@ -127,10 +138,65 @@
       diagnosticsBar?.render();
     },
   }) || null;
-  diagnosticsBar = window.LagLingoDiagnostics?.createDiagnosticsBar({
+  diagnosticsBar = window.LingerLensDiagnostics?.createDiagnosticsBar({
     log: diagnosticsLog,
     onCopy: copyDiagnostics,
   }) || null;
+
+  /* ── 开发日志落盘 ────────────────────────────────────────────
+     只有主进程能写文件（渲染进程在沙箱里），所以记录经 lingerlens:// 交给它。
+     没配日志文件时 status() 回来的 enabled 是 false，之后一条都不发。 */
+  const devLogClient = window.LingerLensDiagnostics?.createDevLogClient() || null;
+  /* 游标用插入序 order，不用数组下标也不用时间戳：环形缓冲会淘汰旧记录，而且
+     后端记录的时间戳可能落在已经交出去的记录之前，两者都会漏。 */
+  let devLogCursor = 0;
+  let devLogAlerted = false;
+
+  async function flushDevLog() {
+    if (!devLogClient || !diagnosticsLog || !devLogClient.get()?.enabled) return 0;
+    const pending = diagnosticsLog.list()
+      .filter((entry) => entry.order > devLogCursor)
+      .sort((a, b) => a.order - b.order);
+    if (!pending.length) return 0;
+    const written = await devLogClient.send(window.LingerLensDiagnostics.formatRecordLines(pending));
+    // 主进程每次有上限，只接受前 N 条；游标只能推进到真正落盘的那一条，
+    // 否则剩下的记录就永久丢了。
+    if (written > 0) devLogCursor = pending[Math.min(written, pending.length) - 1].order;
+    return written;
+  }
+
+  function renderDevLogState(state) {
+    const node = el("diagLogState");
+    if (node) {
+      if (state?.error) {
+        node.hidden = false;
+        node.dataset.tone = "error";
+        node.textContent = updateLabel("diag.devlog.failed", "日志写入失败", {});
+        node.title = `${state.file || ""}\n${state.error}`.trim();
+      } else if (state?.enabled && state.file) {
+        node.hidden = false;
+        node.dataset.tone = "on";
+        node.textContent = updateLabel("diag.devlog.on", "记录中 {file}", { file: state.file.split(/[\\/]/).pop() });
+        node.title = state.file;
+      } else {
+        node.hidden = true;
+        node.removeAttribute("title");
+      }
+    }
+    // 要求了文件却没写成——这是必须说出来的一种失败，因为不说的话整个
+    // 实测过程会安静地产出零字节，而人要过一小时才会发现。
+    if (state?.error && !devLogAlerted) {
+      devLogAlerted = true;
+      diagnosticsBar?.push("warn", "devlog",
+        `${updateLabel("diag.devlog.failed", "日志写入失败", {})}：${state.error}`);
+      diagnosticsBar?.render();
+    }
+  }
+
+  async function initDevLog() {
+    if (!devLogClient) return;
+    renderDevLogState(await devLogClient.status());
+  }
 
   /* ── 更新 ──────────────────────────────────────────────────
      主进程在启动 10 秒后自己查一次；这里只负责把状态显示出来，以及用户按
@@ -202,7 +268,7 @@
     }
   }
 
-  updateClient = window.LagLingoDiagnostics?.createUpdateClient({ onUpdate: renderUpdate }) || null;
+  updateClient = window.LingerLensDiagnostics?.createUpdateClient({ onUpdate: renderUpdate }) || null;
   el("diagUpdate")?.addEventListener("click", async () => {
     const status = updateClient?.get()?.update?.status;
     if (status === "available") await updateClient.install();
@@ -210,6 +276,8 @@
     renderUpdate(updateClient?.get());
   });
   void updateClient?.status().then(renderUpdate);
+  /* 先问一次开发日志有没有配、能不能写，再决定后面发不发记录。 */
+  void initDevLog();
   function providerHasCredential(provider) {
     return provider?.apiKeyConfigured === true
       || Boolean(provider?.apiKey && provider.apiKey !== "***");
@@ -291,27 +359,27 @@
         onUpdate: (data) => updateLiveMessagesUI(data),
       })
     : null;
-  const filterPureEmojiPreference = localStorage.getItem("laglingo_filter_pure_emoji") === "true";
+  const filterPureEmojiPreference = localStorage.getItem("lingerlens_filter_pure_emoji") === "true";
   const chatOverlay = window.createChatOverlay({ container: el("chatOverlay") });
   const chatOverlayToggle = el("chatOverlayToggle");
   const chatOverlayOpacity = el("chatOverlayOpacity");
   const chatOverlaySize = el("chatOverlaySize");
-  chatOverlayToggle.checked = localStorage.getItem("laglingo.chatOverlay.enabled") !== "false";
-  chatOverlayOpacity.value = localStorage.getItem("laglingo.chatOverlay.opacity") || "0.8";
-  chatOverlaySize.value = localStorage.getItem("laglingo.chatOverlay.size") || "1";
+  chatOverlayToggle.checked = localStorage.getItem("lingerlens.chatOverlay.enabled") !== "false";
+  chatOverlayOpacity.value = localStorage.getItem("lingerlens.chatOverlay.opacity") || "0.8";
+  chatOverlaySize.value = localStorage.getItem("lingerlens.chatOverlay.size") || "1";
   const applyChatOpacity = () => el("chatOverlay").style.setProperty("--chat-opacity", chatOverlayOpacity.value);
   applyChatOpacity();
   el("chatOverlay").style.setProperty("--chat-size", chatOverlaySize.value);
   chatOverlayToggle.addEventListener("change", () => {
-    localStorage.setItem("laglingo.chatOverlay.enabled", String(chatOverlayToggle.checked));
+    localStorage.setItem("lingerlens.chatOverlay.enabled", String(chatOverlayToggle.checked));
     chatOverlay.clear();
   });
   chatOverlayOpacity.addEventListener("input", () => {
     applyChatOpacity();
-    localStorage.setItem("laglingo.chatOverlay.opacity", chatOverlayOpacity.value);
+    localStorage.setItem("lingerlens.chatOverlay.opacity", chatOverlayOpacity.value);
   });
   chatOverlaySize.addEventListener("change", () => {
-    localStorage.setItem("laglingo.chatOverlay.size", chatOverlaySize.value);
+    localStorage.setItem("lingerlens.chatOverlay.size", chatOverlaySize.value);
   });
   const liveMessagesTimeline = window.createLiveMessagesTimeline
     ? window.createLiveMessagesTimeline({
@@ -354,27 +422,27 @@
 
   let timelineRenderTimer = null;
   const subtitleBudget = { lowSince: null, suggested: null };
-  const savedTargetDelay = Number(localStorage.getItem("laglingo.targetDelaySeconds") || 15);
-  const chatTranslatePreference = localStorage.getItem("laglingo.liveMessages.translate") === "true";
+  const savedTargetDelay = Number(localStorage.getItem("lingerlens.targetDelaySeconds") || 15);
+  const chatTranslatePreference = localStorage.getItem("lingerlens.liveMessages.translate") === "true";
   el("chatTranslateToggle").checked = chatTranslatePreference;
   if (el("hidePureEmojiToggle")) {
     el("hidePureEmojiToggle").checked = filterPureEmojiPreference;
     el("hidePureEmojiToggle").addEventListener("change", (e) => {
       const enabled = Boolean(e.target.checked);
-      localStorage.setItem("laglingo_filter_pure_emoji", String(enabled));
+      localStorage.setItem("lingerlens_filter_pure_emoji", String(enabled));
       if (liveMessagesTimeline && typeof liveMessagesTimeline.setFilterPureEmoji === "function") {
         liveMessagesTimeline.setFilterPureEmoji(enabled);
       }
     });
   }
   const subtitlePrefs = {
-    enabled: localStorage.getItem("laglingo.subtitle.enabled") !== "false",
-    mode: localStorage.getItem("laglingo.subtitle.mode") || "bilingual",
-    size: localStorage.getItem("laglingo.subtitle.size") || "medium",
-    offset: Number(localStorage.getItem("laglingo.subtitle.offset") || 0),
+    enabled: localStorage.getItem("lingerlens.subtitle.enabled") !== "false",
+    mode: localStorage.getItem("lingerlens.subtitle.mode") || "bilingual",
+    size: localStorage.getItem("lingerlens.subtitle.size") || "medium",
+    offset: Number(localStorage.getItem("lingerlens.subtitle.offset") || 0),
   };
   if (initialParams.get("url")) el("url").value = initialParams.get("url");
-  if (el("proxy")) el("proxy").value = localStorage.getItem("laglingo.proxy") || "";
+  if (el("proxy")) el("proxy").value = localStorage.getItem("lingerlens.proxy") || "";
   el("targetDelay").value = String(savedTargetDelay > 10 && savedTargetDelay <= 60 ? savedTargetDelay : 15);
 
   const setState = (text, tone = "idle") => {
@@ -427,11 +495,11 @@
     if (!response.ok) {
       const detail = contentType.includes("json") && payload.error
         ? payload.error
-        : `本地后台接口 ${path} 返回 HTTP ${response.status}，请确认 LagLingo 后台已启动。`;
+        : `本地后台接口 ${path} 返回 HTTP ${response.status}，请确认 LingerLens 后台已启动。`;
       throw new Error(detail);
     }
     if (!contentType.includes("json")) {
-      throw new Error(`本地后台接口 ${path} 返回了非 JSON 响应，请重启 LagLingo。`);
+      throw new Error(`本地后台接口 ${path} 返回了非 JSON 响应，请重启 LingerLens。`);
     }
     return payload;
   }
@@ -439,7 +507,7 @@
   function commonBody() {
     const body = { url: el("url").value.trim() };
     const proxy = el("proxy")?.value.trim() || "";
-    if (proxy) { body.proxy = proxy; localStorage.setItem("laglingo.proxy", proxy); }
+    if (proxy) { body.proxy = proxy; localStorage.setItem("lingerlens.proxy", proxy); }
     if (authToken) body.authToken = authToken;
     return body;
   }
@@ -518,7 +586,7 @@
       };
       const data = await request("/api/start", body);
       lastSessionState = data.status?.state || "running";
-      localStorage.setItem("laglingo.targetDelaySeconds", String(body.targetDelaySeconds));
+      localStorage.setItem("lingerlens.targetDelaySeconds", String(body.targetDelaySeconds));
       el("stop").disabled = false;
       const quality = data.quality;
       el("resolution").textContent = `${quality.width || "?"}×${quality.height || "?"}${quality.fps ? ` @ ${quality.fps}fps` : ""}`;
@@ -716,7 +784,7 @@
       updateStallOverlay(data);
       if (data.state === "running" && Number(data.targetDelaySeconds) > 10) {
         el("targetDelay").value = String(data.targetDelaySeconds);
-        localStorage.setItem("laglingo.targetDelaySeconds", String(data.targetDelaySeconds));
+        localStorage.setItem("lingerlens.targetDelaySeconds", String(data.targetDelaySeconds));
       }
       const ahead = bufferAhead();
       el("buffer").textContent = seconds(ahead);
@@ -833,6 +901,7 @@
       // 会话级错误不走 showError，而且后端随后就会把 FFmpeg 的尾部输出发到
       // /api/logs；两条一起看才是完整现场，所以这里也记一条。
       diagnosticsBar?.push("error", "session", detail);
+      void flushDevLog();
       return;
     }
     const stall = Number(data.sourceStallSeconds);
@@ -1300,7 +1369,7 @@
     const container = el("sourceCandidateChips");
     container.innerHTML = "";
     languageState.candidates.forEach((tag, index) => {
-      const parts = window.LagLingoLanguages.nameParts(tag);
+      const parts = window.LingerLensLanguages.nameParts(tag);
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "language-chip";
@@ -1372,7 +1441,7 @@
       const data = await request("/api/providers", { subtitle: patch });
       languageState.subtitle = data.subtitle;
       if (patch.targetLanguage !== previousTarget) {
-        const parts = window.LagLingoLanguages.nameParts(patch.targetLanguage);
+        const parts = window.LingerLensLanguages.nameParts(patch.targetLanguage);
         el("message").textContent = `目标语言已切换为 ${parts.primary}；后续字幕立即使用新语言。`;
       }
     } catch (error) {
@@ -1382,7 +1451,7 @@
 
   function initLanguageSelectors(defaults) {
     if (!targetSelector) {
-      targetSelector = window.LagLingoLanguages.createLanguageSelector(el("targetLanguage"), {
+      targetSelector = window.LingerLensLanguages.createLanguageSelector(el("targetLanguage"), {
         onChange: () => {
           // Direction and any currently visible rows update synchronously;
           // persistLanguageSettings hot-switches subsequent translations.
@@ -1390,10 +1459,10 @@
           persistLanguageSettings();
         },
       });
-      sourceSelector = window.LagLingoLanguages.createLanguageSelector(el("sourceLanguage"), {
+      sourceSelector = window.LingerLensLanguages.createLanguageSelector(el("sourceLanguage"), {
         onChange: () => persistLanguageSettings(),
       });
-      candidateSelector = window.LagLingoLanguages.createLanguageSelector(el("sourceCandidates"), {
+      candidateSelector = window.LingerLensLanguages.createLanguageSelector(el("sourceCandidates"), {
         placeholder: "添加候选语言…",
         onChange: (tag) => { addCandidate(tag); candidateSelector.value = ""; },
       });
@@ -1404,7 +1473,7 @@
 
   async function refreshLanguageCapabilities() {
     const languages = await request("/api/languages");
-    window.LagLingoLanguages.setCatalog(languages.languages);
+    window.LingerLensLanguages.setCatalog(languages.languages);
     languageState.asr = languages.asr;
     languageState.translation = languages.translation;
     refreshLanguageCapabilityUi();
@@ -1413,7 +1482,7 @@
   async function loadLanguageSettings() {
     try {
       const [languages, providers] = await Promise.all([request("/api/languages"), request("/api/providers")]);
-      window.LagLingoLanguages.setCatalog(languages.languages);
+      window.LingerLensLanguages.setCatalog(languages.languages);
       languageState.asr = languages.asr;
       languageState.translation = languages.translation;
       renderRoleSelectors(providers);
@@ -1498,7 +1567,7 @@
     try {
       await request("/api/target-delay", { seconds: suggested });
       el("targetDelay").value = String(suggested);
-      localStorage.setItem("laglingo.targetDelaySeconds", String(suggested));
+      localStorage.setItem("lingerlens.targetDelaySeconds", String(suggested));
       el("message").textContent = `已把本地延迟调到 ${suggested} 秒。字幕就绪预算现在有余量；负载回落后可手动调回。`;
       subtitleBudget.lowSince = null;
       button.hidden = true;
@@ -1539,7 +1608,7 @@
   }
 
   function playingWallClock() {
-    if (Number.isFinite(window.__laglingoSubtitleTestWallTime)) return window.__laglingoSubtitleTestWallTime;
+    if (Number.isFinite(window.__lingerlensSubtitleTestWallTime)) return window.__lingerlensSubtitleTestWallTime;
     return mediaClock?.playingWallTime() ?? null;
   }
 
@@ -1820,8 +1889,8 @@
         // is kept on data-direction as the fallback for old browsers.
         zhLine.dir = "auto";
         srcLine.dir = "auto";
-        srcLine.dataset.direction = window.LagLingoLanguages?.directionFor(cue.lang) || "ltr";
-        zhLine.dataset.direction = window.LagLingoLanguages?.directionFor(targetLanguage) || "ltr";
+        srcLine.dataset.direction = window.LingerLensLanguages?.directionFor(cue.lang) || "ltr";
+        zhLine.dataset.direction = window.LingerLensLanguages?.directionFor(targetLanguage) || "ltr";
         row.dataset.renderRevision = renderRevision;
       }
       // Reorder only when the active cue order really changed. Re-appending all
@@ -1859,7 +1928,7 @@
     const offset = Number(el("subtitleOffset").value);
     if (!Number.isFinite(offset)) return;
     subtitlePrefs.offset = offset;
-    localStorage.setItem("laglingo.subtitle.offset", String(offset));
+    localStorage.setItem("lingerlens.subtitle.offset", String(offset));
     applySubtitlePrefs();
     // Admissions are derived from the effective playhead. Re-evaluate them
     // when the user moves that playhead, then paint synchronously so the
@@ -1930,6 +1999,8 @@
     const message = error.message || String(error);
     // 所有用户可见的报错都在这里汇合，诊断栏因此只需要这一个钩子。
     diagnosticsBar?.push("error", "ui", message);
+    // 最接近崩溃的一类现场优先落盘，不等轮询那一秒。
+    void flushDevLog();
     setMediaLoading(false);
     setState("错误", "error");
     el("message").textContent = message;
@@ -2040,9 +2111,9 @@
   el("allowCodeSwitching").addEventListener("change", () => persistLanguageSettings());
   el("addAsrProfile").addEventListener("click", () => addProvider("asr"));
   el("addTranslationProfile").addEventListener("click", () => addProvider("translation"));
-  el("subtitlesEnabled").addEventListener("change", () => { subtitlePrefs.enabled = el("subtitlesEnabled").checked; localStorage.setItem("laglingo.subtitle.enabled", String(subtitlePrefs.enabled)); if (!subtitlePrefs.enabled) clearSubtitle(); });
-  el("subtitleMode").addEventListener("change", () => { subtitlePrefs.mode = el("subtitleMode").value; localStorage.setItem("laglingo.subtitle.mode", subtitlePrefs.mode); applySubtitlePrefs(); });
-  el("subtitleSize").addEventListener("change", () => { subtitlePrefs.size = el("subtitleSize").value; localStorage.setItem("laglingo.subtitle.size", subtitlePrefs.size); applySubtitlePrefs(); });
+  el("subtitlesEnabled").addEventListener("change", () => { subtitlePrefs.enabled = el("subtitlesEnabled").checked; localStorage.setItem("lingerlens.subtitle.enabled", String(subtitlePrefs.enabled)); if (!subtitlePrefs.enabled) clearSubtitle(); });
+  el("subtitleMode").addEventListener("change", () => { subtitlePrefs.mode = el("subtitleMode").value; localStorage.setItem("lingerlens.subtitle.mode", subtitlePrefs.mode); applySubtitlePrefs(); });
+  el("subtitleSize").addEventListener("change", () => { subtitlePrefs.size = el("subtitleSize").value; localStorage.setItem("lingerlens.subtitle.size", subtitlePrefs.size); applySubtitlePrefs(); });
   el("subtitleOffset").addEventListener("input", updateSubtitleOffset);
   el("url").addEventListener("keydown", (event) => { if (event.key === "Enter") probe(); });
   video.addEventListener("playing", () => {
@@ -2076,12 +2147,12 @@
     chatToggle.addEventListener("change", async () => {
       try {
         const previous = !chatToggle.checked;
-        localStorage.setItem("laglingo.liveMessages.translate", String(chatToggle.checked));
+        localStorage.setItem("lingerlens.liveMessages.translate", String(chatToggle.checked));
         try {
           await liveMessagesClient.setTranslate(chatToggle.checked);
         } catch (error) {
           chatToggle.checked = previous;
-          localStorage.setItem("laglingo.liveMessages.translate", String(previous));
+          localStorage.setItem("lingerlens.liveMessages.translate", String(previous));
           throw error;
         }
       } catch (err) {
@@ -2104,18 +2175,20 @@
   // Narrow browser-test seam for the production renderer. The public UI still
   // mutates cues only through polling; tests use these references to verify
   // concurrent speaker rows without duplicating rendering implementation.
-  window.__laglingoSubtitleCues = subtitleCues;
-  window.__laglingoRenderSubtitle = renderSubtitle;
-  window.__laglingoRenderTimelines = renderTimelines;
+  window.__lingerlensSubtitleCues = subtitleCues;
+  window.__lingerlensRenderSubtitle = renderSubtitle;
+  window.__lingerlensRenderTimelines = renderTimelines;
   /* 与上面两个同类的测试钩子：诊断栏只在真出错时才动，没有它就只能靠制造
      一次真实故障来验证展开路径。 */
-  window.__laglingoDiagnostics = {
+  window.__lingerlensDiagnostics = {
     log: diagnosticsLog,
     bar: diagnosticsBar,
     client: diagnosticsClient,
+    devLog: devLogClient,
+    flushDevLog,
   };
-  window.__laglingoSetSubtitleTestWallTime = (value) => {
-    window.__laglingoSubtitleTestWallTime = Number.isFinite(Number(value)) ? Number(value) : null;
+  window.__lingerlensSetSubtitleTestWallTime = (value) => {
+    window.__lingerlensSubtitleTestWallTime = Number.isFinite(Number(value)) ? Number(value) : null;
   };
 
   loadLanguageSettings();
@@ -2135,7 +2208,7 @@
   });
   /* 后端日志不是实时数据，1 秒够用；隐藏时进一步降频。 */
   diagnosticsPoller = window.createSerialPoller?.({
-    run: () => diagnosticsClient?.poll(),
+    run: async () => { await diagnosticsClient?.poll(); await flushDevLog(); },
     intervalMs: 1000,
     hiddenIntervalMs: 5000,
     isHidden: () => document.hidden,

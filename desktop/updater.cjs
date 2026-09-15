@@ -26,8 +26,8 @@ const path = require("node:path");
 /* Public release channel. The source repository is private; this one only ever
    holds installers and this manifest. `latest/download` is a GitHub redirect to
    the newest release's asset, so the URL does not change per version. */
-const DEFAULT_MANIFEST_URL = "https://github.com/Antiranger/LagLingo-releases/releases/latest/download/manifest.json";
-const MANIFEST_ENV = "LAGLINGO_UPDATE_URL";
+const DEFAULT_MANIFEST_URL = "https://github.com/Antiranger/LingerLens-releases/releases/latest/download/manifest.json";
+const MANIFEST_ENV = "LINGERLENS_UPDATE_URL";
 const REQUEST_TIMEOUT_MS = 20000;
 
 /* Only ever follow https. A file:// or http:// manifest would let a local
@@ -133,7 +133,7 @@ async function fetchJson(url, fetchImpl, timeoutMs = REQUEST_TIMEOUT_MS) {
       // GitHub's release redirect serves a cached asset; a stale manifest would
       // hide a release for as long as the cache lives.
       cache: "no-store",
-      headers: { Accept: "application/json", "User-Agent": "LagLingo-updater" },
+      headers: { Accept: "application/json", "User-Agent": "LingerLens-updater" },
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
@@ -155,7 +155,7 @@ async function downloadVerified({ url, sha256, size, destination, fetchImpl, onP
   try {
     const response = await fetchImpl(url, {
       signal: controller.signal, redirect: "follow", cache: "no-store",
-      headers: { "User-Agent": "LagLingo-updater" },
+      headers: { "User-Agent": "LingerLens-updater" },
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const expected = Number(size);

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("laglingo_streamlink_ingest", ROOT / "companion" / "streamlink_ingest.py")
+SPEC = importlib.util.spec_from_file_location("lingerlens_streamlink_ingest", ROOT / "companion" / "streamlink_ingest.py")
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE

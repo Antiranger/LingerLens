@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local HTTP companion for LagLingo HLS Prototype 2."""
+"""Local HTTP companion for LingerLens HLS Prototype 2."""
 
 from __future__ import annotations
 
@@ -1385,7 +1385,7 @@ class CompanionApplication:
             # A stale/other Native Messaging pipe must not take down the HTTP
             # player or its localhost model APIs. Cookie IPC can be restored by
             # closing the old Companion and restarting later.
-            print(f"[LagLingo] Native control IPC unavailable: {error}", file=sys.stderr)
+            print(f"[LingerLens] Native control IPC unavailable: {error}", file=sys.stderr)
             logbook.record(
                 "warn",
                 "desktop",
@@ -1459,7 +1459,7 @@ async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
         logbook.record("warn", "request", f"rejected {request.method} {_request_target(request)}: {error}")
         return web.json_response({"error": str(error)}, status=400)
     except Exception as error:  # Prototype boundary: return diagnostics, never secrets.
-        print(f"[LagLingo] Unexpected request failure: {type(error).__name__}: {error}", file=sys.stderr)
+        print(f"[LingerLens] Unexpected request failure: {type(error).__name__}: {error}", file=sys.stderr)
         # Type name only: an unexpected exception's text can embed the URL or
         # credential that made it fail.
         logbook.record(
@@ -1491,19 +1491,19 @@ def main() -> int:
     companion = CompanionApplication(args)
     app = companion.routes()
     app.middlewares.append(errors)
-    print(f"[LagLingo] Prototype 2 player: http://{args.host}:{args.port}/")
-    print(f"[LagLingo] Target total live delay: {DEFAULT_TARGET_DELAY_SECONDS:g}s")
-    print("[LagLingo] Cookies are accepted only through Native Messaging or the explicit development browser fallback.")
+    print(f"[LingerLens] Prototype 2 player: http://{args.host}:{args.port}/")
+    print(f"[LingerLens] Target total live delay: {DEFAULT_TARGET_DELAY_SECONDS:g}s")
+    print("[LingerLens] Cookies are accepted only through Native Messaging or the explicit development browser fallback.")
     try:
         web.run_app(app, host=args.host, port=args.port, print=None, handle_signals=True)
     except OSError as error:
         if getattr(error, "winerror", None) == 10048 or getattr(error, "errno", None) == errno.EADDRINUSE:
             print(
-                f"[LagLingo] Port {args.port} is already in use; another Companion is probably still running.",
+                f"[LingerLens] Port {args.port} is already in use; another Companion is probably still running.",
                 file=sys.stderr,
             )
             print(
-                "[LagLingo] Close the other instance (or run: taskkill /IM python.exe /F) or start this one with --port 8766.",
+                "[LingerLens] Close the other instance (or run: taskkill /IM python.exe /F) or start this one with --port 8766.",
                 file=sys.stderr,
             )
             return 1

@@ -66,7 +66,7 @@ def main() -> int:
                 return 0
             write_message(stdout, handle(message))
         except (FileNotFoundError, ConnectionError, OSError):
-            write_message(stdout, {"ok": False, "error": "LagLingo companion control channel is not running"})
+            write_message(stdout, {"ok": False, "error": "LingerLens companion control channel is not running"})
         except Exception as error:
             write_message(stdout, {"ok": False, "error": str(error)})
 

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE_SPEC = importlib.util.spec_from_file_location("laglingo_hls_core", ROOT / "companion" / "core.py")
+CORE_SPEC = importlib.util.spec_from_file_location("lingerlens_hls_core", ROOT / "companion" / "core.py")
 assert CORE_SPEC and CORE_SPEC.loader
 CORE = importlib.util.module_from_spec(CORE_SPEC)
 sys.modules[CORE_SPEC.name] = CORE
@@ -24,7 +24,7 @@ executable = CORE.executable
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="laglingo-smoke-") as raw:
+    with tempfile.TemporaryDirectory(prefix="lingerlens-smoke-") as raw:
         runtime = Path(raw) / "runtime"
         quality = QualityOption("synthetic-1080p", "synthetic", 1920, 1080, 30, "avc1", "mp4a", False, False, 2_000_000, "synthetic", None)
         inputs = SelectedInputs(quality, "synthetic", None, {}, {})

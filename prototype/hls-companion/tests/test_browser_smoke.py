@@ -231,13 +231,13 @@ async def run() -> None:
                 window.__smokeClock.playingWallTime(),
             );
             window.__smokeRenderedHtml = chatContainer.innerHTML;
-            window.__laglingoSetSubtitleTestWallTime(1_700_000_001);
-            const cueMap = window.__laglingoSubtitleCues;
+            window.__lingerlensSetSubtitleTestWallTime(1_700_000_001);
+            const cueMap = window.__lingerlensSubtitleCues;
             cueMap.clear();
             cueMap.set(101, { id: 101, seq: 1, tStart: 1_699_999_998, tEnd: 1_700_000_002, hold: 2, state: 'done', src: '一人目', zh: '第一位', lang: 'ja', speaker: 'A' });
             cueMap.set(102, { id: 102, seq: 2, tStart: 1_699_999_999, tEnd: 1_700_000_003, hold: 2, state: 'done', src: '二人目', zh: '第二位', lang: 'ja', speaker: 'B' });
-            window.__laglingoRenderSubtitle();
-            window.__laglingoRenderTimelines();
+            window.__lingerlensRenderSubtitle();
+            window.__lingerlensRenderTimelines();
         }""")
 
         grid = await page.locator("#workbenchContainer").evaluate("node => getComputedStyle(node).gridTemplateColumns")
@@ -332,8 +332,8 @@ async def run() -> None:
             overlayObserver.observe(overlay, { subtree: true, childList: true, characterData: true, attributes: true });
             timelineObserver.observe(timeline, { subtree: true, childList: true, characterData: true, attributes: true });
             for (let index = 0; index < 20; index += 1) {
-                window.__laglingoRenderSubtitle();
-                window.__laglingoRenderTimelines();
+                window.__lingerlensRenderSubtitle();
+                window.__lingerlensRenderTimelines();
             }
             await new Promise((resolve) => setTimeout(resolve, 0));
             overlayObserver.disconnect();
@@ -343,15 +343,15 @@ async def run() -> None:
         assert stable_render == {"overlayMutations": 0, "timelineMutations": 0}, stable_render
 
         immediate_offset = await page.evaluate("""() => {
-            const cueMap = window.__laglingoSubtitleCues;
+            const cueMap = window.__lingerlensSubtitleCues;
             cueMap.clear();
-            window.__laglingoSetSubtitleTestWallTime(1_700_000_100);
+            window.__lingerlensSetSubtitleTestWallTime(1_700_000_100);
             cueMap.set(201, {
                 id: 201, seq: 1, tStart: 1_700_000_100.5,
                 tEnd: 1_700_000_102, hold: 1, state: 'done',
                 src: '偏移即时生效', zh: 'Immediate offset', lang: 'zh', speaker: 'A',
             });
-            window.__laglingoRenderSubtitle();
+            window.__lingerlensRenderSubtitle();
             const before = document.querySelectorAll('#subtitleLayer .subtitle-cue-row').length;
             const slider = document.getElementById('subtitleOffset');
             slider.value = '0.6';

@@ -30,7 +30,7 @@ def session_guard(token):
         # The private HLS route has its own random path token and is consumed
         # by FFmpeg. All UI/control routes require the desktop session token.
         if not request.path.startswith('/_private-hls/'):
-            supplied = request.headers.get('X-LagLingo-Session', '')
+            supplied = request.headers.get('X-LingerLens-Session', '')
             if not secrets.compare_digest(supplied, token):
                 raise web.HTTPForbidden()
         return await handler(request)
@@ -126,5 +126,5 @@ if __name__ == '__main__':
     except Exception:
         # Underlying provider exceptions can include secrets. The desktop shell
         # only needs a category; never forward raw exceptions into its UI/logs.
-        print('LagLingo backend failed to start or stop.', file=sys.stderr)
+        print('LingerLens backend failed to start or stop.', file=sys.stderr)
         raise SystemExit(1)

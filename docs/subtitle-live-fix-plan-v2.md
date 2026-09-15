@@ -1,4 +1,4 @@
-# LagLingo 直播字幕修复计划 v2（实测驱动）
+# LingerLens 直播字幕修复计划 v2（实测驱动）
 
 > 生成时间：2026-08-30
 > **状态：P0 + P1 已实施并通过端到端实测（见 §9）。P2 经实测判定不需要做。**
@@ -564,7 +564,7 @@ Qwen 已经在发 `text`（稳定前缀）+ `stash`，60 秒里有 124 条，现
 
 ```powershell
 # 把 private 分片拼成可解的 mp4（必须带 init.mp4，且用绝对路径）
-$priv = 'F:\Projects\LagLingo\prototype\hls-companion\runtime\media\private'
+$priv = 'F:\Projects\LingerLens\prototype\hls-companion\runtime\media\private'
 $segs = Get-ChildItem (Join-Path $priv 'seg_*.m4s') | Sort-Object Name | Select-Object -Last 60
 $fs = [System.IO.File]::Create('clip.mp4')
 $init = [System.IO.File]::ReadAllBytes((Join-Path $priv 'init.mp4')); $fs.Write($init,0,$init.Length)

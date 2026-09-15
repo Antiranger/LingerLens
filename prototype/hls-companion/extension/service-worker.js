@@ -1,4 +1,4 @@
-const NATIVE_HOST = "com.laglingo.hls_companion";
+const NATIVE_HOST = "com.lingerlens.hls_companion";
 const PLATFORMS = [
   {
     matches: (url) => /(^|\.)youtube\.com$/.test(url.hostname) || url.hostname === "youtu.be",
@@ -36,7 +36,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.tabs.create({ url: player.toString() });
     await setBadge("OK", "#2f9e66", "Cookie snapshot sent locally; open player created");
   } catch (error) {
-    console.error("[LagLingo]", error);
+    console.error("[LingerLens]", error);
     await setBadge("!", "#b83a32", error.message || String(error));
   }
 });

@@ -1,4 +1,4 @@
-# LagLingo 直播延迟：成因定位与解决方案
+# LingerLens 直播延迟：成因定位与解决方案
 
 > 承接 `docs/live-delay-handoff.md`。日期：2026-08-30。
 > 本文所有关键论断都在本机 FFmpeg 9.0 上做了实测复现，实验命令与输出见 §8。

@@ -6,7 +6,7 @@
 2. Record browser/version, OS, network type, and whether Memory Saver is enabled.
 3. Open the same live URL in Source and Viewer tabs.
 4. Ensure both players are playing and initially at their platform live edge.
-5. Open DevTools console in both tabs if practical; filter for `LagLingo Live Delay`.
+5. Open DevTools console in both tabs if practical; filter for `LingerLens Live Delay`.
 6. Select the correct role in each panel.
 7. In Viewer, select the target delay and click **Set delay & start**.
 8. In Source, click **Start observation**.

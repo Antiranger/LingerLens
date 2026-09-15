@@ -1,4 +1,4 @@
-# Contributing to LagLingo
+# Contributing to LingerLens
 
 This repository is Windows-first and currently developed as a local prototype. Keep changes narrow, test observable behavior, and do not add credentials or captured media.
 

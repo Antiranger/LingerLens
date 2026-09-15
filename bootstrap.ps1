@@ -24,7 +24,7 @@ function Require-Command([string]$Name, [string]$InstallUrl) {
 }
 
 Set-Location $root
-Write-Host "LagLingo Windows bootstrap"
+Write-Host "LingerLens Windows bootstrap"
 
 if (Require-Command $Python "https://www.python.org/downloads/windows/") {
     $versionText = & $Python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
@@ -76,7 +76,7 @@ if ($failures.Count -gt 0) {
 }
 
 if ($CheckOnly) {
-    Write-Host "All LagLingo dependency and integrity checks passed."
+    Write-Host "All LingerLens dependency and integrity checks passed."
     exit 0
 }
 
@@ -94,4 +94,4 @@ Write-Host "Running deterministic release guard..."
 & node "scripts\release-guard.js"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "LagLingo bootstrap completed. Start with .\start-laglingo.cmd"
+Write-Host "LingerLens bootstrap completed. Start with .\start-lingerlens.cmd"

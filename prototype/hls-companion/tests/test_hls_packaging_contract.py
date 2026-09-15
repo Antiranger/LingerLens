@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-CORE_SPEC = importlib.util.spec_from_file_location("laglingo_hls_core_pkg", ROOT / "companion" / "core.py")
+CORE_SPEC = importlib.util.spec_from_file_location("lingerlens_hls_core_pkg", ROOT / "companion" / "core.py")
 assert CORE_SPEC and CORE_SPEC.loader
 CORE = importlib.util.module_from_spec(CORE_SPEC)
 sys.modules[CORE_SPEC.name] = CORE

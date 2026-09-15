@@ -64,7 +64,7 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 
 1. clone 即可运行、可离线构建、CI 可复现、没有第三方供应链依赖。
 2. 「构建时拉取」不是免费的替代方案——它需要把拉取工具也纳入跟踪、在 bootstrap 里加一步、再引入网络依赖，换来的是每次 CI 都可能因上游抖动而失败。
-3. 这个产品的形态决定了它优化不掉：一般项目可以对 UI 文案做字体子集化（581 个汉字 → 几十 KB），但 LagLingo 的核心场景就是显示**任意中文**的实时字幕和弹幕，必须全量覆盖。
+3. 这个产品的形态决定了它优化不掉：一般项目可以对 UI 文案做字体子集化（581 个汉字 → 几十 KB），但 LingerLens 的核心场景就是显示**任意中文**的实时字幕和弹幕，必须全量覆盖。
 
 代价是字体升级时旧 blob 永久留存（每次约 +9.3 MB）。缓解办法就是现在这套：`scripts/fetch-fonts.py` 锁定版本，`--check` 验证每个 `@font-face` 都有文件兜底，极少更新。
 
@@ -73,14 +73,14 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 **重新打包**
 
 - 只改了 `web-player/` 用 `npm run desktop:sync-ui`（秒级）。改了 `desktop/main.cjs`、`desktop/backend.cjs` 或任何 Python 才需要 `npm run desktop:refresh`（`desktop:backend && desktop:pack`）。
-- **`desktop:sync-ui` 必须同时写两份**：`build-desktop\backend\laglingo-backend\_internal\web-player`（重打包读的那份）和 `release\win-unpacked\...\web-player`（正在跑的那份）。`desktop:pack` / `desktop:dist` 是从**冻结产物**里取 web-player 的，不是从源码树取——只写后者的话，下一次重打包会静默把它覆盖回旧 UI。这个坑真的发生过：改完 UI → `sync-ui` → `dist`，安装包里出来的是改动之前的 `index.html` 和 `style.css`，而且一句警告都没有。现在脚本自己写两份，并跳过尚未构建的那一份。
+- **`desktop:sync-ui` 必须同时写两份**：`build-desktop\backend\lingerlens-backend\_internal\web-player`（重打包读的那份）和 `release\win-unpacked\...\web-player`（正在跑的那份）。`desktop:pack` / `desktop:dist` 是从**冻结产物**里取 web-player 的，不是从源码树取——只写后者的话，下一次重打包会静默把它覆盖回旧 UI。这个坑真的发生过：改完 UI → `sync-ui` → `dist`，安装包里出来的是改动之前的 `index.html` 和 `style.css`，而且一句警告都没有。现在脚本自己写两份，并跳过尚未构建的那一份。
 - **`desktop:refresh` 必须先把 dev 实例关掉。** 它会重新解压 Electron 到 `build-desktop\electron\`，而正在运行的 dev 进程锁着那些 DLL，必然失败在 `PermissionError: [Errno 13] ... d3dcompiler_47.dll`。这个报错不提 Electron、也不提 dev 实例，很容易被误读成磁盘或杀软问题。
 - **`desktop:dist` 之前也要关掉打包版**，理由同上（它要重写 `release\win-unpacked`）。
-- `release\LagLingo-0.1.0-windows-x64-setup.exe` **不会**被 `desktop:refresh` 更新，它是 `npm run desktop:dist` 的产物。
+- `release\LingerLens-0.1.0-windows-x64-setup.exe` **不会**被 `desktop:refresh` 更新，它是 `npm run desktop:dist` 的产物。
 
 **发行版怎么更新到用户手里**
 
-分发是**两个仓库**：源码在私有的 `Antiranger/LagLingo`，安装包和更新清单在公开的 `Antiranger/LagLingo-releases`。应用里没有任何凭证，它只需要一个匿名的 HTTPS 地址。
+分发是**两个仓库**：源码在私有的 `Antiranger/LingerLens`，安装包和更新清单在公开的 `Antiranger/LingerLens-releases`。应用里没有任何凭证，它只需要一个匿名的 HTTPS 地址。
 
 更新检查（`desktop/updater.cjs`）**没有用 electron-updater**，是手写的无依赖实现。原因是 `desktop/audit-package.cjs` 用一份显式白名单限制 `app.asar` 里能有几个文件，而 electron-updater 会拖进一串传递依赖——要么构建失败，要么被迫把白名单开个口子。它需要的东西（fetch、版本比较、SHA-256、spawn）全在 Node 标准库里。
 
@@ -121,21 +121,49 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 
 UI 文案 25 个 key 覆盖 zh-CN / en / ja / de / ru。zh-CN 走两条路：静态节点由 `i18n.js` 的 BINDINGS 在初始化时从 DOM 捕获，动态的（级别标签、人话提示、复制报告的表头）在 `ZH_DYNAMIC` 里。**漏掉 `ZH_DYNAMIC` 会让中文用户看到英文**，因为 `t()` 在 zh-CN 分支上先查 `DICT.en` 再回退到 fallback。
 
-**后端 stderr 开关 `LAGLINGO_BACKEND_LOG`**
+**开发日志文件 `LINGERLENS_BACKEND_LOG`**
 
-上面那本账是给 UI 看的；stderr 开关是给**终端**看的，两者互补而不是重复。后端的 `print` 全部落在 stderr（`companion_entry.py:116` 把 stdout 改道到 stderr，stdout 只留给那一行 ready 握手），而 `backend.cjs` 默认把它排空丢弃——因为媒体和 provider 输出里可能带私有流地址。开关是按次运行的显式选项：
+上面那本账是给 UI 看的，而且**只在内存里**：环形 500 条，窗口一崩、页面一刷就没了，靠「出问题时记得点复制」在一场长会话里是不牢靠的。这个开关把证据落到磁盘上：
 
 | 取值 | 行为 |
 |---|---|
-| 不设 / `0` / `off` | 丢弃，什么都不写（默认） |
-| `1` / `on` / `true` | 转发到主进程 stderr |
-| 其它任意值 | 当作文件路径，同时写终端和该文件 |
+| 不设 / `0` / `off` | 什么都不写（默认） |
+| `1` / `on` / `true` | 只转发到主进程 stderr |
+| 其它任意值 | 当作文件路径；**父目录自动创建**，终端同时 tee 一份 |
 
-开日志时会在开头写一行带**本地时间**的 header（不是 UTC），方便拿八小时的日志对时钟。
+一条命令就可以带着它启动，目录和带时间戳的文件名都不用手管：
 
-注意 Electron 在 Windows 上是 GUI 子系统程序，`process.stderr` 不保证接在控制台上——实测 `npm run desktop:dev` 在后台作业里跑，终端一个字都收不到。**要长时间跑就用文件形式。**
+```
+npm run desktop:dev:log          # 额外参数照常转发，例如 -- --remote-debugging-port=9222
+```
 
-**这个开关单独用几乎打不出东西，它的价值在于接住 Python 异常。** 实测（`.scratch/laglingo-audit/backend-stderr-probe.py`，手工拉起真后端 + 已知 token，走 13 条路由，其中 7 条是故意构造的畸形请求）：加入诊断栏之前，同样的 13 条路由产出 **0 字符** stderr —— 因为 desktop 模式下后端只有一处写 stderr（500 分支），而 7 条错误请求全走了返回 400 JSON 但不打印的那条分支。现在这些失败进的是 `/api/logs`，不是 stderr。
+**一个文件里有两股流**，刻意不合并成同一种格式：
+
+1. **后端 stderr** —— Python / FFmpeg 打印什么就是什么。
+2. **渲染进程的诊断时间线** —— 一行一条记录，形如
+   `2026-09-15 14:31:27  [error] ui  <message>`，所以能直接 grep。
+
+第 2 股走的是既有的自定义协议拦截（`protocol.handle` 里 `/api/app-update` 旁边那条 `/api/diagnostics`）。渲染进程在沙箱里没有文件系统，加 preload 或 IPC 都要**扩大它的权限**，而复用这条已有通道一点权限都不用加。渲染进程先 `GET /api/diagnostics` 问开没开，没开就一条都不发；`POST` 返回**真正落盘的行数**，渲染进程只有拿到这个数才推进自己的游标（用插入序而不是数组下标或时间戳——环形缓冲会淘汰，后端记录的时间戳还可能落在已发出的记录之前）。
+
+**级别 token 不翻译**（永远是 `error` / `warn` / `info`）：这份文件是拿来 grep 和转交的。给人读、要贴进 issue 的是「复制诊断信息」，那一份才翻译。
+
+**三种失败都必须出声**，这是这块设计的重点：
+
+- 要了文件路径但目录不存在——以前 `appendFileSync` 抛错被吞掉、退回终端，而 Electron 在 Windows 上是 GUI 子系统程序，那个终端是个黑洞：可以安静地跑一整场实测、产出 0 字节、没有任何提示。现在父目录自动创建。
+- 路径本身写不进去（权限、盘符、路径指向一个目录）——错误记在日志对象上，经 `GET /api/diagnostics` 回到 UI，诊断栏亮 warn 并说明原因。
+- 跑到一半文件消失（磁盘满、被清理）——第一次写失败就置 `enabled: false` 并记下原因，不会继续假装在记。
+
+一个反直觉的 Windows 细节值得记下来：**「路径是个目录」既不能靠 `openSync(p, 'a')` 也不能靠 `appendFileSync(p, '')` 探出来**——两者都会成功返回，因为零字节的追加根本没走到 write，只有真正的写入才报 `EISDIR`。所以 `devlog.cjs` 额外做了一次 `statSync().isDirectory()`。这个坑是我自己的测试抓出来的：测试断言目录路径必须失败，结果它"成功"了。
+
+**它接不住什么，以及为什么两股流都要开。** 实测（`.scratch/lingerlens-audit/where-do-failures-go.py`：驱动真实 UI 粘贴一个失效链接再点「准备」）——这类故障**一个字节都不会进 stderr**：
+
+```
+backend log before: 195 bytes
+probe settled after 11s: 'yt-dlp format probe failed (exit 1): ... This video is unavailable'
+backend log after:  195 bytes  (delta 0)      ← 文件一个字都没多
+```
+
+因为它压根没经过 Python：`yt-dlp` 的失败由后端记进 logbook，`/api/logs` 轮询送回渲染进程，`showError()` 把它推上诊断栏。**stderr 那条路只接得住 Python 异常和 FFmpeg 输出。** 所以完整现场 = 这个文件（两股流）+ 复制报告。
 
 **要判断渲染进程内部发生了什么**，仍然只有两条路：窗口里 `Ctrl+Shift+I` 开 DevTools，或者加 `--remote-debugging-port` 用 CDP 直接问渲染进程。
 
@@ -161,4 +189,4 @@ UI 文案 25 个 key 覆盖 zh-CN / en / ja / de / ru。zh-CN 走两条路：静
 
 - **OS 级截图不可信。** 这个 Electron 窗口用 `CopyFromScreen` 截出来，凡是 GPU 合成的图层都是黑的——聊天栏整块都在里面。用它判断「某个面板在不在」会得出完全错误的结论。
 - **窗口物理像素 ≠ CSS 像素，而且不是简单的 DPI 倍数。** 这个窗口 `GetWindowRect` = 2575 物理像素，但渲染进程报 `innerWidth` = 2560、`devicePixelRatio` = 1.5。按 1.5 去除会得到 1707 这个错误的 CSS 宽度，进而误判断点。
-- **正确做法**：给应用加 `--remote-debugging-port` 起一个实例，用 CDP 连上真实渲染进程直接问。脚本见 `.scratch/laglingo-audit/inspect-live-window.py`（该目录已忽略；这段方法本身要保留，已记在此处）。
+- **正确做法**：给应用加 `--remote-debugging-port` 起一个实例，用 CDP 连上真实渲染进程直接问。脚本见 `.scratch/lingerlens-audit/inspect-live-window.py`（该目录已忽略；这段方法本身要保留，已记在此处）。

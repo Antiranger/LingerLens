@@ -12,7 +12,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE_SPEC = importlib.util.spec_from_file_location("laglingo_hls_core", ROOT / "companion" / "core.py")
+CORE_SPEC = importlib.util.spec_from_file_location("lingerlens_hls_core", ROOT / "companion" / "core.py")
 assert CORE_SPEC and CORE_SPEC.loader
 CORE = importlib.util.module_from_spec(CORE_SPEC)
 sys.modules[CORE_SPEC.name] = CORE
@@ -465,7 +465,7 @@ class PlaylistPublisherTests(unittest.TestCase):
             self.assertFalse(runtime.exists())
 
     def test_session_resolves_relative_runtime_dir_before_ffmpeg_sets_cwd(self) -> None:
-        session = CORE.LiveSession(Path(".scratch") / "laglingo-relative-runtime")
+        session = CORE.LiveSession(Path(".scratch") / "lingerlens-relative-runtime")
 
         self.assertTrue(session.runtime_dir.is_absolute())
         self.assertEqual(session.private_dir, session.runtime_dir / "private")

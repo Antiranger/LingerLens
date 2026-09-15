@@ -1,6 +1,6 @@
 (() => {
-  if (window.top !== window || window.__lagLingoDelaySpikeLoaded) return;
-  window.__lagLingoDelaySpikeLoaded = true;
+  if (window.top !== window || window.__lingerLensDelaySpikeLoaded) return;
+  window.__lingerLensDelaySpikeLoaded = true;
 
   const { getAdapter, metrics } = window.LiveDelaySpike;
   const adapter = getAdapter();
@@ -44,8 +44,8 @@
 
   function createPanel() {
     const root = document.createElement("section");
-    root.id = "laglingo-delay-spike";
-    root.setAttribute("aria-label", "LagLingo live delay test panel");
+    root.id = "lingerlens-delay-spike";
+    root.setAttribute("aria-label", "LingerLens live delay test panel");
     root.innerHTML = `
       <header class="llds-header">
         <div>
@@ -173,7 +173,7 @@
       state.samples.push(sample);
       detectBehavior(sample);
       if (state.mode === "viewer" && state.controlEnabled) maintainDelay(sample);
-      console.info("[LagLingo Live Delay]", sample);
+      console.info("[LingerLens Live Delay]", sample);
     }
 
     render(sample);
@@ -386,7 +386,7 @@
   function addEvent(type, details = {}) {
     const event = { timestamp: new Date().toISOString(), type, ...details };
     state.events.push(event);
-    console.info("[LagLingo Live Delay event]", event);
+    console.info("[LingerLens Live Delay event]", event);
   }
 
   function render(sample) {

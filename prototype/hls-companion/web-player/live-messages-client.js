@@ -266,12 +266,12 @@
     };
   }
 
-  const formatTime = (seconds) => global.LagLingoMediaClock?.formatWallClockTime(seconds) || "--:--:--";
+  const formatTime = (seconds) => global.LingerLensMediaClock?.formatWallClockTime(seconds) || "--:--:--";
   const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const exported = { createLiveMessagesClient, createLiveMessagesTimeline, createChatOverlay };
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
   else {
-    global.LagLingoLiveMessages = exported;
+    global.LingerLensLiveMessages = exported;
     global.createLiveMessagesClient = createLiveMessagesClient;
     global.createLiveMessagesTimeline = createLiveMessagesTimeline;
     global.createChatOverlay = createChatOverlay;

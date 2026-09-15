@@ -1,6 +1,6 @@
-# LagLingo
+# LingerLens
 
-LagLingo is a Windows-first local delayed live player for YouTube Live and Bilibili Live. It uses yt-dlp and FFmpeg to publish a controlled local HLS stream, then adds real-time ASR, translated bilingual subtitles, provider usage/cost estimates, stage fullscreen, and a draggable, persistent subtitle window.
+LingerLens is a Windows-first local delayed live player for YouTube Live and Bilibili Live. It uses yt-dlp and FFmpeg to publish a controlled local HLS stream, then adds real-time ASR, translated bilingual subtitles, provider usage/cost estimates, stage fullscreen, and a draggable, persistent subtitle window.
 
 The repository is still a developer-oriented prototype: it does not bypass DRM, paid access, regional restrictions, or platform anti-bot controls, and real-stream compatibility depends on the source and user authentication.
 
@@ -8,7 +8,7 @@ The repository is still a developer-oriented prototype: it does not bypass DRM, 
 
 An Electron desktop entry and a per-user Windows installer build are available.
 The desktop package includes its browser, Python runtime and packages, FFmpeg,
-yt-dlp and dictionary data. Users launch LagLingo directly; no console, localhost
+yt-dlp and dictionary data. Users launch LingerLens directly; no console, localhost
 URL or separately installed developer tools are needed. Cloud provider accounts
 and optional local Whisper services are configured separately.
 
@@ -26,10 +26,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
 Or double-click/run `bootstrap.cmd`. Bootstrap checks system tools and official install links, verifies the vendored yt-dlp SHA-256, installs declared Python/Node dependencies, and runs the tracked-file release guard. It is repeatable and does **not** install system browsers/tools or modify credentials. Use `-CheckOnly` for verification without package installation.
 
-Start LagLingo:
+Start LingerLens:
 
 ```powershell
-.\start-laglingo.cmd
+.\start-lingerlens.cmd
 ```
 
 Then open <http://127.0.0.1:8765/>. Enter a supported live URL, probe qualities, choose a browser-compatible format, and start playback.
@@ -38,7 +38,7 @@ Then open <http://127.0.0.1:8765/>. Enter a supported live URL, probe qualities,
 
 The player's **Model settings** dialog owns saved ASR/translation profiles and active selection. The sanitized example is [`prototype/hls-companion/runtime/providers.example.json`](prototype/hls-companion/runtime/providers.example.json); the real `runtime/providers.json` is generated locally and ignored by Git.
 
-Existing Bailian realtime/task ASR and OpenAI-compatible/Qwen translation are supported. For local ASR, first run your own Speaches, faster-whisper-server, Xinference, LocalAI, or compatible service, then configure an **OpenAI Audio Transcriptions** profile (commonly `http://127.0.0.1:8000/v1`, endpoint `/audio/transcriptions`). LagLingo does not download, start, authenticate, or expose that service. A key may be blank when the local endpoint permits it.
+Existing Bailian realtime/task ASR and OpenAI-compatible/Qwen translation are supported. For local ASR, first run your own Speaches, faster-whisper-server, Xinference, LocalAI, or compatible service, then configure an **OpenAI Audio Transcriptions** profile (commonly `http://127.0.0.1:8000/v1`, endpoint `/audio/transcriptions`). LingerLens does not download, start, authenticate, or expose that service. A key may be blank when the local endpoint permits it.
 
 If cloud subtitles are enabled, audio leaves the machine for the selected ASR provider and recognized text/context goes to the translation provider. Provider-returned usage is accumulated. Costs are shown only when both usage and required profile prices are available; unavailable data is not reported as zero.
 
@@ -53,7 +53,7 @@ Platform snapshots are kept separately so importing one platform does not overwr
 ## Player behavior
 
 - **Target total delay** defaults to 15 seconds and must be greater than 10 seconds. Measured delay is reported separately; source/network behavior can prevent exact equality.
-- Use LagLingo's **stage fullscreen** button so video and subtitles remain in the same fullscreen element.
+- Use LingerLens's **stage fullscreen** button so video and subtitles remain in the same fullscreen element.
 - Drag or keyboard-nudge the subtitle window; position, opacity, size, and source/translation colors persist locally.
 - Stop is idempotent and clears the current media/subtitle session so another URL can be probed immediately.
 
@@ -77,4 +77,4 @@ npm run ci
 
 These checks use fake/local fixtures and do not call real livestreams or credentialed provider endpoints. Native fullscreen ownership, long-running stream stability, authenticated/restricted streams, provider billing, and local Whisper deployment remain manual/environment-specific validation.
 
-Architecture: [`docs/architecture.md`](docs/architecture.md). Detailed Companion setup: [`prototype/hls-companion/README.md`](prototype/hls-companion/README.md). Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Third-party licensing: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). LagLingo itself is available under the [MIT License](LICENSE).
+Architecture: [`docs/architecture.md`](docs/architecture.md). Detailed Companion setup: [`prototype/hls-companion/README.md`](prototype/hls-companion/README.md). Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Third-party licensing: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). LingerLens itself is available under the [MIT License](LICENSE).

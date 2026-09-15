@@ -22,7 +22,7 @@
 
   function createWorkbenchController(options = {}) {
     const storage = options.storage || null;
-    const initialView = storage?.getItem("laglingo.workbenchView") || "split";
+    const initialView = storage?.getItem("lingerlens.workbenchView") || "split";
     const state = createWorkbenchState({ initialView });
     const render = (view) => {
       options.container?.classList.remove("view-split", "view-subtitles", "view-chat");
@@ -31,7 +31,7 @@
         button?.classList.toggle("active", key === view);
         button?.setAttribute("aria-selected", key === view ? "true" : "false");
       }
-      try { storage?.setItem("laglingo.workbenchView", view); } catch {}
+      try { storage?.setItem("lingerlens.workbenchView", view); } catch {}
     };
     state.onViewChange(render);
     for (const [view, button] of Object.entries(options.tabs || {})) button?.addEventListener("click", () => state.setView(view));
@@ -77,5 +77,5 @@
 
   const exported = { WORKBENCH_VIEWS, createWorkbenchState, createWorkbenchController, createFollowModeController, subtitleTimelineTiming };
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
-  else Object.assign(global, exported, { LagLingoWorkbench: exported });
+  else Object.assign(global, exported, { LingerLensWorkbench: exported });
 })(typeof window !== "undefined" ? window : globalThis);

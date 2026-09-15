@@ -414,7 +414,7 @@ class DeepgramStreamingTests(unittest.IsolatedAsyncioTestCase):
         await self.server.send(results_message(is_final=True, speech_final=True, languages=["zh-TW"]))
         iterator = stream.__aiter__()
         events = [await asyncio.wait_for(iterator.__anext__(), 2) for _ in range(3)]
-        # LagLingo alias policy canonicalizes zh-TW onto the zh-Hant identity.
+        # LingerLens alias policy canonicalizes zh-TW onto the zh-Hant identity.
         self.assertEqual(events[1].language, "zh-Hant")
         await stream.aclose()
 

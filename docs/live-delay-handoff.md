@@ -1,14 +1,14 @@
-# LagLingo 直播延迟链路分析与交接文档
+# LingerLens 直播延迟链路分析与交接文档
 
 > 用途：把"端到端延迟从哪来、现在多少、怎么减"的全部已知事实交给新的分析对话。
 > 所有数字均来自真实直播源实测，不是估算。日期：2026-08-29。
-> 项目根目录：`F:/Projects/LagLingo`，本文涉及的原型在 `prototype/hls-companion/`。
+> 项目根目录：`F:/Projects/LingerLens`，本文涉及的原型在 `prototype/hls-companion/`。
 
 ---
 
 ## 1. 项目背景与目标
 
-LagLingo 是一个"延迟跟读"语言学习工具的原型（Prototype 2，代号 hls-companion）。核心诉求：
+LingerLens 是一个"延迟跟读"语言学习工具的原型（Prototype 2，代号 hls-companion）。核心诉求：
 
 - 把 YouTube/Bilibili 直播下载到本机，**稳定地**以落后直播边缘约 10 秒的方式播放（原目标 ~10s）。
 - 媒体只在本机 127.0.0.1 流转；登录 Cookie 只通过 Native Messaging 命名管道传递，不走 HTTP。
@@ -145,7 +145,7 @@ yt-dlp 拿到的"直播边缘"已经是 YouTube 的边缘，不是真实世界�
 
 ```bash
 # 1. 启动 Companion（Python 3.10 + aiohttp，根目录）
-cd F:/Projects/LagLingo/prototype/hls-companion
+cd F:/Projects/LingerLens/prototype/hls-companion
 python -m companion.server --port 8765 --runtime-dir runtime/repro
 
 # 2. 找一个当前在播的直播并启动会话

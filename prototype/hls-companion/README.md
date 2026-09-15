@@ -27,7 +27,7 @@
   → `/api/subtitles` → hls.js `playingDate` 对齐 overlay
 ```
 
-媒体获取统一复用 `YtDlpLiveIngest`。YouTube 保持双路下载；Bilibili/Twitch 使用其既有单 selector/单 Pump 分支。字幕 tee 与包装共享同一份输入字节，字幕 FFmpeg 用 `-vn` 提取并解码音频，不会再次连接平台下载音频。LagLingo 不做运行时 FFprobe、不转码，也不建立第二套 ingest 生命周期。
+媒体获取统一复用 `YtDlpLiveIngest`。YouTube 保持双路下载；Bilibili/Twitch 使用其既有单 selector/单 Pump 分支。字幕 tee 与包装共享同一份输入字节，字幕 FFmpeg 用 `-vn` 提取并解码音频，不会再次连接平台下载音频。LingerLens 不做运行时 FFprobe、不转码，也不建立第二套 ingest 生命周期。
 
 ## 目录
 
@@ -90,7 +90,7 @@ http://127.0.0.1:8765/
 2. 在 `chrome://extensions` 或 `edge://extensions` 打开开发者模式，加载：
 
    ```text
-   F:/Projects/LagLingo/prototype/hls-companion/extension
+   F:/Projects/LingerLens/prototype/hls-companion/extension
    ```
 
 3. 复制加载后显示的扩展 ID。
@@ -99,7 +99,7 @@ http://127.0.0.1:8765/
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File `
-     F:/Projects/LagLingo/prototype/hls-companion/scripts/register-native-host.ps1 `
+     F:/Projects/LingerLens/prototype/hls-companion/scripts/register-native-host.ps1 `
      -ExtensionId 你的扩展ID
    ```
 
@@ -126,7 +126,7 @@ http://127.0.0.1:8765/
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File `
-  F:/Projects/LagLingo/prototype/hls-companion/scripts/register-native-host.ps1 `
+  F:/Projects/LingerLens/prototype/hls-companion/scripts/register-native-host.ps1 `
   -ExtensionId 你的扩展ID -Unregister
 ```
 
@@ -134,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File `
 
 播放器右上角「模型设置」是 ASR 和翻译 Provider 的唯一新增、编辑、删除与 active 选择入口。每类至少保留一条记录；当前 active 记录必须先切换到另一条后才能删除。保存后，下一次启动字幕只使用目录中 active 的 ASR 与翻译记录。
 
-LagLingo **不安装、不下载、也不启动 Whisper 服务**。请先自行运行 Speaches、faster-whisper-server、Xinference、LocalAI 或其他兼容 `POST /v1/audio/transcriptions` 的服务，再新增 ASR：
+LingerLens **不安装、不下载、也不启动 Whisper 服务**。请先自行运行 Speaches、faster-whisper-server、Xinference、LocalAI 或其他兼容 `POST /v1/audio/transcriptions` 的服务，再新增 ASR：
 
 - 协议：`OpenAI Audio Transcriptions`
 - Base URL：例如 `http://127.0.0.1:8000/v1`
@@ -142,11 +142,11 @@ LagLingo **不安装、不下载、也不启动 Whisper 服务**。请先自行�
 - API Key：本地服务不校验时可留空；需要占位值时按该服务要求填写
 - 语言/分窗/超时：按模型速度与直播语言调整
 
-兼容性取决于服务实现。LagLingo 发送 multipart WAV、`model`、`language` 与时间戳格式请求，并接受普通 JSON 文本或带 segment 时间的 verbose JSON。短窗请求失败只影响字幕，不会阻塞媒体播放。
+兼容性取决于服务实现。LingerLens 发送 multipart WAV、`model`、`language` 与时间戳格式请求，并接受普通 JSON 文本或带 segment 时间的 verbose JSON。短窗请求失败只影响字幕，不会阻塞媒体播放。
 
 ## 实时 STT Provider
 
-除 DashScope 与本地 OpenAI-compatible 文件转写外，LagLingo 提供多种彼此独立的原生 WebSocket ASR Adapter，均直接使用公开协议与 `aiohttp`，不依赖厂商 SDK：
+除 DashScope 与本地 OpenAI-compatible 文件转写外，LingerLens 提供多种彼此独立的原生 WebSocket ASR Adapter，均直接使用公开协议与 `aiohttp`，不依赖厂商 SDK：
 
 - **Deepgram Streaming**（`deepgram-streaming`，模型 `nova-3`）：全球多语言 + 混合语言识别（`language=multi`，官方 10 语言集合）与 word 时间戳；指定语言覆盖官方 nova-3 列表。事件按官方 `Results` 的 `is_final`/`speech_final` 与 `SpeechStarted` 映射。
 - **Soniox Realtime STT**（`soniox-realtime`，模型 `stt-rt-v5`）：16 kHz mono PCM 二进制流，支持 60+ 语言、语言提示/限制、逐 token 语言识别、word 时间戳、上下文 terms、语义 endpoint 与手动 `finalize`。适配器把已 final 的 token 前缀作为稳定 interim，并在 `<end>`/`<fin>` 边界生成一条 final cue；默认端点为 `wss://stt-rt.soniox.com/transcribe-websocket`，密钥环境变量为 `SONIOX_API_KEY`。
@@ -161,7 +161,7 @@ LagLingo **不安装、不下载、也不启动 Whisper 服务**。请先自行�
 
 ### Provider-neutral Caption Chunking 合同
 
-LagLingo 不再把“一个 ASR final”当成一个显示 Cue。Adapter 先把协议事件归一为 Recognition Evidence，然后唯一的 `CaptionChunker` 生成 Caption Chunks：
+LingerLens 不再把“一个 ASR final”当成一个显示 Cue。Adapter 先把协议事件归一为 Recognition Evidence，然后唯一的 `CaptionChunker` 生成 Caption Chunks：
 
 - **ASR final 只确认识别**：核对并关闭识别条目，不强制关闭字幕。相同已知说话人、相同主语言的未完成表达可以跨条目接续；未知说话人只在自己的条目内合并，避免混入另一人的话。
 - **按语言证据切分**：完整句子及时提交；持续讲话时，允许在已完成的从句末尾提交。日语使用本地 fugashi + unidic-lite 做词形分析，拒绝词内部、助词和助动词链上的切点；不为每个 token 请求网络模型。其他语言采取保守的标点及有限分句规则，尚不具有同等的日语语法识别覆盖。
@@ -241,14 +241,14 @@ npm test
 
 ## 浏览器冒烟边界
 
-自动测试覆盖字幕浮窗控制器的归一化位置持久化、边界夹取、键盘移动、重置与样式参数，并检查播放器舞台全屏的 DOM 资源合同。仓库当前没有 DOM/Playwright 依赖，因此 Chromium 原生全屏归属仍需人工冒烟：启动媒体后点击 LagLingo 的“全屏”，确认 `document.fullscreenElement` 是 `.player-stage`、字幕仍可见；退出全屏后确认字幕调度继续。
+自动测试覆盖字幕浮窗控制器的归一化位置持久化、边界夹取、键盘移动、重置与样式参数，并检查播放器舞台全屏的 DOM 资源合同。仓库当前没有 DOM/Playwright 依赖，因此 Chromium 原生全屏归属仍需人工冒烟：启动媒体后点击 LingerLens 的“全屏”，确认 `document.fullscreenElement` 是 `.player-stage`、字幕仍可见；退出全屏后确认字幕调度继续。
 
 ## 已完成的自动验证
 
 - 格式归一化和自动选择可选 1080p AVC/AAC；
 - 分离视频/音频映射到 FFmpeg，命令明确使用 `-c copy`；
 - fMP4 HLS 使用 `.m4s + init.mp4`；
-- 当前版 yt-dlp 完整负责 YouTube 远程下载；LagLingo/FFmpeg 不再直接请求 Googlevideo URL；
+- 当前版 yt-dlp 完整负责 YouTube 远程下载；LingerLens/FFmpeg 不再直接请求 Googlevideo URL；
 - 延迟 publisher 保持下载后额外媒体预算，并把公开回看窗口限制在最近约 30 秒；
 - hls.js 由本地文件加载，不依赖 CDN；
 - MV3 清单与脚本可解析；

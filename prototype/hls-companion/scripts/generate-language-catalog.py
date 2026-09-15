@@ -13,8 +13,8 @@ direction, aliases). It is NOT a claim that every Provider supports every
 entry; Provider support tiers come from model presets.
 
 Fixed inputs:
-  * ``SEED_TAGS`` -- the languages LagLingo exposes in the selector.
-  * ``ALIASES`` -- LagLingo's alias policy: region/legacy tags that collapse
+  * ``SEED_TAGS`` -- the languages LingerLens exposes in the selector.
+  * ``ALIASES`` -- LingerLens's alias policy: region/legacy tags that collapse
     onto a canonical catalog entry (e.g. zh-CN -> zh-Hans, iw -> he).
 """
 from __future__ import annotations

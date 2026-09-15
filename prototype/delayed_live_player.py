@@ -112,7 +112,7 @@ def build_player_command(args: argparse.Namespace, player: str) -> list[str]:
         "-sync",
         "audio",
         "-window_title",
-        f"LagLingo prototype — {args.delay:g}s delayed live",
+        f"LingerLens prototype — {args.delay:g}s delayed live",
         "-i",
         "pipe:0",
     ]
@@ -208,7 +208,7 @@ def terminate(process: subprocess.Popen[bytes] | None) -> None:
 def print_status(stats: RelayStats, delay_seconds: float, started_at: float) -> None:
     received, released, buffered, first_at, latest_at = stats.snapshot()
     if first_at is None:
-        print("[LagLingo] Waiting for the first media bytes from yt-dlp...", flush=True)
+        print("[LingerLens] Waiting for the first media bytes from yt-dlp...", flush=True)
         return
 
     ingest_age = time.monotonic() - first_at
@@ -221,7 +221,7 @@ def print_status(stats: RelayStats, delay_seconds: float, started_at: float) -> 
     received_mib = received / (1024 * 1024)
     idle = time.monotonic() - (latest_at or started_at)
     print(
-        f"[LagLingo] {phase} | queued {mib:.1f} MiB | "
+        f"[LingerLens] {phase} | queued {mib:.1f} MiB | "
         f"received {received_mib:.1f} MiB | ingest idle {idle:.1f}s",
         flush=True,
     )
@@ -238,10 +238,10 @@ def run(args: argparse.Namespace) -> int:
         print("player:", subprocess.list2cmdline(player_command))
         return 0
 
-    print(f"[LagLingo] Starting fixed {args.delay:g}s delay prototype")
-    print(f"[LagLingo] Format preference: muxed stream up to {args.max_height}p")
-    print("[LagLingo] The player opens now but media starts only after the delay buffer is built.")
-    print("[LagLingo] Press Ctrl+C or close the player to stop.\n")
+    print(f"[LingerLens] Starting fixed {args.delay:g}s delay prototype")
+    print(f"[LingerLens] Format preference: muxed stream up to {args.max_height}p")
+    print("[LingerLens] The player opens now but media starts only after the delay buffer is built.")
+    print("[LingerLens] Press Ctrl+C or close the player to stop.\n")
 
     stop = threading.Event()
     chunks: queue.Queue[tuple[float, bytes] | None] = queue.Queue()
@@ -288,17 +288,17 @@ def run(args: argparse.Namespace) -> int:
             if player_code is not None:
                 stop.set()
                 if player_code != 0:
-                    print(f"[LagLingo] Player exited with code {player_code}", file=sys.stderr)
+                    print(f"[LingerLens] Player exited with code {player_code}", file=sys.stderr)
                 break
             if ytdlp_code is not None and not reader.is_alive():
                 if ytdlp_code != 0:
-                    print(f"[LagLingo] yt-dlp exited with code {ytdlp_code}", file=sys.stderr)
+                    print(f"[LingerLens] yt-dlp exited with code {ytdlp_code}", file=sys.stderr)
                 break
 
         writer.join(timeout=args.delay + 3)
         return player_process.poll() or ytdlp_process.poll() or 0
     except KeyboardInterrupt:
-        print("\n[LagLingo] Stopping prototype...")
+        print("\n[LingerLens] Stopping prototype...")
         return 130
     finally:
         stop.set()
@@ -338,5 +338,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(run(parse_args()))
     except RuntimeError as error:
-        print(f"[LagLingo] {error}", file=sys.stderr)
+        print(f"[LingerLens] {error}", file=sys.stderr)
         raise SystemExit(2)

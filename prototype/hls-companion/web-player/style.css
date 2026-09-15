@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════
-   LagLingo · NEO-BRUTALISM 新野兽派设计系统
+   LingerLens · NEO-BRUTALISM 新野兽派设计系统
    粗边框 · 硬阴影 · 撞色 · 大字号 · 8px 节奏
 
    本文件是 prototype/redesign/style.css（权威原型）的移植版。
@@ -379,6 +379,34 @@ button[aria-busy="true"]::before {
   line-height: 1.5;
 }
 .diag-actions { display: flex; gap: var(--s2); }
+/*
+ * 开发日志状态。它和构建标识一样是参考信息而不是操作，所以两个都靠
+ * margin-left: auto 往右推，谁在前面谁先占位。
+ */
+.diag-logstate {
+  margin-left: auto;
+  align-self: center;
+  font-size: 11px;
+  color: var(--ink-45);
+  white-space: nowrap;
+}
+.diag-logstate[data-tone="on"]::before,
+.diag-logstate[data-tone="error"]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.diag-logstate[data-tone="on"]::before { background: var(--lime); }
+.diag-logstate[data-tone="error"] {
+  color: var(--red);
+  font-weight: 700;
+}
+.diag-logstate[data-tone="error"]::before { background: var(--red); }
 /* 构建标识推到最右：它是参考信息，不该和操作按钮抢注意力。 */
 .diag-build {
   margin-left: auto;
@@ -387,6 +415,8 @@ button[aria-busy="true"]::before {
   color: var(--ink-45);
   white-space: nowrap;
 }
+/* 两个都在场时只有一个 margin-left: auto 生效，避免中间被撑开一大段空白。 */
+.diag-logstate:not([hidden]) ~ .diag-build { margin-left: var(--s2); }
 .diag-list {
   margin: 0;
   padding: 0;

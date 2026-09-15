@@ -423,7 +423,7 @@ async def run_scenario(mode: str, ts_bytes: bytes, workspace: Path) -> dict:
 
 
 async def amain(args: argparse.Namespace) -> int:
-    with tempfile.TemporaryDirectory(prefix="laglingo-alignment-") as raw:
+    with tempfile.TemporaryDirectory(prefix="lingerlens-alignment-") as raw:
         workspace = Path(raw)
         ts_path = workspace / "source.ts"
         print(f"[smoke] synthesizing {STREAM_SECONDS:.0f}s test stream with beeps at {BEEP_STARTS} ...", flush=True)

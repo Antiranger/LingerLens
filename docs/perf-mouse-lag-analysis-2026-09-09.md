@@ -9,7 +9,7 @@
 1. **视频解码全程软解**：两块 GPU（Intel luid 0x22F03 的 `Video Codec 0`、NVIDIA 的 `VideoDecode`/`Video Codec` 全部 11+61 个实例）在 30 分钟内 avg=0.0 / max=0.0，而 watch 浏览器确实在解码播放（62259 帧）。1080p60 AVC 软解是浏览器 CPU 的主来源。
 2. **DWM 压力与浏览器视频合成强相关**：corr(browser_cpu, dwm_cpu)=**0.73**；dwm avg 22.4% / P95 55.3% / max 63.9%。DWM 高占用是鼠标不跟手的经典强相关项。
 3. **不是全局 CPU 耗尽**：sys CPU avg 25.8% / P95 35%。是局部热点（浏览器 ~2.3 核 + DWM 突发）拉低输入响应。
-4. **run3 的 11.7GB browser RSS 不是播放器泄漏**：monitor 把系统里所有 chrome/msedge/firefox/electron 聚合为 "browser"（88–96 个进程）。run4 同一播放器在跑时聚合 RSS 只有 8.7GB，run1/run2 反而 11.5–11.8GB——该指标被用户自己的浏览器主导，不能归因于 LagLingo 播放器。
+4. **run3 的 11.7GB browser RSS 不是播放器泄漏**：monitor 把系统里所有 chrome/msedge/firefox/electron 聚合为 "browser"（88–96 个进程）。run4 同一播放器在跑时聚合 RSS 只有 8.7GB，run1/run2 反而 11.5–11.8GB——该指标被用户自己的浏览器主导，不能归因于 LingerLens 播放器。
 5. **断流防护实战有效**：run4 仅 2 次 >5s 断流（6.8s / 5.3s，t+1056 与 t+1597），watch4 在 t+1051/t+1601 出现对应横幅与自动暂停（2 个 paused 样本）并自动恢复——字幕掉线修复 + stall overlay 行为符合设计。对照修复前的 run1/run2：312/455 个样本 >5s 断流、max 424s/1213s。
 
 ## 播放器侧（watch4）
@@ -33,7 +33,7 @@ RSS 30 分钟 +1.4GB 但进程数在 88–96 间波动（用户自己的浏览�
 ## 结论的边界（诚实声明）
 
 - watch_player 用 Playwright 捆绑 Chromium（非用户日常浏览器）。该浏览器走了纯软解；用户真实浏览器（Chrome/Edge 正式版）通常能对 avc1 走硬解——**用户机器上是否也软解，本次数据无法判定**。验证方法：用户真实浏览器开 `chrome://media-internals` 播放时看 `kVideoDecoderName`（`MojoVideoDecoder`/`D3D11VideoDecoder` = 硬解，`FFmpegVideoDecoder` = 软解）。
-- "browser" 角色聚合了用户全部浏览器，RSS/CPU 不能单独归因到 LagLingo 播放器进程。
+- "browser" 角色聚合了用户全部浏览器，RSS/CPU 不能单独归因到 LingerLens 播放器进程。
 - run4 供料只有 0.55x，所有 decode/compositing 负载数字是**下限**。
 
 ## 行动项

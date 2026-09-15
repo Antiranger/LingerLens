@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "LagLingo Live Translator",
+  "name": "LingerLens Live Translator",
   "version": "0.3.0",
-  "description": "Opens the current YouTube, Bilibili, or Twitch live page in the local LagLingo yt-dlp/CMAF player through Native Messaging.",
+  "description": "Opens the current YouTube, Bilibili, or Twitch live page in the local LingerLens yt-dlp/CMAF player through Native Messaging.",
   "permissions": ["activeTab", "cookies", "nativeMessaging"],
   "host_permissions": [
     "https://*.youtube.com/*",
@@ -13,5 +13,5 @@
     "https://www.twitch.tv/*"
   ],
   "background": { "service_worker": "service-worker.js" },
-  "action": { "default_title": "Open in LagLingo delayed player" }
+  "action": { "default_title": "Open in LingerLens delayed player" }
 }

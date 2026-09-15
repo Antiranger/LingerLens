@@ -1,7 +1,7 @@
-# LagLingo 多说话人 + 每人独立上下文 + 语音直译 交付文档
+# LingerLens 多说话人 + 每人独立上下文 + 语音直译 交付文档
 
 > 生成时间：2026-08-30
-> 工作区：`F:/Projects/LagLingo`，实现在 `prototype/hls-companion/`
+> 工作区：`F:/Projects/LingerLens`，实现在 `prototype/hls-companion/`
 > 前一轮的成果与依据：`docs/subtitle-live-fix-plan-v2.md`（**必读 §9**）
 >
 > 本文给下一个会话。前置结论都带实测证据；**标注"未验证"的地方不要当成事实**。
@@ -280,7 +280,7 @@ config.py:217  _provider_by_kind(config["translation"],    "openai-compatible")
 ## 5. 阶段 A 的验收
 
 ```bash
-cd F:/Projects/LagLingo
+cd F:/Projects/LingerLens
 npm run test:hls-companion                       # 全绿
 python prototype/hls-companion/scripts/pipeline-e2e.py --audio <clip>.ts
 ```
@@ -311,7 +311,7 @@ python prototype/hls-companion/scripts/pipeline-e2e.py --audio <clip>.ts
 从 `runtime/media/private/` 抠真实音频的方法（`docs/subtitle-live-fix-plan-v2.md` §7 有完整命令）：
 
 ```powershell
-$priv = 'F:\Projects\LagLingo\prototype\hls-companion\runtime\media\private'
+$priv = 'F:\Projects\LingerLens\prototype\hls-companion\runtime\media\private'
 $segs = Get-ChildItem (Join-Path $priv 'seg_*.m4s') | Sort-Object Name | Select-Object -Last 130
 $fs = [System.IO.File]::Create('clip.mp4')
 $init = [System.IO.File]::ReadAllBytes((Join-Path $priv 'init.mp4')); $fs.Write($init,0,$init.Length)

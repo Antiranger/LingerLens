@@ -16,12 +16,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class BackendTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='laglingo-desktop-test-')
+        self.temp = tempfile.TemporaryDirectory(prefix='lingerlens-desktop-test-')
         self.data = Path(self.temp.name)
         self.process = None
 
     def launch(self):
-        binary = os.environ.get('LAGLINGO_TEST_BACKEND')
+        binary = os.environ.get('LINGERLENS_TEST_BACKEND')
         command = [binary] if binary else [sys.executable, str(ROOT / 'desktop/companion_entry.py')]
         env = dict(os.environ, PYTHONUTF8='1')
         if binary:
@@ -40,7 +40,7 @@ class BackendTests(unittest.TestCase):
         self.origin = 'http://127.0.0.1:' + str(message['port'])
 
     def request(self, path, token=True):
-        headers = {'X-LagLingo-Session': 'a' * 64} if token else {}
+        headers = {'X-LingerLens-Session': 'a' * 64} if token else {}
         return urllib.request.urlopen(urllib.request.Request(self.origin + path, headers=headers), timeout=5)
 
     def stop(self, eof=False):
@@ -85,10 +85,10 @@ class BackendTests(unittest.TestCase):
         self.assertFalse((self.data / 'runtime' / 'control.secret').exists())
         self.stop()
 
-    @unittest.skipUnless(os.environ.get('LAGLINGO_TEST_BACKEND'), 'packaged dependency check')
+    @unittest.skipUnless(os.environ.get('LINGERLENS_TEST_BACKEND'), 'packaged dependency check')
     def test_packaged_dependencies_without_system_tools(self):
         env = dict(os.environ, PATH=os.path.join(os.environ['SystemRoot'], 'System32'))
-        result = subprocess.run([os.environ['LAGLINGO_TEST_BACKEND'], '--check-dependencies'],
+        result = subprocess.run([os.environ['LINGERLENS_TEST_BACKEND'], '--check-dependencies'],
             capture_output=True, text=True, encoding='utf-8', env=env, timeout=45,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.assertEqual(result.returncode, 0, result.stderr)

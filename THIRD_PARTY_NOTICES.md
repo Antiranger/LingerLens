@@ -1,6 +1,6 @@
 # Third-party notices
 
-LagLingo itself is MIT-licensed (see [`LICENSE`](LICENSE)). It redistributes other
+LingerLens itself is MIT-licensed (see [`LICENSE`](LICENSE)). It redistributes other
 people's software under their own terms, listed here.
 
 **This file is enforced.** `npm run guard:licences` fails when something is
@@ -122,7 +122,7 @@ It contains `--enable-version3` and **no** `--enable-gpl`, **no**
 
 An earlier build used the Gyan `essentials` distribution, which **is GPL v3** and
 carries the whole-program source obligation that comes with it. It was replaced
-because LagLingo never encodes: the product's only FFmpeg invocation is
+because LingerLens never encodes: the product's only FFmpeg invocation is
 `-c copy` (`companion/core.py`, `build_ffmpeg_command`), a stream copy that needs
 no encoder at all. The `libx264` references in the tree are in smoke-test scripts
 that synthesize local test input and are not part of the product path. Media
@@ -148,7 +148,7 @@ its vendored `llhttp`), `aiohappyeyeballs`, `aiosignal`, `attrs`, `frozenlist`,
 **GPL-2.0 / LGPL-2.1 / BSD-3-Clause**, with all three texts shipped in
 `_internal/unidic_lite/dicdir/`.
 
-> **LagLingo elects the BSD-3-Clause option** for the UniDic data. This election
+> **LingerLens elects the BSD-3-Clause option** for the UniDic data. This election
 > is stated here deliberately: without it a recipient could reasonably read the
 > 260 MB dictionary as LGPL or GPL. Under BSD-3-Clause the obligation is
 > attribution only. See [`licenses/BSD-3-Clause-unidic.txt`](licenses/BSD-3-Clause-unidic.txt).
@@ -179,7 +179,7 @@ project's own offer does not discharge the obligation. yt-dlp's bundled
 offer is yt-dlp's, and it covers yt-dlp. It does not cover our redistribution.
 
 **Written offer, valid for three years from the date of the release that
-contains them.** LagLingo will provide the complete corresponding source for the
+contains them.** LingerLens will provide the complete corresponding source for the
 copyleft components it redistributes, on request:
 
 | Component | Copyleft | Corresponding source |
@@ -210,15 +210,15 @@ this file's redistribution terms apply:
 
 ## External services and sites
 
-LagLingo can connect to YouTube, Bilibili, Twitch, and user-configured
-ASR/translation providers. Those services are not part of LagLingo. Users are
+LingerLens can connect to YouTube, Bilibili, Twitch, and user-configured
+ASR/translation providers. Those services are not part of LingerLens. Users are
 responsible for their accounts, credentials, content rights, service terms,
-regional restrictions, and provider charges. LagLingo does not bypass DRM or
+regional restrictions, and provider charges. LingerLens does not bypass DRM or
 paid entitlements.
 
 ## Protocol documentation sources
 
-LagLingo's provider Adapters are re-implemented from official public protocol
+LingerLens's provider Adapters are re-implemented from official public protocol
 documentation without copying provider or SDK source code:
 
 - **Deepgram Streaming** (`deepgram-streaming`): <https://developers.deepgram.com/reference/speech-to-text/listen-streaming>, <https://developers.deepgram.com/docs/lower-level-websockets>, <https://developers.deepgram.com/docs/multilingual-code-switching>, <https://developers.deepgram.com/docs/languages-overview>.

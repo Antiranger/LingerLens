@@ -15,7 +15,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 SECRET_FILE = RUNTIME / "control.secret"
-ADDRESS = r"\\.\pipe\laglingo_hls_companion_v2" if os.name == "nt" else str(Path(tempfile.gettempdir()) / f"laglingo-hls-{os.getuid()}.sock")
+ADDRESS = r"\\.\pipe\lingerlens_hls_companion_v2" if os.name == "nt" else str(Path(tempfile.gettempdir()) / f"lingerlens-hls-{os.getuid()}.sock")
 FAMILY = "AF_PIPE" if os.name == "nt" else "AF_UNIX"
 
 

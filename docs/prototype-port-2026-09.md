@@ -29,7 +29,7 @@ Chromium 冒烟测试全绿，`npm run ci` 退出码 0。
 
 ### 3.1 计算样式比对（最强证据）
 
-`.scratch/laglingo-audit/style-parity.py`：用真实 Chromium 同视口（2000×1100）
+`.scratch/lingerlens-audit/style-parity.py`：用真实 Chromium 同视口（2000×1100）
 同时加载原型与桌面端，对 94 组对应元素读取 42 个计算样式属性（盒模型、边框、
 字体族/字号/字重/行高/字距、颜色、阴影、网格列、对齐、变换……）后逐项比对。
 
@@ -95,7 +95,7 @@ GET /fonts/noto-sans-sc/x.txt               -> 404
 ### 3.4 多语言绑定
 
 03/04 板块的 DOM 被重建，i18n 绑定必须跟着改；绑定漏了会**静默失效**
-（标签一直显示中文，不报错）。`.scratch/laglingo-audit/i18n-probe.py` 在 5 种语言下
+（标签一直显示中文，不报错）。`.scratch/lingerlens-audit/i18n-probe.py` 在 5 种语言下
 逐个读取 32 个受绑定标签：
 
 ```
@@ -108,7 +108,7 @@ PASS all 32 watched labels change across all 5 locales
 JS 里 38 处选择器字面量、以及若干 `data-*` 属性**漏了都是静默失效**（标签不翻译、
 按钮不响应、不报错），所以必须全量对一遍，而不是抽查。
 
-`.scratch/laglingo-audit/dom-contract-probe.py` 在真实 Chromium 里驱动 **10 个 UI 状态**
+`.scratch/lingerlens-audit/dom-contract-probe.py` 在真实 Chromium 里驱动 **10 个 UI 状态**
 （待机、三个播放条弹窗、模型设置对话框、Cookie 对话框、两个语言组合框（含键盘高亮）），
 对每个状态跑一遍全量选择器：
 
@@ -151,14 +151,14 @@ removed: (none)
 截图能确证的事：
 
 - 顶栏出现了**新的本地时钟**（`00:14:17`）、`未启动` 状态徽章、Archivo Black 的
-  `LagLingo` 字标 → 新的 `index.html` 与本地字体在真实 Electron 渲染进程里生效，
+  `LingerLens` 字标 → 新的 `index.html` 与本地字体在真实 Electron 渲染进程里生效，
   即 `/fonts.css` + `/fonts/**` 通过了会话令牌中间件。
 - 字幕栏是 `SUBS 实时字幕` + `跟随当前`（JS 写入的跟随按钮文案）、
   `等待字幕就绪…` 虚线空状态 → 新的面板头结构生效。
 - 开播卡是 `打开一场直播 / 粘贴链接 → 准备 → 选清晰度 → 启动` 的新文案与排版。
 - 实测字幕栏右边界在 CSS x≈342，等于 `16 + 320 + 边框`，
   即 **3 栏布局**（若命中 `≤1240` 断点应是 299）。桌面端 localStorage 里
-  `laglingo.workbenchView = "split"`，与之一致。
+  `lingerlens.workbenchView = "split"`，与之一致。
 
 **一处必须说明的截图缺陷**：该位图里画面右侧（聊天栏所在区域）与顶栏/板块头右段
 是黑的。这是本机 GPU 合成窗口被 BitBlt 抓帧的已知失真 —— 这台机器挂着两块显卡
@@ -249,18 +249,18 @@ removed: (none)
 
 ```powershell
 # 样式 1:1 比对（回归门禁，退出码非 0 即出现未登记差异）
-py -3.10 .scratch\laglingo-audit\style-parity.py
+py -3.10 .scratch\lingerlens-audit\style-parity.py
 
 # 截图（原型 + 桌面端并排，含实时/分栏/对话框/多种宽度）
-py -3.10 .scratch\laglingo-audit\visual-compare.py
+py -3.10 .scratch\lingerlens-audit\visual-compare.py
 
 # 多语言绑定 + DOM 契约全量核对
 $env:PYTHONIOENCODING="utf-8"
-py -3.10 .scratch\laglingo-audit\i18n-probe.py
-py -3.10 .scratch\laglingo-audit\dom-contract-probe.py
+py -3.10 .scratch\lingerlens-audit\i18n-probe.py
+py -3.10 .scratch\lingerlens-audit\dom-contract-probe.py
 
 # 桌面后端确实在服务字体（含令牌与目录穿越）
-py -3.10 .scratch\laglingo-audit\verify-desktop-fonts.py
+py -3.10 .scratch\lingerlens-audit\verify-desktop-fonts.py
 
 # 字体资产完整性
 py -3.10 scripts\fetch-fonts.py --check

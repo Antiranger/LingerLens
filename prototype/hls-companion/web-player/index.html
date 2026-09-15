@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LagLingo</title>
+  <title>LingerLens</title>
   <!-- Vendored webfonts (see scripts/fetch-fonts.py). Local on purpose: the app
        must render identically with no network and no CDN. -->
   <link rel="stylesheet" href="/fonts.css">
@@ -13,9 +13,9 @@
 
 <!-- ══════════════ 顶栏 ══════════════ -->
 <header class="topbar">
-  <div class="brand" aria-label="LagLingo">
+  <div class="brand" aria-label="LingerLens">
     <span class="brand-mark">LL</span>
-    <span class="brand-word">Lag<em>Lingo</em></span>
+    <span class="brand-word">Linger<em>Lens</em></span>
   </div>
 
   <div class="topbar-status">
@@ -43,6 +43,7 @@
           <button id="diagUpdate" class="btn btn-go btn-compact" type="button" hidden>检查更新</button>
           <button id="diagCopy" class="btn btn-secondary btn-compact" type="button">复制诊断信息</button>
           <button id="diagClear" class="btn btn-ghost btn-compact" type="button">清空</button>
+          <span id="diagLogState" class="diag-logstate mono" hidden></span>
           <span id="diagBuild" class="diag-build mono" title="当前构建"></span>
         </div>
         <ol id="diagList" class="diag-list"></ol>
@@ -267,7 +268,7 @@
             <p id="message" class="now-msg">在画面中输入直播链接即可开始。</p>
             <button id="applyDelayButton" class="btn btn-danger btn-compact warn" hidden type="button">字幕来不及：调高延迟</button>
           </div>
-          <div class="now-delay delay-comparison" title="这里只是 LagLingo 本地缓冲，不包含直播源本身的延迟">
+          <div class="now-delay delay-comparison" title="这里只是 LingerLens 本地缓冲，不包含直播源本身的延迟">
             <label class="delay-field delay-target-compact"><span class="field-label">本地目标</span><span class="delay-input"><input id="targetDelay" type="number" min="11" step="1" value="15" inputmode="numeric"><i>秒</i></span></label>
             <div class="delay-est delay-estimate"><span class="field-label">本地估计</span><b id="totalDelay" class="mono">—</b></div>
           </div>
@@ -512,16 +513,16 @@
 <!-- ══════════════ 跑马灯 + 页脚 ══════════════ -->
 <div class="marquee" aria-hidden="true">
   <div class="marquee-track">
-    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
-    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
-    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
-    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
-    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
-    <span>LAGLINGO ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LINGERLENS ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LINGERLENS ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LINGERLENS ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LINGERLENS ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LINGERLENS ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
+    <span>LINGERLENS ✳ LOCAL DELAY ✳ BILINGUAL SUBTITLES ✳ LIVE CHAT ✳ ASR ✳ TRANSLATION ✳&nbsp;</span>
   </div>
 </div>
 <footer class="colophon">
-  <span>LagLingo — local delay-live companion</span>
+  <span>LingerLens — local delay-live companion</span>
   <span class="mono">NEO-BRUTALISM</span>
 </footer>
 

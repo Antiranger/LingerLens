@@ -3,12 +3,30 @@ const path = require('node:path');
 const { promisify } = require('node:util');
 const execFile = promisify(require('node:child_process').execFile);
 
+/*
+ * The packaged app ships an LGPL FFmpeg (`--disable-libx264`, libopenh264
+ * enabled), while a developer machine usually has the GPL build with the
+ * opposite arrangement. The fixture only needs *some* H.264 encoder, so ask the
+ * binary that is actually going to run it instead of hard-coding one and
+ * failing on the other side -- which is what happened: with libx264 hard-coded,
+ * the packaged smoke test could never pass.
+ */
+async function h264Encoder(ffmpeg) {
+  const { stdout } = await execFile(ffmpeg, ['-hide_banner', '-encoders'],
+    { windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
+  for (const name of ['libx264', 'libopenh264']) {
+    if (new RegExp(`\\b${name}\\b`).test(stdout)) return name;
+  }
+  throw new Error(`The FFmpeg at ${ffmpeg} offers neither libx264 nor libopenh264, so the smoke stream cannot be encoded.`);
+}
+
 async function runSmoke({ window, dataDir, ffmpeg, outputDir, backendPid }) {
   const publicDir = path.join(dataDir, 'runtime', 'media', 'public');
   await fs.mkdir(publicDir, { recursive: true });
+  const encoder = await h264Encoder(ffmpeg);
   await execFile(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
-    '-t', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '24', '-c:a', 'aac',
+    '-t', '3', '-c:v', encoder, '-pix_fmt', 'yuv420p', '-g', '24', '-c:a', 'aac',
     '-f', 'hls', '-hls_time', '1', '-hls_segment_type', 'fmp4', '-hls_playlist_type', 'vod',
     '-hls_segment_filename', path.join(publicDir, 'smoke_%03d.m4s'), path.join(publicDir, 'smoke.m3u8')],
   { windowsHide: true, timeout: 20000, cwd: publicDir });
@@ -28,7 +46,7 @@ async function runSmoke({ window, dataDir, ffmpeg, outputDir, backendPid }) {
         video.addEventListener('timeupdate', () => { if (video.currentTime > 0.2) { clearTimeout(timeout); resolve(video.currentTime); } });
         hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { clearTimeout(timeout); reject(new Error(JSON.stringify({ details: data.details, url: data.frag?.url, status: data.response?.code }))); } });
         hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(reject));
-        hls.loadSource('laglingo://app/hls/smoke.m3u8'); hls.attachMedia(video);
+        hls.loadSource('lingerlens://app/hls/smoke.m3u8'); hls.attachMedia(video);
       });
     } finally { hls.destroy(); video.remove(); }
     return { title: document.title, video: !!document.querySelector('video'), status: status.status,

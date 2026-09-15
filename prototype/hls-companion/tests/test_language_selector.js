@@ -11,7 +11,7 @@ function loadApi() {
   const sandbox = {};
   vm.createContext(sandbox);
   new vm.Script(code, { filename: "language-selector.js" }).runInContext(sandbox);
-  const api = sandbox.LagLingoLanguages;
+  const api = sandbox.LingerLensLanguages;
   const catalog = JSON.parse(fs.readFileSync(path.join(root, "companion/data/languages.json"), "utf8"));
   api.setCatalog(catalog.languages);
   return api;

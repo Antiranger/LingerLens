@@ -12,7 +12,7 @@
 - 侧栏宽度可拖，键盘可调，宽度持久化；**不拖的时候与原型逐像素一致**（内联变量一个都不写）。
 - 顺带修掉一个真实的响应式 bug：≤1240px 的聊天视图里列宽是**反的**（画面 280px、聊天栏 782px）。
 - 新增 `npm run desktop:refresh`（全量刷新）和 `npm run desktop:sync-ui`（只同步前端，秒级）。
-- 打包版已重建并**实测**：冻结后的 `laglingo-backend.exe` 真的服务新前端，拖动在打包版里有效。
+- 打包版已重建并**实测**：冻结后的 `lingerlens-backend.exe` 真的服务新前端，拖动在打包版里有效。
 
 ---
 
@@ -24,7 +24,7 @@
 |---|---|---|
 | Electron | `build-desktop\electron\electron.exe .` | 同一份 Electron，复制进 `release` |
 | `app.isPackaged` | `false` | `true` |
-| 后端 | `.venv-desktop\Scripts\python.exe desktop/companion_entry.py` | `resources\backend\laglingo-backend.exe` |
+| 后端 | `.venv-desktop\Scripts\python.exe desktop/companion_entry.py` | `resources\backend\lingerlens-backend.exe` |
 | 后端代码来源 | **磁盘上的源码，改完重载就生效** | **PyInstaller 冻结时的快照** |
 | 前端来源 | 源码目录 `web-player/` | 冻结时被**复制**进 `_internal\web-player\` |
 | 端口 / 令牌 | 随机端口 + 64 位十六进制令牌 | 同左 |
@@ -33,9 +33,9 @@
 
 - `package.json`：`"desktop:dev": "build-desktop\\electron\\electron.exe ."`，`main` 指向 `desktop/main.cjs`。
 - `desktop/main.cjs:60`：`startBackend({ packaged: app.isPackaged, ... })`。
-- `desktop/backend.cjs:7-10`：`packaged` 为真跑 `resources\backend\laglingo-backend.exe`，否则跑 venv 里的 `companion_entry.py`。
+- `desktop/backend.cjs:7-10`：`packaged` 为真跑 `resources\backend\lingerlens-backend.exe`，否则跑 venv 里的 `companion_entry.py`。
 - `desktop/companion.spec:10`：`(str(app_root / 'web-player'), 'web-player')` —— 前端是作为 **datas 复制**进去的。
-- `desktop/main.cjs:84`：`window.loadURL('laglingo://app/')`，自定义协议把请求转到后端源并注入 `X-LagLingo-Session`。所以 Electron 窗口里的 HTML/CSS/JS **全部来自后端**，不是从 asar 读的 —— 这正是 `desktop:sync-ui` 能成立的原因。
+- `desktop/main.cjs:84`：`window.loadURL('lingerlens://app/')`，自定义协议把请求转到后端源并注入 `X-LingerLens-Session`。所以 Electron 窗口里的 HTML/CSS/JS **全部来自后端**，不是从 asar 读的 —— 这正是 `desktop:sync-ui` 能成立的原因。
 
 所以：**改源码不会影响打包版**。这就是「打包版是旧的」的原因。实测打包版此前停在 `2026-09-14 18:12`，`_internal\web-player\` 里连 `fonts.css` 和 396 个字体文件都没有 —— 它早于整个原型移植。
 
@@ -163,11 +163,11 @@ test("a reflow compresses for a narrow viewport without forgetting the chosen wi
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| 计算样式 1:1 | `.scratch/laglingo-audit/style-parity.py` | 94 组元素 × 42 属性，**无法解释的差异 0**，已记录偏差 71 |
-| DOM 契约 | `.scratch/laglingo-audit/dom-contract-probe.py` | 119 id / 39 选择器 / 111 i18n 绑定，**0 未解析**；10 个 UI 状态 |
-| 多语言 | `.scratch/laglingo-audit/i18n-probe.py` | **35** 个标签 × 5 语言全部切换（含新的 `title` / `aria-label`） |
-| 拖动端到端 | `.scratch/laglingo-audit/pane-resize-probe.py` | **44 项全过**（真实指针事件、持久化、键盘、夹取、三种视图、两个断点、0 未捕获错误） |
-| 打包版实测 | `.scratch/laglingo-audit/verify-packaged-ui.py` | **9 项全过**：真令牌握手 + 打包版里真拖到 460px 并落盘 |
+| 计算样式 1:1 | `.scratch/lingerlens-audit/style-parity.py` | 94 组元素 × 42 属性，**无法解释的差异 0**，已记录偏差 71 |
+| DOM 契约 | `.scratch/lingerlens-audit/dom-contract-probe.py` | 119 id / 39 选择器 / 111 i18n 绑定，**0 未解析**；10 个 UI 状态 |
+| 多语言 | `.scratch/lingerlens-audit/i18n-probe.py` | **35** 个标签 × 5 语言全部切换（含新的 `title` / `aria-label`） |
+| 拖动端到端 | `.scratch/lingerlens-audit/pane-resize-probe.py` | **44 项全过**（真实指针事件、持久化、键盘、夹取、三种视图、两个断点、0 未捕获错误） |
+| 打包版实测 | `.scratch/lingerlens-audit/verify-packaged-ui.py` | **9 项全过**：真令牌握手 + 打包版里真拖到 460px 并落盘 |
 | 侧栏单元测试 | `node --test prototype/hls-companion/tests/test_pane_resizer.js` | 18/18 |
 | 浏览器冒烟 | `prototype/hls-companion/tests/test_browser_smoke.py` | PASS，0 未捕获错误 |
 | 全量 CI | `npm run ci` | **EXIT=0**：Python 48 文件 / 503 测试；JS 93 通过 0 失败；根 13 通过 0 失败；release guard 通过 |
@@ -204,7 +204,7 @@ handle hit area: no dead pixels       == []
 - `prototype/hls-companion/web-player/pane-resizer.js` —— 纯函数（`clampPaneWidth` / `paneWidthBounds` / `paneWidthFromDrag` / `readPaneWidths` / `writePaneWidths`）+ `createPaneResizer` 控制器
 - `prototype/hls-companion/tests/test_pane_resizer.js` —— 18 个测试，含一个诚实的 DOM 替身
 - `scripts/sync-web-player.js` —— 前端同步（支持 `--dry-run`，带冻结过期检测）
-- `.scratch/laglingo-audit/` 下 4 个验证脚本：`layout-probe.py`、`pane-resize-probe.py`、`verify-packaged-ui.py`、`capture-pane-resize.py`
+- `.scratch/lingerlens-audit/` 下 4 个验证脚本：`layout-probe.py`、`pane-resize-probe.py`、`verify-packaged-ui.py`、`capture-pane-resize.py`
 - `output/pane-resize/` 7 张截图
 
 **修改**
@@ -238,7 +238,7 @@ handle hit area: no dead pixels       == []
 
 1. **git 只跟踪了 415 个前端文件里的 7 个。** `web-player/` 下只有 `index.html`、`player.js`、`style.css`、`playback-recovery.js`、`subtitle-scheduler.js`、`subtitle-window-controller.js`、`vendor/hls.min.js` 在版本控制里；`i18n.js`、`ui-bootstrap.js`、`control-bar.js`、`workbench-controller.js`、`pane-resizer.js`、`live-messages-client.js`、`fonts.css` 和 396 个字体文件**都不在**。`.gitignore` 并没有排除它们 —— 它们只是从来没被 `git add` 过（全仓仅 167 个跟踪文件）。**后果：现在从零 clone 出来的仓库，界面是坏的。** 这是本轮之前就存在的问题，但本轮又往上加了新文件。要不要把 9.3MB 字体纳入版本控制、或者改成构建时拉取，是仓库策略决定，我没有替你选。
 2. `sync-web-player.js` 是「镜像」语义：源里删掉的文件会在目标里删掉。它只认 `release\win-unpacked\resources\backend\_internal\web-player` 这一个路径，且要求目标已有 `index.html`，否则拒绝运行。
-3. 拖动宽度存在 `localStorage["laglingo.paneWidths"]`，而桌面版和源码版的 origin 不同（桌面版是 `laglingo://app/`），所以两边的宽度偏好互相独立。
+3. 拖动宽度存在 `localStorage["lingerlens.paneWidths"]`，而桌面版和源码版的 origin 不同（桌面版是 `lingerlens://app/`），所以两边的宽度偏好互相独立。
 4. 与之前几轮相同、仍未做的长时实测：8 小时真实直播、GOP 修复后的 MEDIA_ERROR 计数、错误 API key 跑 1 小时、20 次标签页切换、真实日/中直播测 `sourceOnlyCues`。
 
 ---
@@ -249,12 +249,12 @@ handle hit area: no dead pixels       == []
 $env:PYTHONIOENCODING="utf-8"
 
 node --test prototype/hls-companion/tests/test_pane_resizer.js
-py -3.10 .scratch\laglingo-audit\pane-resize-probe.py
-py -3.10 .scratch\laglingo-audit\style-parity.py
-py -3.10 .scratch\laglingo-audit\dom-contract-probe.py
-py -3.10 .scratch\laglingo-audit\i18n-probe.py
-py -3.10 .scratch\laglingo-audit\capture-pane-resize.py
-py -3.10 -u .scratch\laglingo-audit\verify-packaged-ui.py
+py -3.10 .scratch\lingerlens-audit\pane-resize-probe.py
+py -3.10 .scratch\lingerlens-audit\style-parity.py
+py -3.10 .scratch\lingerlens-audit\dom-contract-probe.py
+py -3.10 .scratch\lingerlens-audit\i18n-probe.py
+py -3.10 .scratch\lingerlens-audit\capture-pane-resize.py
+py -3.10 -u .scratch\lingerlens-audit\verify-packaged-ui.py
 
 npm run ci
 

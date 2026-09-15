@@ -1,6 +1,6 @@
-# LagLingo Language and Provider Context
+# LingerLens Language and Provider Context
 
-LagLingo turns live-stream audio into time-aligned source and translated subtitles. Its language coverage is determined by the configured ASR and translation Providers, while LagLingo owns language identity, user intent, capability validation, and subtitle presentation.
+LingerLens turns live-stream audio into time-aligned source and translated subtitles. Its language coverage is determined by the configured ASR and translation Providers, while LingerLens owns language identity, user intent, capability validation, and subtitle presentation.
 
 ## Language
 
@@ -21,7 +21,7 @@ The canonical Language Tag explicitly chosen by the user for translated subtitle
 _Avoid_: Output locale, UI language
 
 **UI Locale**:
-The language and regional conventions used by LagLingo's controls, labels, and messages. It is independent of Source Language Policy and Target Language.
+The language and regional conventions used by LingerLens's controls, labels, and messages. It is independent of Source Language Policy and Target Language.
 _Avoid_: Target language
 
 ## Providers
@@ -35,17 +35,17 @@ A Provider Profile's declared ability to accept specified languages, detect from
 _Avoid_: Supported languages when the detection or pair semantics are unspecified
 
 **Support Tier**:
-The evidence level for a language or language pair: LagLingo-verified, Provider-claimed, or experimental best-effort.
+The evidence level for a language or language pair: LingerLens-verified, Provider-claimed, or experimental best-effort.
 _Avoid_: Supported as an unqualified binary claim
 
 **Adapter**:
-The Provider-specific implementation that maps LagLingo's PCM, language policies, events, translation instructions, usage, and errors to one external protocol or official SDK.
+The Provider-specific implementation that maps LingerLens's PCM, language policies, events, translation instructions, usage, and errors to one external protocol or official SDK.
 _Avoid_: Universal Provider, protocol shim, platform chat connector
 
 ## Live Timeline
 
 **Media Wall Clock**:
-The single epoch-seconds timeline carried by LagLingo's local HLS `PROGRAM-DATE-TIME`. Video frames, Subtitle Cues, and Live Messages are aligned on this clock and formatted in the viewer's local time zone for display.
+The single epoch-seconds timeline carried by LingerLens's local HLS `PROGRAM-DATE-TIME`. Video frames, Subtitle Cues, and Live Messages are aligned on this clock and formatted in the viewer's local time zone for display.
 _Avoid_: System clock when referring to media position, video currentTime
 
 **Playback Wall Time**:
@@ -65,7 +65,7 @@ Provider-confirmed recognition text with its original audio timestamps. Evidence
 _Avoid_: Interim word, guaranteed sentence boundary, policy-committed token, final sentence
 
 **Policy-Committed Token**:
-A lexical token from mutable ASR output that LagLingo irrevocably accepts after its configured agreement rule. It is stable for LagLingo publication but may still differ from a later Provider final and therefore carries lower evidence confidence than a Stable Token.
+A lexical token from mutable ASR output that LingerLens irrevocably accepts after its configured agreement rule. It is stable for LingerLens publication but may still differ from a later Provider final and therefore carries lower evidence confidence than a Stable Token.
 _Avoid_: Provider-final token, guaranteed-correct token
 
 **Caption Chunk**:

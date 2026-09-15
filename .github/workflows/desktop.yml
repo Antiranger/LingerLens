@@ -32,7 +32,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run desktop:test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:LAGLINGO_TEST_BACKEND = "$PWD/build-desktop/backend/laglingo-backend/laglingo-backend.exe"
+          $env:LINGERLENS_TEST_BACKEND = "$PWD/build-desktop/backend/lingerlens-backend/lingerlens-backend.exe"
           .venv-desktop/Scripts/python.exe -m unittest discover -s desktop/tests -p test_*.py
       - name: Build unsigned installer without publishing
         run: npm run desktop:dist
@@ -42,6 +42,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: laglingo-windows-x64-preview
+          name: lingerlens-windows-x64-preview
           path: release/*-setup.exe
           if-no-files-found: error

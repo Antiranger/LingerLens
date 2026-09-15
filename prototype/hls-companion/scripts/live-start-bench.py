@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repeatable red/green benchmark for LagLingo live start-up and throughput.
+"""Repeatable red/green benchmark for LingerLens live start-up and throughput.
 
 Drives the running Companion over its local API and reports the two numbers
 that decide whether a download change helped:

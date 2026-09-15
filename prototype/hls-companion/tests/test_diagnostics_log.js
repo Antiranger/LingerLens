@@ -435,12 +435,12 @@ test("the copied report carries context, counts and one line per record", () => 
   const text = formatDiagnostics({
     log,
     context: { "界面语言": "zh-CN", "会话状态": "error", "空值": null },
-    title: "LagLingo 诊断信息",
+    title: "LingerLens 诊断信息",
     timeLabel: "生成时间",
     countLabel: "记录",
   });
   const lines = text.split("\n");
-  assert.equal(lines[0], "LagLingo 诊断信息");
+  assert.equal(lines[0], "LingerLens 诊断信息");
   assert.match(lines[1], /^生成时间: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   assert.ok(lines.includes("界面语言: zh-CN"));
   assert.ok(lines.includes("会话状态: error"));

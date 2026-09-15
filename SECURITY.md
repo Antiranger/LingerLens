@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Do not open a public issue containing exploit details, credentials, Cookie data, or private stream URLs. Use GitHub's private vulnerability reporting for `Antiranger/LagLingo` when available, or contact the repository owner privately through GitHub. Include affected revision, reproduction steps, impact, and a minimal sanitized proof. Allow reasonable time for investigation before disclosure.
+Do not open a public issue containing exploit details, credentials, Cookie data, or private stream URLs. Use GitHub's private vulnerability reporting for `Antiranger/LingerLens` when available, or contact the repository owner privately through GitHub. Include affected revision, reproduction steps, impact, and a minimal sanitized proof. Allow reasonable time for investigation before disclosure.
 
 ## Security model
 

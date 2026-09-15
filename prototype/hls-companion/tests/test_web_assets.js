@@ -419,7 +419,7 @@ test("realtime workbench UI elements and live message contracts are wired", () =
   assert.match(css, /\.pane-resizer\s*\{[^}]*cursor:\s*col-resize/);
   assert.match(css, /@media \(max-width:\s*899px\)[\s\S]*?\.pane-resizer\s*\{\s*display:\s*none/);
   const paneResizer = fs.readFileSync(path.join(root, "web-player/pane-resizer.js"), "utf8");
-  assert.match(paneResizer, /laglingo\.paneWidths/);
+  assert.match(paneResizer, /lingerlens\.paneWidths/);
   assert.match(paneResizer, /--pane-left-w/);
   assert.match(paneResizer, /--pane-right-w/);
   // At rest nothing may be written: the inline variable is the whole reason the

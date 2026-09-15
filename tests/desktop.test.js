@@ -6,7 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const config = require('../desktop/builder.cjs');
 const manifest = require('../desktop/dependencies.json');
-const { backendLogSink, localStamp } = require('../desktop/backend.cjs');
+const { localStamp } = require('../desktop/backend.cjs');
+const { openDevLog, MAX_LINES_PER_POST } = require('../desktop/devlog.cjs');
 const updater = require('../desktop/updater.cjs');
 
 test('installer keeps user data and installs per user without starting itself', () => {
@@ -21,7 +22,7 @@ test('desktop package inputs exclude private working directories', () => {
     assert.ok(!source.includes('**'), 'Top-level input must be explicit');
     assert.doesNotMatch(source, /(^|\/)(docs|prototype|runtime|\.scratch|output)(\/|$)/);
   }
-  assert.ok(config.extraResources.some(r => r.from === 'build-desktop/backend/laglingo-backend'));
+  assert.ok(config.extraResources.some(r => r.from === 'build-desktop/backend/lingerlens-backend'));
 });
 
 test('desktop dependency download pins HTTPS and a full SHA-256', () => {
@@ -32,25 +33,27 @@ test('desktop dependency download pins HTTPS and a full SHA-256', () => {
 
 // The backend's stderr can carry private stream URLs, so silence is the
 // default and anything else has to be asked for by name.
-test('backend logging stays off unless LAGLINGO_BACKEND_LOG asks for it', () => {
+test('dev logging stays off unless LINGERLENS_BACKEND_LOG asks for it', () => {
   for (const value of [undefined, '', '  ', '0', 'off', 'OFF']) {
-    assert.equal(backendLogSink({ LAGLINGO_BACKEND_LOG: value }), null, `${value} must stay silent`);
+    assert.equal(openDevLog({ LINGERLENS_BACKEND_LOG: value }), null, `${value} must stay silent`);
   }
 });
 
-test('backend logging accepts a boolean switch and a file path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'laglingo-log-'));
+test('dev logging accepts a boolean switch and a file path', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
   const original = process.stderr.write;
   const seen = [];
   process.stderr.write = chunk => { seen.push(chunk); return true; };
   try {
-    const terminal = backendLogSink({ LAGLINGO_BACKEND_LOG: '1' });
-    terminal('to terminal\n');
+    const terminal = openDevLog({ LINGERLENS_BACKEND_LOG: '1' });
+    assert.equal(terminal.state().enabled, false, 'terminal-only writes no file');
+    terminal.write('to terminal\n');
     assert.deepEqual(seen, ['to terminal\n']);
 
     const target = path.join(dir, 'backend.log');
-    const tee = backendLogSink({ LAGLINGO_BACKEND_LOG: target });
-    tee('to both\n');
+    const tee = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    assert.deepEqual(tee.state(), { enabled: true, file: target, error: null, lines: 0, terminalOnly: false });
+    tee.write('to both\n');
     assert.deepEqual(seen, ['to terminal\n', 'to both\n']);
     assert.equal(fs.readFileSync(target, 'utf8'), 'to both\n');
   } finally {
@@ -59,10 +62,93 @@ test('backend logging accepts a boolean switch and a file path', () => {
   }
 });
 
-test('an unwritable backend log path degrades instead of failing the player', () => {
-  const sink = backendLogSink({ LAGLINGO_BACKEND_LOG: path.join(os.tmpdir(), 'laglingo-missing-dir', 'x.log') });
-  assert.equal(typeof sink, 'function');
-  assert.doesNotThrow(() => sink('still alive\n'));
+/*
+ * The whole point of the switch is to leave evidence behind. It used to fail
+ * open: a path whose directory did not exist fell back to the terminal, and
+ * Electron is a GUI-subsystem binary with no terminal attached -- so a run
+ * could log nothing for an hour and never say so.
+ */
+test('a dev log path creates its parent directory instead of silently doing nothing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
+  const original = process.stderr.write;
+  process.stderr.write = () => true;
+  try {
+    const target = path.join(dir, 'nested', 'deeper', 'run.log');
+    const log = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    assert.equal(log.state().error, null);
+    assert.equal(log.state().enabled, true);
+    log.write('created\n');
+    assert.equal(fs.readFileSync(target, 'utf8'), 'created\n');
+  } finally {
+    process.stderr.write = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an unwritable dev log path keeps the player alive but reports the failure', () => {
+  const original = process.stderr.write;
+  process.stderr.write = () => true;
+  try {
+    // A directory cannot be opened for appending on Windows, which makes this a
+    // portable way to force the failure without touching permissions.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
+    try {
+      const log = openDevLog({ LINGERLENS_BACKEND_LOG: dir });
+      const state = log.state();
+      assert.equal(state.enabled, false);
+      assert.equal(state.file, dir, 'the path that failed is still reportable');
+      assert.match(state.error, /^[A-Z]+:/, 'the error keeps its code');
+      assert.doesNotThrow(() => log.write('still alive\n'));
+      assert.equal(log.writeLines(['nope']), 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } finally {
+    process.stderr.write = original;
+  }
+});
+
+test('diagnostic lines are capped, flattened and counted', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
+  const original = process.stderr.write;
+  process.stderr.write = () => true;
+  try {
+    const target = path.join(dir, 'run.log');
+    const log = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    assert.equal(log.writeLines([]), 0, 'nothing to write is not a write');
+    assert.equal(log.writeLines(['  ', '\n']), 0, 'blank entries are not records');
+    assert.equal(log.writeLines(['a\r\nb']), 1, 'an embedded newline must not forge a line');
+    assert.equal(log.state().lines, 1);
+    log.writeLines(Array.from({ length: 500 }, (_, index) => `line ${index}`));
+    assert.equal(log.state().lines, 1 + MAX_LINES_PER_POST, 'a single post is bounded');
+    const written = fs.readFileSync(target, 'utf8').split('\n').filter(Boolean);
+    assert.equal(written.length, 1 + MAX_LINES_PER_POST);
+    assert.deepEqual(written.slice(0, 2), ['a b', 'line 0']);
+  } finally {
+    process.stderr.write = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a dev log that disappears mid-run stops writing but never throws', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
+  const original = process.stderr.write;
+  process.stderr.write = () => true;
+  try {
+    const target = path.join(dir, 'run.log');
+    const log = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    log.write('before\n');
+    // An entire directory removed underneath a long run, e.g. someone tidying up.
+    fs.rmSync(dir, { recursive: true, force: true });
+    assert.doesNotThrow(() => log.write('after\n'));
+    const state = log.state();
+    assert.equal(state.enabled, false, 'a broken file must not keep claiming to record');
+    assert.match(state.error, /^[A-Z]+:/);
+    assert.equal(log.writeLines(['nope']), 0);
+  } finally {
+    process.stderr.write = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('log headers carry local wall-clock time, not UTC', () => {
@@ -115,13 +201,13 @@ test('a manifest is rejected unless every field the installer step needs is soun
 
 test('the manifest url is fixed unless a trusted override is given', () => {
   assert.equal(updater.manifestUrl({}), updater.DEFAULT_MANIFEST_URL);
-  assert.equal(updater.manifestUrl({ LAGLINGO_UPDATE_URL: 'http://evil.test/m.json' }), updater.DEFAULT_MANIFEST_URL,
+  assert.equal(updater.manifestUrl({ LINGERLENS_UPDATE_URL: 'http://evil.test/m.json' }), updater.DEFAULT_MANIFEST_URL,
     'a plain-http override must not be honoured');
-  assert.equal(updater.manifestUrl({ LAGLINGO_UPDATE_URL: 'file:///C:/m.json' }), updater.DEFAULT_MANIFEST_URL);
-  assert.equal(updater.manifestUrl({ LAGLINGO_UPDATE_URL: 'https://local.test/m.json' }), 'https://local.test/m.json');
-  assert.equal(updater.manifestUrl({ LAGLINGO_UPDATE_URL: 'http://127.0.0.1:8080/m.json' }), 'http://127.0.0.1:8080/m.json',
+  assert.equal(updater.manifestUrl({ LINGERLENS_UPDATE_URL: 'file:///C:/m.json' }), updater.DEFAULT_MANIFEST_URL);
+  assert.equal(updater.manifestUrl({ LINGERLENS_UPDATE_URL: 'https://local.test/m.json' }), 'https://local.test/m.json');
+  assert.equal(updater.manifestUrl({ LINGERLENS_UPDATE_URL: 'http://127.0.0.1:8080/m.json' }), 'http://127.0.0.1:8080/m.json',
     'loopback is how the updater gets tested without publishing a release');
-  assert.equal(updater.manifestUrl({ LAGLINGO_UPDATE_URL: 'http://localhost:8080/m.json' }), 'http://localhost:8080/m.json');
+  assert.equal(updater.manifestUrl({ LINGERLENS_UPDATE_URL: 'http://localhost:8080/m.json' }), 'http://localhost:8080/m.json');
   assert.equal(updater.isTrustedManifestUrl('http://192.168.1.5/m.json'), false, 'a LAN address is not loopback');
 });
 
@@ -143,7 +229,7 @@ function fetchBytes(bytes, { status = 200 } = {}) {
 
 test('checking reports current, available and failure without throwing', async () => {
   const digest = crypto.createHash('sha256').update('installer-bytes').digest('hex');
-  const url = 'https://example.test/LagLingo.exe';
+  const url = 'https://example.test/LingerLens.exe';
 
   const current = updater.createUpdater({ currentVersion: '0.2.0', fetch: fetchJsonOnce(manifestFor('0.2.0', url, Buffer.from('installer-bytes'), digest)) });
   assert.equal((await current.check()).status, 'current');
@@ -163,7 +249,7 @@ test('checking reports current, available and failure without throwing', async (
 });
 
 test('a download whose bytes match the manifest is renamed into place', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'laglingo-update-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-update-'));
   const bytes = Buffer.from('installer-bytes'.repeat(100));
   const digest = crypto.createHash('sha256').update(bytes).digest('hex');
   const destination = path.join(dir, 'setup.exe');
@@ -181,7 +267,7 @@ test('a download whose bytes match the manifest is renamed into place', async ()
 });
 
 test('a download that fails verification leaves no runnable file behind', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'laglingo-update-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-update-'));
   const bytes = Buffer.from('the real bytes');
   const destination = path.join(dir, 'setup.exe');
   const cases = [
@@ -205,7 +291,7 @@ test('a download that fails verification leaves no runnable file behind', async 
 });
 
 test('a server that lies about the size is rejected before anything is written', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'laglingo-update-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-update-'));
   const destination = path.join(dir, 'setup.exe');
   const bytes = Buffer.from('x');
   try {
@@ -222,7 +308,7 @@ test('a server that lies about the size is rejected before anything is written',
 });
 
 test('the full check-then-download path ends in ready with a verified installer', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'laglingo-update-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-update-'));
   const bytes = Buffer.from('a real installer, honest');
   const digest = crypto.createHash('sha256').update(bytes).digest('hex');
   const manifest = manifestFor('9.9.9', 'https://example.test/a.exe', bytes, digest);

@@ -5,7 +5,7 @@
 //
 // The packaged backend is a PyInstaller COLLECT tree, so
 // resources/backend/_internal/web-player is a plain directory of real files and
-// the Electron window loads the UI over laglingo://app/ from that backend. Pure
+// the Electron window loads the UI over lingerlens://app/ from that backend. Pure
 // HTML/CSS/JS edits therefore need no freeze and no electron-builder run.
 //
 // It has to write BOTH copies. `npm run desktop:pack` (and `desktop:dist`) take
@@ -28,10 +28,10 @@ const RELATIVE_UI = path.join("backend", "_internal", "web-player");
 // The freeze output is what a repack copies from; the unpacked build is what is
 // running right now. Both have to agree with the source.
 const TARGETS = [
-  path.join(REPO_ROOT, "build-desktop", "backend", "laglingo-backend", "_internal", "web-player"),
+  path.join(REPO_ROOT, "build-desktop", "backend", "lingerlens-backend", "_internal", "web-player"),
   path.join(REPO_ROOT, "release", "win-unpacked", "resources", RELATIVE_UI),
 ];
-const BACKEND_EXE = path.join(REPO_ROOT, "release", "win-unpacked", "resources", "backend", "laglingo-backend.exe");
+const BACKEND_EXE = path.join(REPO_ROOT, "release", "win-unpacked", "resources", "backend", "lingerlens-backend.exe");
 // Sources that get compiled into the frozen backend rather than copied.
 const FROZEN_SOURCES = [
   path.join(REPO_ROOT, "prototype", "hls-companion", "companion"),

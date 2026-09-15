@@ -103,7 +103,7 @@ Gummy 本身的强项保持成立（官方参数表确认的翻译对）：
 - 2026-07-07 GA。16kHz 单声道、100ms 分块、WebSocket 输入；
   输出 `diarization_speaker_start` / `diarization_speaker_end` 事件（时间戳+speaker 标签）
 - 每流最多 8 说话人、最长 5 小时（直播超长时要处理重连续流）
-- 官方定位就是「与任意流式 STT 并行，同一路音频分两路，按时间戳对齐」——和 LagLingo 的架构天然匹配
+- 官方定位就是「与任意流式 STT 并行，同一路音频分两路，按时间戳对齐」——和 LingerLens 的架构天然匹配
 - 价格：Developer €0.198/h、Starter €0.170/h（changelog 明确列出）
 - **DIHARD III 流式分离 benchmark（pyannote 自家评测，注意口径）**：
   DER 全语言 pyannote 19.8% vs Speechmatics RT v2 31.3% vs Deepgram Nova-3 39.1% vs

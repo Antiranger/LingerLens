@@ -217,7 +217,7 @@ class YouTubeChatIngest:
             consumer = None
             try:
                 consumer = self.auth_lease.acquire("youtube_chat") if self.auth_lease else None
-                with tempfile.TemporaryDirectory(prefix="laglingo-live-chat-") as raw_dir:
+                with tempfile.TemporaryDirectory(prefix="lingerlens-live-chat-") as raw_dir:
                     directory = Path(raw_dir)
                     self.source_started_monotonic = time.monotonic()
                     self.source_started_media_time = self.clock.capture_wall_time(self.source_started_monotonic) if self.clock else None

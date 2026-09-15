@@ -208,10 +208,10 @@ class YtDlpLiveIngest:
         # and sags to 0.55x on 1080p60 / 0.8x on 720p60, while direct
         # googlevideo sustains 1.0x even for 1080p60. googlevideo is directly
         # reachable on networks where youtube.com is not. Set
-        # LAGLINGO_FFMPEG_PROXY=1 to restore forwarding on networks that need it.
+        # LINGERLENS_FFMPEG_PROXY=1 to restore forwarding on networks that need it.
         ffmpeg_proxy_args = (
             ["--downloader-args", f"ffmpeg_i:-http_proxy {proxy}"]
-            if proxy and os.environ.get("LAGLINGO_FFMPEG_PROXY") == "1"
+            if proxy and os.environ.get("LINGERLENS_FFMPEG_PROXY") == "1"
             else []
         )
         # ffmpeg HLS input hardening for live: reconnect quickly instead of

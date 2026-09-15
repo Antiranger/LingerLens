@@ -25,7 +25,7 @@ const NOTICES = path.join(REPO_ROOT, "THIRD_PARTY_NOTICES.md");
 const LICENCE_DIR = path.join(REPO_ROOT, "licenses");
 const WEB_PLAYER = path.join(REPO_ROOT, "prototype", "hls-companion", "web-player");
 const VENDOR = path.join(REPO_ROOT, "prototype", "hls-companion", "vendor");
-const FREEZE = path.join(REPO_ROOT, "build-desktop", "backend", "laglingo-backend", "_internal");
+const FREEZE = path.join(REPO_ROOT, "build-desktop", "backend", "lingerlens-backend", "_internal");
 
 /*
  * Each entry: something redistributed, the notice text that must name it, and

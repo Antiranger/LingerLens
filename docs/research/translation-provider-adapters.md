@@ -2,7 +2,7 @@
 
 > **Target File:** `docs/research/translation-provider-adapters.md`  
 > **Date:** 2026-08-31  
-> **Scope:** Architecture, canonical API contracts, usage normalization, prompt caching, error handling, and language capability strategy for real-time live subtitle machine translation (MT) in LagLingo companion service.
+> **Scope:** Architecture, canonical API contracts, usage normalization, prompt caching, error handling, and language capability strategy for real-time live subtitle machine translation (MT) in LingerLens companion service.
 >
 > **Verification note:** This is a preliminary subagent research artifact. The final plan keeps the existing `openai-compatible` kind for compatibility and adds first-class Anthropic/Gemini kinds rather than forcing a breaking rename. It also separates normal input, cache-read input, and cache-write input usage/pricing; Anthropic cache creation cannot be priced accurately with the existing three-rate schema. Exact model names, prices, caching thresholds, and preview endpoint versions are presets to refresh, not stable protocol contracts.
 
@@ -11,7 +11,7 @@
 ## 1. Executive Summary & Core Architectural Decision
 
 ### 1.1 Context & Objectives
-LagLingo translates spoken live subtitles under strict real-time deadlines (median utterance duration ~1.6s, latency budget < 1000ms–2000ms per subtitle chunk). The translation engine requires:
+LingerLens translates spoken live subtitles under strict real-time deadlines (median utterance duration ~1.6s, latency budget < 1000ms–2000ms per subtitle chunk). The translation engine requires:
 1. **Rolling History Support:** Contextual disambiguation of subject dropping (especially in Japanese/Korean) and pronoun reference.
 2. **Glossary & Domain Grounding:** Strict entity, character name, and terminology adherence.
 3. **Usage & Cost Normalization:** Unified accounting for input, output, and provider-level cached tokens across billing models.

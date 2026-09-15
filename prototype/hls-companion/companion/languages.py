@@ -1,8 +1,8 @@
-"""Canonical BCP 47 language identity for LagLingo.
+"""Canonical BCP 47 language identity for LingerLens.
 
 Rules (see CONTEXT.md and the global-language MVP spec):
 
-* Every language LagLingo stores or passes around is a canonical BCP 47 tag
+* Every language LingerLens stores or passes around is a canonical BCP 47 tag
   (``ja``, ``zh-Hant``, ``pt-BR``). ``auto`` is never a tag; it is expressed
   as a ``SourceLanguagePolicy`` mode instead.
 * Server-side validation is authoritative and uses ``langcodes``. The
@@ -12,7 +12,7 @@ Rules (see CONTEXT.md and the global-language MVP spec):
 * The catalog is language identity data, not a support claim. Whether a
   Provider profile supports a tag comes from its language capabilities.
 
-LagLingo alias policy (on top of ``langcodes.standardize_tag``):
+LingerLens alias policy (on top of ``langcodes.standardize_tag``):
 
 * ``zh-CN``/``zh-SG`` collapse to ``zh-Hans``; ``zh-TW``/``zh-HK``/``zh-MO``
   collapse to ``zh-Hant``. Script, not region, is the identity that matters
@@ -75,7 +75,7 @@ def catalog_entries() -> list[dict[str, Any]]:
 
 
 def canonicalize_tag(raw: object) -> str:
-    """Normalize one tag to LagLingo's canonical BCP 47 form or raise."""
+    """Normalize one tag to LingerLens's canonical BCP 47 form or raise."""
     text = str(raw or "").strip()
     if not text:
         raise ValueError("language tag is required")

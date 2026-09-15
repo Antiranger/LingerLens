@@ -36,6 +36,6 @@ a = Analysis([str(root / 'desktop' / 'companion_entry.py')],
 pyz = PYZ(a.pure)
 # langcodes' packaging hook includes a test README; it is not runtime data.
 a.datas = [item for item in a.datas if not item[0].replace('\\', '/').startswith('langcodes/tests/')]
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='laglingo-backend',
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='lingerlens-backend',
     debug=False, bootloader_ignore_signals=False, strip=False, upx=False, console=True)
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='laglingo-backend')
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='lingerlens-backend')

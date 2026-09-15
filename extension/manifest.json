@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "LagLingo Live Delay Spike",
+  "name": "LingerLens Live Delay Spike",
   "version": "0.1.0",
   "description": "Measure and validate controlled delay behind the live edge on YouTube Live and Bilibili Live.",
   "host_permissions": [

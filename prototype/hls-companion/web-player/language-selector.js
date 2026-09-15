@@ -1,4 +1,4 @@
-/* LagLingo language catalog + accessible searchable language selector.
+/* LingerLens language catalog + accessible searchable language selector.
  *
  * The catalog (canonical BCP 47 tag, English name, autonym, direction,
  * aliases) comes from the loopback /api/languages endpoint and is identity
@@ -262,6 +262,6 @@
     directionFor,
     createLanguageSelector,
   };
-  if (typeof window !== "undefined") window.LagLingoLanguages = api;
-  if (typeof globalThis !== "undefined") globalThis.LagLingoLanguages = api;
+  if (typeof window !== "undefined") window.LingerLensLanguages = api;
+  if (typeof globalThis !== "undefined") globalThis.LingerLensLanguages = api;
 })();
