@@ -956,8 +956,8 @@
     if (health.active) {
       banner.hidden = false;
       const message = health.kind === "packaging"
-        ? "本地媒体封装暂未推进，正在恢复…"
-        : "直播源下载暂未收到新数据，正在自动恢复…";
+        ? "本地媒体切片处理较慢，正在自动恢复…"
+        : "网络端未收到直播流数据，正在尝试重新连接…";
       banner.textContent = `${message}（已停 ${Math.round(health.stallSeconds)} 秒）`;
       if (!video.paused && bufferAhead() < 3) {
         autoPausedForStall = true;
@@ -972,7 +972,7 @@
         if (video.paused) video.play().catch(() => {});
       } else {
         banner.hidden = false;
-        banner.textContent = "直播源已恢复，正在重新缓冲…";
+        banner.textContent = "直播流已恢复，正在补充播放缓冲…";
       }
       return;
     }
@@ -1662,7 +1662,7 @@
     if (!container) return;
     if (!Number.isFinite(wallClock)) {
       if (container.children.length === 0) {
-        container.innerHTML = '<div class="timeline-empty-state">等待就绪字幕...</div>';
+        container.innerHTML = '<div class="timeline-empty-state">等待字幕生成...</div>';
       }
       return;
     }
@@ -1674,7 +1674,7 @@
 
     const empty = container.querySelector(".timeline-empty-state");
     if (sortedCues.length === 0) {
-      if (!empty) container.innerHTML = '<div class="timeline-empty-state">等待就绪字幕...</div>';
+      if (!empty) container.innerHTML = '<div class="timeline-empty-state">等待字幕生成...</div>';
       return;
     }
     if (empty) empty.remove();

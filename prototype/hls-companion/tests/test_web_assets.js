@@ -210,8 +210,8 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.doesNotMatch(html, /下载后额外延迟/);
   assert.doesNotMatch(html, /id="publishDelay"/);
   assert.match(html, /id="targetDelay"[^>]+type="number"[^>]+min="11"[^>]+value="15"/);
-  assert.match(html, /本地目标/);
-  assert.match(html, /本地估计/);
+  assert.match(html, /目标延迟/);
+  assert.match(html, /当前实测延迟/);
   assert.match(html, /不包含直播源本身的延迟/);
   assert.doesNotMatch(js, /textContent\s*=\s*["'`]翻译中/);
   // Assert the live rule, not a comment. This previously matched
@@ -242,7 +242,7 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   // treating every publisher-only packaging pause as a download outage.
   assert.match(js, /if \(data\.state === "error"\) \{[\s\S]*?setMediaLoading\(false\);/);
   assert.match(js, /health\.kind === "upstream"/);
-  assert.match(js, /直播源下载暂未收到新数据，正在自动恢复/);
+  assert.match(js, /网络端未收到直播流数据，正在尝试重新连接/);
   assert.doesNotMatch(js, /上游直播数据中断，正在自动恢复/);
   assert.match(js, /sessionAction === "stopping" \|\| lastSessionState !== "running"/);
   assert.match(html, /id="asrUsageCost"/);

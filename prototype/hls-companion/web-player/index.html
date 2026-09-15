@@ -74,8 +74,8 @@
 <section class="hero" aria-label="产品介绍">
   <div class="hero-left">
     <p class="hero-kicker mono">LOCAL DELAY × BILINGUAL LIVE</p>
-    <h1 class="hero-title">本地延迟<span class="hero-x">×</span>实时双语字幕</h1>
-    <p class="hero-sub">YouTube · Bilibili · Twitch 直播，先存到本机，再带着识别与翻译一起播放。</p>
+    <h1 class="hero-title">延时缓冲<span class="hero-x">×</span>双语直播播放器</h1>
+    <p class="hero-sub">支持 YouTube、Bilibili 与 Twitch。通过本地延后播放，实现字幕与发音精准同屏。</p>
   </div>
   <div class="hero-right" aria-hidden="true">
     <div class="hero-chip chip-indigo">ASR</div>
@@ -123,7 +123,7 @@
           </div>
         </header>
         <div id="subtitlesTimelineList" class="timeline" role="feed" aria-label="实时字幕流">
-          <div class="timeline-empty">等待字幕就绪…</div>
+          <div class="timeline-empty">等待识别语音…</div>
         </div>
         <div class="pane-resizer" data-pane-edge="subtitles" role="separator" tabindex="0"
              aria-orientation="vertical" aria-controls="paneSubtitles"
@@ -149,13 +149,13 @@
           <div id="emptyState" class="empty-state">
             <div class="setup-card player-setup">
               <h3 class="setup-title">打开一场直播</h3>
-              <p class="setup-sub">粘贴链接 → 准备 → 选清晰度 → 启动</p>
+              <p class="setup-sub">粘贴链接 → 解析 → 选清晰度 → 开始播放</p>
               <div class="setup-row">
                 <label class="field field-grow">
                   <span class="field-label">直播链接</span>
                   <input id="url" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 YouTube、B 站或 Twitch 直播链接">
                 </label>
-                <button id="probe" class="btn btn-primary" type="button">准备</button>
+                <button id="probe" class="btn btn-primary" type="button">解析</button>
               </div>
               <label class="field">
                 <span class="field-label">外部网络代理（可选）</span>
@@ -166,7 +166,7 @@
                   <span class="field-label">清晰度</span>
                   <select id="quality" disabled><option value="auto">自动（最高兼容）</option></select>
                 </label>
-                <button id="start" class="btn btn-go" type="button" disabled><span class="button-label">启动 ▶</span></button>
+                <button id="start" class="btn btn-go" type="button" disabled><span class="button-label">开始播放 ▶</span></button>
               </div>
               <p id="setupFeedback" class="setup-feedback" role="status" aria-live="polite">支持 YouTube、B 站和 Twitch 直播。</p>
             </div>
@@ -268,11 +268,11 @@
             <span class="now-label mono"><i class="now-dot"></i>NOW · 当前状态</span>
             <strong id="streamTitle" class="now-title">等待直播地址</strong>
             <p id="message" class="now-msg">在画面中输入直播链接即可开始。</p>
-            <button id="applyDelayButton" class="btn btn-danger btn-compact warn" hidden type="button">字幕来不及：调高延迟</button>
+            <button id="applyDelayButton" class="btn btn-danger btn-compact warn" hidden type="button">增加 5 秒缓冲</button>
           </div>
           <div class="now-delay delay-comparison" title="这里只是 LingerLens 本地缓冲，不包含直播源本身的延迟">
-            <label class="delay-field delay-target-compact"><span class="field-label">本地目标</span><span class="delay-input"><input id="targetDelay" type="number" min="11" step="1" value="15" inputmode="numeric"><i>秒</i></span></label>
-            <div class="delay-est delay-estimate"><span class="field-label">本地估计</span><b id="totalDelay" class="mono">—</b></div>
+            <label class="delay-field delay-target-compact"><span class="field-label">目标延迟</span><span class="delay-input"><input id="targetDelay" type="number" min="11" step="1" value="15" inputmode="numeric"><i>秒</i></span></label>
+            <div class="delay-est delay-estimate"><span class="field-label">当前实测延迟</span><b id="totalDelay" class="mono">—</b></div>
           </div>
           <button id="stop" class="btn btn-danger stop-session" type="button" disabled><span class="button-label">停止 ■</span></button>
         </aside>
@@ -433,29 +433,29 @@
     </header>
     <div class="telemetry-grid">
       <div class="tcard tcard-indigo">
-        <span class="tcard-label">本地暂存音视频</span>
+        <span class="tcard-label">预留缓冲时长</span>
         <b class="tcard-value mono" id="hiddenDelay">—</b>
-        <span class="tcard-desc">已下载但暂未播放的时长</span>
+        <span class="tcard-desc">本地已下载、为维持延时目标而暂未播放的时长</span>
       </div>
       <div class="tcard tcard-lime">
-        <span class="tcard-label">播放器本地落后</span>
+        <span class="tcard-label">播放落后时长</span>
         <b class="tcard-value mono" id="playerDelay">—</b>
-        <span class="tcard-desc">播放头故意落后的时长</span>
+        <span class="tcard-desc">播放画面落后于最新已下载画面的时间差</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">播放器预存</span>
+        <span class="tcard-label">播放器就绪缓冲</span>
         <b class="tcard-value mono" id="buffer">—</b>
-        <span class="tcard-desc">播放头前方可立即播放的时长</span>
+        <span class="tcard-desc">播放器内已就绪、可立即连续播放的时长</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">当前输出</span>
+        <span class="tcard-label">当前画质与帧率</span>
         <b class="tcard-value mono" id="resolution">—</b>
-        <span class="tcard-desc">分辨率与帧率</span>
+        <span class="tcard-desc">当前播放画面的分辨率与帧率</span>
       </div>
       <div class="tcard">
         <span class="tcard-label">运行时间</span>
         <b class="tcard-value mono" id="uptime">—</b>
-        <span class="tcard-desc">本次下载管线已连续运行的时长</span>
+        <span class="tcard-desc">本次直播下载已连续运行的时长</span>
       </div>
       <div class="tcard">
         <span class="tcard-label">字幕供应商</span>
@@ -483,29 +483,29 @@
         <span class="tcard-desc">单句请求到返回平均耗时</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">字幕就绪 p50/p95</span>
+        <span class="tcard-label">字幕处理耗时（中位/极值）</span>
         <b class="tcard-value mono" id="subtitleReadyLag">—</b>
-        <span class="tcard-desc">说完到译文就绪的分位数</span>
+        <span class="tcard-desc">从声音说完到字幕翻译完成的时间；95% 的句子在此时间内交付</span>
       </div>
       <div class="tcard tcard-yellow">
-        <span class="tcard-label">字幕预算余量</span>
+        <span class="tcard-label">字幕显示余量</span>
         <b class="tcard-value mono" id="budgetMargin">—</b>
-        <span class="tcard-desc">持续为负说明字幕跟不上</span>
+        <span class="tcard-desc">延时设定减去字幕处理与说话时长；大于 0 说明字幕能赶在发音前就绪</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">句长 p50/p95</span>
+        <span class="tcard-label">单句时长（中位/极值）</span>
         <b class="tcard-value mono" id="cueDuration">—</b>
-        <span class="tcard-desc">字幕单句时长的分位数</span>
+        <span class="tcard-desc">语音识别检测到的连续说话句子时长</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">时间戳来源</span>
+        <span class="tcard-label">时间轴对齐基准</span>
         <b class="tcard-value mono" id="timingSources">—</b>
-        <span class="tcard-desc">ASR 精确时间戳与本地估算的比例</span>
+        <span class="tcard-desc">官方节目时间戳（PDT）与本地时钟对齐的比例</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">客户端丢弃</span>
+        <span class="tcard-label">超时跳过字幕</span>
         <b class="tcard-value mono" id="schedulerDrops">—</b>
-        <span class="tcard-desc">因迟到或超时未上屏的字幕条数</span>
+        <span class="tcard-desc">因处理延迟过长、错过画面呈现时间而放弃显示的字幕句数</span>
       </div>
     </div>
   </section>

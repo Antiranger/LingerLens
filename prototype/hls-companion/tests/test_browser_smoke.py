@@ -78,11 +78,17 @@ async def run() -> None:
         await page.wait_for_timeout(700)
         role_check = await page.evaluate("""() => ({
             fallbackOptions: Array.from(document.querySelectorAll('#roleFallback option'), option => option.textContent),
+            subtitleOptions: Array.from(document.querySelectorAll('#roleSubtitle option'), option => option.textContent),
             japaneseHeader: Boolean(document.querySelector('.brand-jp, .side-note')),
             capabilityHint: Boolean(document.querySelector('#languageCapabilityHint')),
             fallbackSettings: Boolean(document.querySelector('.fallback-settings')),
         })""")
-        assert role_check["fallbackOptions"] == ["不选"], role_check
+        # 兜底不是另一套逻辑：它能选到的 Provider 就是「字幕翻译」那一栏的全集。
+        # 以前这里额外把当前生效的 Provider 滤掉，于是只配了一个翻译 Provider 时
+        # 兜底永远只剩「不选」——那不像「没得选」，像坏掉了。
+        assert role_check["fallbackOptions"][0] == "不选", role_check
+        for option in role_check["subtitleOptions"]:
+            assert option in role_check["fallbackOptions"], (option, role_check)
         assert not role_check["japaneseHeader"] and not role_check["capabilityHint"], role_check
         assert not role_check["fallbackSettings"], role_check
         await page.get_by_role("button", name="模型设置", exact=True).click()
@@ -194,7 +200,7 @@ async def run() -> None:
             }))
         await page.route("**/api/probe", probe_route)
         await page.locator("#url").fill("https://www.youtube.com/watch?v=test")
-        await page.get_by_role("button", name="准备", exact=True).click()
+        await page.get_by_role("button", name="解析", exact=True).click()
         await page.locator("#setupPlayback").wait_for(state="visible")
         assert await page.locator("#start").is_enabled()
         await page.locator("#url").fill("https://www.twitch.tv/test")
