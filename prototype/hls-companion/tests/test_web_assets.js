@@ -312,9 +312,15 @@ test("the diagnostics bar is wired end to end and every id it needs exists", () 
   assert.match(html, /id="diagCopy"/);
   assert.match(html, /id="diagClear"/);
   assert.match(html, /diagnostics-log\.js/);
-  assert.match(css, /\.topstack\s*\{[^}]*position:\s*sticky/);
-  assert.match(css, /\.topstack \.topbar \{ position: static; \}/);
-  assert.match(css, /\.diagbar\s*\{/);
+  // The collapsed bar must not cost vertical space: it lives inside the top
+  // bar's own status area, and only the expanded panel leaves the flow.
+  const topbar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf("</header>"));
+  assert.ok(topbar.includes('id="diagnosticsBar"'), "the bar belongs inside the top bar");
+  assert.ok(!html.includes("topstack"), "the extra sticky wrapper is gone");
+  assert.match(css, /\.diagbar\s*\{[^}]*flex:\s*1 1 0/);
+  assert.match(css, /\.diagbar-body\s*\{[^}]*position:\s*absolute/);
+  assert.match(css, /\.topbar\s*\{[^}]*position:\s*sticky/);
+  assert.doesNotMatch(css, /\.topstack/, "the sticky wrapper's rules must be gone too");
 
   // The bar only reacts to errors, so player.js must not be able to swallow one
   // silently: the single showError funnel is what makes that guarantee cheap.

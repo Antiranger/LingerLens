@@ -174,6 +174,7 @@ button[aria-busy="true"]::before {
   gap: 0;
   border-bottom: var(--bw) solid var(--ink);
   background: var(--card);
+  /* sticky 同时充当诊断明细的定位上下文（见下方 .diagbar-body）。 */
   position: sticky;
   top: 0;
   z-index: 50;
@@ -275,34 +276,40 @@ button[aria-busy="true"]::before {
 }
 
 /* ════════════ 诊断栏（原型没有；新增的报错出口） ════════════ */
-/* sticky 由 .topstack 承担，.topbar 因此改回 static —— 否则诊断栏需要一个
-   写死的顶栏高度偏移量，而顶栏高度随品牌字与内边距变化。 */
-.topstack {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-}
-.topstack .topbar { position: static; }
-
+/* 收起时不占额外高度：整个控件住在 .topbar-status 里那个原本 flex:1 的空白
+   区，所以页面布局与原型逐像素一致。展开的明细绝对定位到 .topbar 下方 ——
+   .topbar 是 sticky，本身就是定位上下文，因此明细能横跨整幅顶栏宽度，且
+   覆盖内容而不是把页面推下去。 */
 .diagbar {
-  border-bottom: var(--bw) solid var(--ink);
-  background: var(--paper);
+  flex: 1 1 0;
+  min-width: 0;
 }
 .diagbar-head {
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--s2);
   width: 100%;
-  min-height: 38px;
-  padding: var(--s2) var(--s5);
-  border: none;
+  min-width: 0;
+  /* 全局 `button { min-height: var(--ctl-h) }` 是 42px，会把这一条顶得比
+     旁边的 34px 状态徽章高；这里显式压回去，两边才对得齐。 */
+  height: 34px;
+  min-height: 34px;
+  padding: 0 var(--s3);
+  /* 空白期不加边框，免得顶栏多出一个空框；有问题才浮出来。 */
+  border: 2px solid transparent;
   background: transparent;
   font: inherit;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
 }
-.diagbar-head:focus-visible { outline: var(--bw) solid var(--indigo); outline-offset: -3px; }
+.diagbar-head:focus-visible { outline: var(--bw) solid var(--indigo); outline-offset: 2px; }
+.diagbar[data-tone="warn"] .diagbar-head,
+.diagbar[data-tone="error"] .diagbar-head {
+  border-color: var(--ink);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
 .diag-dot {
   width: 10px; height: 10px;
   flex: 0 0 10px;
@@ -311,12 +318,14 @@ button[aria-busy="true"]::before {
 }
 .diagbar[data-tone="warn"] .diag-dot { background: var(--yellow); }
 .diagbar[data-tone="error"] .diag-dot { background: var(--red); animation: pulse-dot 1.2s ease-in-out infinite; }
-.diag-title { font: 700 13px/1 var(--font-ui); flex: 0 0 auto; }
+.diag-title { font: 700 13px/1 var(--font-ui); flex: 0 0 auto; color: var(--ink-45); }
+.diagbar[data-tone="warn"] .diag-title,
+.diagbar[data-tone="error"] .diag-title { color: var(--ink); }
 .diag-summary {
   flex: 1 1 auto;
   min-width: 0;
   font-size: 13px;
-  color: var(--ink-70);
+  color: var(--ink-45);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -325,7 +334,7 @@ button[aria-busy="true"]::before {
 .diagbar[data-tone="warn"] .diag-summary { color: var(--ink); font-weight: 700; }
 .diag-count {
   flex: 0 0 auto;
-  padding: 2px var(--s2);
+  padding: 1px var(--s2);
   border: 2px solid var(--ink);
   background: var(--card);
   font-size: 11px;
@@ -338,15 +347,26 @@ button[aria-busy="true"]::before {
   width: 0; height: 0;
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
-  border-top: 7px solid var(--ink);
+  border-top: 7px solid var(--ink-45);
   transition: transform var(--t-fast) var(--ease-pop);
 }
+.diagbar[data-tone="warn"] .diag-chevron,
+.diagbar[data-tone="error"] .diag-chevron { border-top-color: var(--ink); }
 .diagbar[data-expanded="true"] .diag-chevron { transform: rotate(180deg); }
 
 .diagbar-body {
+  position: absolute;
+  /* 100% 是顶栏的 padding box 高度，不含它的 3px 下边框；补上 var(--bw)，
+     明细才从顶栏外沿开始，而不是把那条分隔线盖掉。 */
+  top: calc(100% + var(--bw));
+  left: 0;
+  right: 0;
+  z-index: 4;
   display: grid;
   gap: var(--s3);
-  padding: 0 var(--s5) var(--s4);
+  padding: var(--s4) var(--s5);
+  border-bottom: var(--bw) solid var(--ink);
+  background: var(--paper);
 }
 .diag-hint {
   margin: 0;
