@@ -80,11 +80,17 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 
 **发行版怎么更新到用户手里**
 
-目前**没有自动更新**：`desktop/main.cjs` 里没有 `autoUpdater`，`builder.cjs` 也没有 publish 配置（`release\latest.yml` 和 `.blockmap` 是 electron-builder 默认产出的，没人消费）。所以每次修复都要求用户**手动重装**。
+分发是**两个仓库**：源码在私有的 `Antiranger/LagLingo`，安装包和更新清单在公开的 `Antiranger/LagLingo-releases`。应用里没有任何凭证，它只需要一个匿名的 HTTPS 地址。
 
-这不是理论问题。2026-09-15 就踩了：桌面和开始菜单的快捷方式指向 `%LOCALAPPDATA%\Programs\laglingo\LagLingo.exe`，那是 09-08 的安装版，它的 `app.asar` 里连 `diagnosticsBar` 都没有 —— 于是「发行版有没有诊断栏」这个问题的答案是「有，但你手上那份是旧的」，而用户完全无从分辨。
+更新检查（`desktop/updater.cjs`）**没有用 electron-updater**，是手写的无依赖实现。原因是 `desktop/audit-package.cjs` 用一份显式白名单限制 `app.asar` 里能有几个文件，而 electron-updater 会拖进一串传递依赖——要么构建失败，要么被迫把白名单开个口子。它需要的东西（fetch、版本比较、SHA-256、spawn）全在 Node 标准库里。
 
-在接上自动更新之前，**判断一份构建是不是当前版，只能看文件时间或者去问 `/diagnostics-log.js` 在不在**。真要根治得做两件事：给应用加一个能显示版本+构建时间的入口（打包时戳进去），以及接 electron-updater。在那之前，每次发版都得提醒用户重装。
+**信任锚是清单里的 SHA-256。** 下载到 `<目标>.part`，校验通过才 rename 成正式文件——所以安装程序路径「要么不存在、要么字节已被验证」。校验失败会删掉临时文件并且**不执行**。已在真机实测：清单里的 sha256 与载荷不符时，应用报告 `checksum mismatch` 并且**没有退出**（退出就意味着它去跑安装程序了）。只信任 https，外加 loopback 上的 http——能在 127.0.0.1 上监听的东西本来就能在这台机器上执行代码，放行它换来的是「不用发一次真 release 就能端到端测」。
+
+清单由 `scripts/make-update-manifest.js` 对**刚构建出来的那个文件**求哈希生成，不是人手动填的。`.github/workflows/release.yml` 由 `v*` tag 触发，tag 与 `package.json` 版本不一致就直接失败，然后发到公开仓库。它需要一个 `RELEASES_TOKEN` secret（细粒度 PAT，对 releases 仓库有 Contents 读写）——workflow 自带的 `GITHUB_TOKEN` 只能写当前仓库。
+
+**要判断一份构建是不是当前版**，诊断栏的「复制诊断信息」里带 `构建: 0.1.0 · 2026-09-15 12:37 · packaged`，展开面板右下角也直接显示版本和构建时间。`app.getVersion()` 单独一样分不出两个 0.1.0，所以取的是**可执行文件自己的 mtime**——这正是 2026-09-15 那次「为什么发行版看起来没有诊断栏」的答案：快捷方式指向的是 09-08 的安装版。
+
+**还没做完的**：`RELEASES_TOKEN` 还没配，第一个 release 还没发，所以真实的更新链路尚未跑通一次。在那之前用户仍然只能手动重装，只是应用会自己发现新版本并一键下载安装了。
 
 **贡献者路径**
 
