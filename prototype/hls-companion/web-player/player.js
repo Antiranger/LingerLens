@@ -311,7 +311,14 @@
   el("diagLogToggle")?.addEventListener("click", () => { void toggleDevLog(); });
   el("diagLogOpen")?.addEventListener("click", () => { void devLogClient?.reveal(); });
   /* 按钮标签是 JS 按状态拼的，语言切换时 i18n 那套反向查表管不到它。 */
-  document.addEventListener("i18n:changed", () => renderDevLogState(devLogClient?.get()));
+  document.addEventListener("i18n:changed", () => {
+    renderDevLogState(devLogClient?.get());
+    // 模型设置/登录 Cookie 两个弹窗里的字段是拼出来的 HTML，不重新渲染就会
+    // 停在切换前那门语言。未保存的编辑都在 providerCatalog 里（输入即写入），
+    // 所以重渲染不会丢。
+    renderProviderProfiles();
+    updateCookiePlatformHelp();
+  });
   function providerHasCredential(provider) {
     return provider?.apiKeyConfigured === true
       || Boolean(provider?.apiKey && provider.apiKey !== "***");
@@ -356,7 +363,7 @@
   async function selectRole(id, section) {
     const controls = ["roleAsr", "roleSubtitle", "roleFallback", "roleChat"].map(el);
     controls.forEach(c => c.disabled = true);
-    el("roleFeedback").textContent = "正在应用选择…";
+    el("roleFeedback").textContent = updateLabel("msg.applyingSelection", "正在应用选择…");
     try {
       const value = el(id).value;
       const patch = section === "translationFallback"
@@ -364,10 +371,14 @@
         : { [section]: { active: value } };
       const data = await request("/api/providers", patch);
       renderRoleSelectors(data);
-      el("roleFeedback").textContent = section === "asr" ? "已保存" : section === "translationFallback" ? "已保存兜底选择" : "已应用";
+      el("roleFeedback").textContent = section === "asr"
+        ? updateLabel("msg.saved", "已保存")
+        : section === "translationFallback"
+          ? updateLabel("msg.savedFallback", "已保存兜底选择")
+          : updateLabel("msg.applied", "已应用");
     } catch (error) {
       if (roleCatalog) renderRoleSelectors(roleCatalog);
-      el("roleFeedback").textContent = `切换失败：${error.message}`;
+      el("roleFeedback").textContent = updateLabel("msg.switchFailed", `切换失败：${error.message}`, { error: error.message });
     } finally { controls.forEach(c => c.disabled = false); }
   }
   // Language catalog/capability state from /api/languages (server-authoritative)
@@ -996,7 +1007,7 @@
   async function openModelSettings() {
     const dialog = el("modelSettingsDialog");
     const feedback = el("modelSettingsFeedback");
-    feedback.textContent = "正在读取本机配置…";
+    feedback.textContent = updateLabel("dlg.model.reading", "正在读取本机配置…");
     feedback.dataset.tone = "";
     if (!dialog.open) dialog.showModal();
     try {
@@ -1069,7 +1080,7 @@
     const kind = section === "asr" ? "soniox-realtime" : "openai-compatible";
     const provider = {
       id,
-      label: section === "asr" ? "新语音识别配置" : "新翻译配置",
+      label: section === "asr" ? updateLabel("dlg.model.newAsr", "新语音识别配置") : updateLabel("dlg.model.newTrans", "新翻译配置"),
       kind,
       model: "",
       baseUrl: "",
@@ -1128,23 +1139,25 @@
       ).join("");
       card.innerHTML = `
         <header class="provider-profile-head">
-          <strong class="active-provider">正在编辑：${escapeHtml(provider.label || provider.model)}</strong>
+          <strong class="active-provider">${updateLabel("dlg.model.editing", "正在编辑：")}${escapeHtml(provider.label || provider.model)}</strong>
           <code>${escapeHtml(provider.id)}</code>
-          <button class="secondary compact provider-delete" type="button" data-action="delete" ${cannotDelete ? "disabled" : ""}>删除</button>
+          <button class="secondary compact provider-delete" type="button" data-action="delete" ${cannotDelete ? "disabled" : ""}>${updateLabel("action.delete", "删除")}</button>
         </header>
         <div class="provider-fields">
-          <label><span>名称</span><input data-field="label" value="${escapeHtml(provider.label || "")}" required></label>
-          <label><span>协议</span><select data-field="kind">${kinds}</select></label>
-          <label><span>模型</span><input data-field="model" value="${escapeHtml(provider.model || "")}" placeholder="填写厂商模型 ID" required></label>
+          <label><span>${updateLabel("field.name", "名称")}</span><input data-field="label" value="${escapeHtml(provider.label || "")}" required></label>
+          <label><span>${updateLabel("field.protocol", "协议")}</span><select data-field="kind">${kinds}</select></label>
+          <label><span>${updateLabel("field.model", "模型")}</span><input data-field="model" value="${escapeHtml(provider.model || "")}" placeholder="${updateLabel("ph.modelId", "填写厂商模型 ID")}" required></label>
           <label><span>Base URL</span><input data-field="baseUrl" value="${escapeHtml(provider.baseUrl || "")}" required></label>
-          <label class="wide"><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>凭据保存在本机。</small><button type="button" class="secondary compact" data-action="reveal">显示 Key</button></label>
-          <details class="wide"><summary>价格与高级设置</summary><div class="provider-fields">${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
+          <label class="wide"><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>${updateLabel("dlg.model.keyLocal", "凭据保存在本机。")}</small><button type="button" class="secondary compact" data-action="reveal">${updateLabel("action.showKey", "显示 Key")}</button></label>
+          <details class="wide"><summary>${updateLabel("dlg.model.advanced", "价格与高级设置")}</summary><div class="provider-fields">${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
           ${section === "asr" ? asrOptionFields(provider) : translationOptionFields(provider)}</div></details>
         </div>`;
       card.querySelector('[data-action="reveal"]').addEventListener("click", (event) => {
         const input = card.querySelector('[data-field="apiKey"]');
         input.type = input.type === "password" ? "text" : "password";
-        event.target.textContent = input.type === "password" ? "显示 Key" : "隐藏 Key";
+        event.target.textContent = input.type === "password"
+          ? updateLabel("action.showKey", "显示 Key")
+          : updateLabel("action.hideKey", "隐藏 Key");
       });
       card.addEventListener("input", handleProviderInput);
       card.addEventListener("change", handleProviderInput);
@@ -1162,16 +1175,22 @@
     return value === null || value === undefined ? "" : escapeHtml(value);
   }
 
+  /*
+   * 弹窗里这些字段是 JS 拼出来的，进不了 BINDINGS 的静态绑定，所以只能在这里
+   * 直接问 i18n。第二个参数是中文兜底：键还没补上时退回现在的文案，不会因为
+   * 漏翻译而显示成空字符串或键名。
+   */
   function asrPricingFields(provider) {
-    return `<label class="wide"><span>ASR 单价（CNY / 秒）</span><input data-field="pricePerSecondCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerSecondCny)}" placeholder="留空表示不可估算"><small>本地免费服务请显式填写 0；留空不是免费。</small></label>`;
+    const notEstimable = updateLabel("ph.notEstimable", "留空表示不可估算");
+    return `<label class="wide"><span>${updateLabel("price.asr", "ASR 单价（CNY / 秒）")}</span><input data-field="pricePerSecondCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerSecondCny)}" placeholder="${notEstimable}"><small>${updateLabel("price.asr.hint", "本地免费服务请显式填写 0；留空不是免费。")}</small></label>`;
   }
 
   function translationPricingFields(provider) {
     return `
-      <label><span>普通输入（CNY / 百万 token）</span><input data-field="pricePerMillionInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionInputTokensCny)}" placeholder="留空不可估算"></label>
-      <label><span>缓存输入（CNY / 百万 token）</span><input data-field="pricePerMillionCachedInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCachedInputTokensCny)}" placeholder="留空不可估算"></label>
-      <label><span>缓存写入（CNY / 百万 token）</span><input data-field="pricePerMillionCacheWriteTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCacheWriteTokensCny)}" placeholder="可选；无缓存写入可留空"></label>
-      <label><span>输出（CNY / 百万 token）</span><input data-field="pricePerMillionOutputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionOutputTokensCny)}" placeholder="留空不可估算"></label>`;
+      <label><span>${updateLabel("price.input", "普通输入（CNY / 百万 token）")}</span><input data-field="pricePerMillionInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionInputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>
+      <label><span>${updateLabel("price.cachedInput", "缓存输入（CNY / 百万 token）")}</span><input data-field="pricePerMillionCachedInputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCachedInputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>
+      <label><span>${updateLabel("price.cacheWrite", "缓存写入（CNY / 百万 token）")}</span><input data-field="pricePerMillionCacheWriteTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionCacheWriteTokensCny)}" placeholder="${updateLabel("ph.cacheWriteOptional", "可选；无缓存写入可留空")}"></label>
+      <label><span>${updateLabel("price.output", "输出（CNY / 百万 token）")}</span><input data-field="pricePerMillionOutputTokensCny" type="number" min="0" step="any" value="${pricingValue(provider.pricePerMillionOutputTokensCny)}" placeholder="${updateLabel("ph.notEstimable", "留空不可估算")}"></label>`;
   }
 
   function checked(value) {
@@ -1180,54 +1199,56 @@
 
   function asrOptionFields(provider) {
     const options = provider.options || {};
+    const L = (key, fallback) => updateLabel(key, fallback);
     if (provider.kind === "openai-audio-transcriptions") return `
-      <label><span>语言</span><input data-option="language" value="${escapeHtml(options.language || "ja")}"></label>
-      <label><span>分窗秒数</span><input data-option="windowSeconds" type="number" min="0.5" step="0.5" value="${Number(options.windowSeconds || 3)}"></label>
-      <label><span>请求超时（秒）</span><input data-option="requestTimeoutSeconds" type="number" min="1" step="1" value="${Number(options.requestTimeoutSeconds || 20)}"></label>`;
+      <label><span>${L("opt.language", "语言")}</span><input data-option="language" value="${escapeHtml(options.language || "ja")}"></label>
+      <label><span>${L("opt.windowSeconds", "分窗秒数")}</span><input data-option="windowSeconds" type="number" min="0.5" step="0.5" value="${Number(options.windowSeconds || 3)}"></label>
+      <label><span>${L("opt.requestTimeoutSeconds", "请求超时（秒）")}</span><input data-option="requestTimeoutSeconds" type="number" min="1" step="1" value="${Number(options.requestTimeoutSeconds || 20)}"></label>`;
     if (provider.kind === "soniox-realtime") return `
-      <label><span><input data-option="enableEndpointDetection" type="checkbox"${checked(options.enableEndpointDetection !== false)}> 端点检测</span></label>
-      <label><span><input data-option="enableLanguageIdentification" type="checkbox"${checked(options.enableLanguageIdentification !== false)}> 语言识别</span></label>
-      <label><span><input data-option="enableSpeakerDiarization" type="checkbox"${checked(options.enableSpeakerDiarization)}> 说话人分离</span></label>
-      <label><span>最大端点延迟 ms</span><input data-option="maxEndpointDelayMs" type="number" min="500" max="3000" step="100" value="${Number(options.maxEndpointDelayMs || 2000)}"></label>`;
+      <label><span><input data-option="enableEndpointDetection" type="checkbox"${checked(options.enableEndpointDetection !== false)}> ${L("opt.endpointDetection", "端点检测")}</span></label>
+      <label><span><input data-option="enableLanguageIdentification" type="checkbox"${checked(options.enableLanguageIdentification !== false)}> ${L("opt.languageIdentification", "语言识别")}</span></label>
+      <label><span><input data-option="enableSpeakerDiarization" type="checkbox"${checked(options.enableSpeakerDiarization)}> ${L("opt.speakerDiarization", "说话人分离")}</span></label>
+      <label><span>${L("opt.maxEndpointDelayMs", "最大端点延迟 ms")}</span><input data-option="maxEndpointDelayMs" type="number" min="500" max="3000" step="100" value="${Number(options.maxEndpointDelayMs || 2000)}"></label>`;
     if (provider.kind === "deepgram-streaming") return `
-      <label><span><input data-option="diarize" type="checkbox"${checked(options.diarize)}> 说话人分离（附加计费）</span></label>
-      <label><span>Endpointing ms</span><input data-option="endpointingMs" type="number" min="1" step="10" value="${Number(options.endpointingMs || 300)}"></label>
-      <label><span>Utterance End ms</span><input data-option="utteranceEndMs" type="number" min="0" step="100" value="${Number(options.utteranceEndMs || 0)}"></label>`;
+      <label><span><input data-option="diarize" type="checkbox"${checked(options.diarize)}> ${L("opt.diarizeBilled", "说话人分离（附加计费）")}</span></label>
+      <label><span>${L("opt.endpointingMs", "Endpointing ms")}</span><input data-option="endpointingMs" type="number" min="1" step="10" value="${Number(options.endpointingMs || 300)}"></label>
+      <label><span>${L("opt.utteranceEndMs", "Utterance End ms")}</span><input data-option="utteranceEndMs" type="number" min="0" step="100" value="${Number(options.utteranceEndMs || 0)}"></label>`;
     if (provider.kind === "assemblyai-streaming") return `
-      <label><span>模式</span><select data-option="mode"><option value="balanced"${options.mode === "balanced" ? " selected" : ""}>balanced</option><option value="min_latency"${options.mode === "min_latency" ? " selected" : ""}>min_latency</option><option value="max_accuracy"${options.mode === "max_accuracy" ? " selected" : ""}>max_accuracy</option></select></label>
-      <label><span><input data-option="speakerLabels" type="checkbox"${checked(options.speakerLabels)}> 说话人分离</span></label>
-      <label><span>最多说话人</span><input data-option="maxSpeakers" type="number" min="1" max="10" step="1" value="${Number(options.maxSpeakers || 6)}"></label>`;
+      <label><span>${L("opt.mode", "模式")}</span><select data-option="mode"><option value="balanced"${options.mode === "balanced" ? " selected" : ""}>balanced</option><option value="min_latency"${options.mode === "min_latency" ? " selected" : ""}>min_latency</option><option value="max_accuracy"${options.mode === "max_accuracy" ? " selected" : ""}>max_accuracy</option></select></label>
+      <label><span><input data-option="speakerLabels" type="checkbox"${checked(options.speakerLabels)}> ${L("opt.speakerDiarization", "说话人分离")}</span></label>
+      <label><span>${L("opt.maxSpeakers", "最多说话人")}</span><input data-option="maxSpeakers" type="number" min="1" max="10" step="1" value="${Number(options.maxSpeakers || 6)}"></label>`;
     if (provider.kind === "volcengine-sauc") return `
       <label><span>Resource ID</span><input data-option="resourceId" value="${escapeHtml(options.resourceId || "volc.bigasr.sauc.concurrent")}"></label>
-      <label><span>旧控制台 App Key</span><input data-option="appKey" value="${escapeHtml(options.appKey || "")}"></label>
-      <label><span>鉴权模式</span><select data-option="authMode"><option value="new"${options.authMode !== "legacy" ? " selected" : ""}>新控制台</option><option value="legacy"${options.authMode === "legacy" ? " selected" : ""}>旧控制台</option></select></label>`;
+      <label><span>${L("opt.appKey", "旧控制台 App Key")}</span><input data-option="appKey" value="${escapeHtml(options.appKey || "")}"></label>
+      <label><span>${L("opt.authMode", "鉴权模式")}</span><select data-option="authMode"><option value="new"${options.authMode !== "legacy" ? " selected" : ""}>${L("opt.consoleNew", "新控制台")}</option><option value="legacy"${options.authMode === "legacy" ? " selected" : ""}>${L("opt.consoleLegacy", "旧控制台")}</option></select></label>`;
     if (provider.kind === "elevenlabs-scribe-realtime") return `
-      <label><span>提交策略</span><select data-option="commitStrategy"><option value="manual"${options.commitStrategy !== "vad" ? " selected" : ""}>manual</option><option value="vad"${options.commitStrategy === "vad" ? " selected" : ""}>vad</option></select></label>
-      <label><span><input data-option="includeTimestamps" type="checkbox"${checked(options.includeTimestamps)}> 延迟词时间戳</span></label>
-      <label><span><input data-option="includeLanguageDetection" type="checkbox"${checked(options.includeLanguageDetection)}> 返回检测语言</span></label>`;
+      <label><span>${L("opt.commitStrategy", "提交策略")}</span><select data-option="commitStrategy"><option value="manual"${options.commitStrategy !== "vad" ? " selected" : ""}>manual</option><option value="vad"${options.commitStrategy === "vad" ? " selected" : ""}>vad</option></select></label>
+      <label><span><input data-option="includeTimestamps" type="checkbox"${checked(options.includeTimestamps)}> ${L("opt.includeTimestamps", "延迟词时间戳")}</span></label>
+      <label><span><input data-option="includeLanguageDetection" type="checkbox"${checked(options.includeLanguageDetection)}> ${L("opt.includeLanguageDetection", "返回检测语言")}</span></label>`;
     if (provider.kind === "speechmatics-realtime") return `
-      <label><span><input data-option="enablePartials" type="checkbox"${checked(options.enablePartials !== false)}> 中间结果</span></label>
-      <label><span><input data-option="diarization" type="checkbox"${checked(options.diarization)}> 说话人分离</span></label>
-      <label><span>最多说话人</span><input data-option="maxSpeakers" type="number" min="2" step="1" value="${Number(options.maxSpeakers || 6)}"></label>
-      <label><span>最大延迟秒数</span><input data-option="maxDelaySeconds" type="number" min="0.7" max="4" step="0.1" value="${Number(options.maxDelaySeconds || 4)}"></label>`;
+      <label><span><input data-option="enablePartials" type="checkbox"${checked(options.enablePartials !== false)}> ${L("opt.enablePartials", "中间结果")}</span></label>
+      <label><span><input data-option="diarization" type="checkbox"${checked(options.diarization)}> ${L("opt.speakerDiarization", "说话人分离")}</span></label>
+      <label><span>${L("opt.maxSpeakers", "最多说话人")}</span><input data-option="maxSpeakers" type="number" min="2" step="1" value="${Number(options.maxSpeakers || 6)}"></label>
+      <label><span>${L("opt.maxDelaySeconds", "最大延迟秒数")}</span><input data-option="maxDelaySeconds" type="number" min="0.7" max="4" step="0.1" value="${Number(options.maxDelaySeconds || 4)}"></label>`;
     if (provider.kind === "tencent-asr") return `
       <label><span>App ID</span><input data-option="appId" value="${escapeHtml(options.appId || "")}" required></label>
       <label><span>Secret ID</span><input data-option="secretId" value="${escapeHtml(options.secretId || "")}" required></label>
-      <label><span>引擎</span><input data-option="engineModelType" value="${escapeHtml(options.engineModelType || provider.model || "16k_ja")}"></label>
+      <label><span>${L("opt.engineModelType", "引擎")}</span><input data-option="engineModelType" value="${escapeHtml(options.engineModelType || provider.model || "16k_ja")}"></label>
       <label><span>Word Info</span><input data-option="wordInfo" type="number" min="0" max="2" step="1" value="${Number(options.wordInfo || 0)}"></label>`;
     if (provider.kind === "dashscope-task-asr") return `
       <label><span>Vocabulary ID</span><input data-option="vocabularyId" value="${escapeHtml(options.vocabularyId || "")}"></label>
-      <label><span><input data-option="heartbeat" type="checkbox"${checked(options.heartbeat)}> 静音保活</span></label>`;
+      <label><span><input data-option="heartbeat" type="checkbox"${checked(options.heartbeat)}> ${L("opt.heartbeat", "静音保活")}</span></label>`;
     return "";
   }
 
   function translationOptionFields(provider) {
     const options = provider.options || {};
+    const L = (key, fallback) => updateLabel(key, fallback);
     return `
-      <label><span>温度</span><input data-option="temperature" type="number" min="0" max="2" step="0.1" value="${Number(options.temperature ?? 0.3)}"></label>
-      <label><span>最大 Tokens</span><input data-option="maxTokens" type="number" min="32" step="1" value="${Number(options.maxTokens || 256)}"></label>
-      <label><span>超时（秒）</span><input data-option="timeoutSeconds" type="number" min="1" step="1" value="${Number(options.timeoutSeconds || 6)}"></label>
-      <label><span>字幕上下文对数（弹幕不使用）</span><input data-option="contextPairs" type="number" min="0" step="1" value="${Number(options.contextPairs ?? 6)}"></label>`;
+      <label><span>${L("opt.temperature", "温度")}</span><input data-option="temperature" type="number" min="0" max="2" step="0.1" value="${Number(options.temperature ?? 0.3)}"></label>
+      <label><span>${L("opt.maxTokens", "最大 Tokens")}</span><input data-option="maxTokens" type="number" min="32" step="1" value="${Number(options.maxTokens || 256)}"></label>
+      <label><span>${L("opt.timeoutSeconds", "超时（秒）")}</span><input data-option="timeoutSeconds" type="number" min="1" step="1" value="${Number(options.timeoutSeconds || 6)}"></label>
+      <label><span>${L("opt.contextPairs", "字幕上下文对数（弹幕不使用）")}</span><input data-option="contextPairs" type="number" min="0" step="1" value="${Number(options.contextPairs ?? 6)}"></label>`;
   }
 
   function handleProviderInput(event) {
@@ -1258,7 +1279,7 @@
       // 名称和 API Key 不动：前者是用户起的名字，后者是凭据，清掉不可恢复。
       applyProviderKindDefaults(provider, provider.kind);
       renderProviderProfiles();
-      el("modelSettingsFeedback").textContent = "已应用该协议的默认模型与地址（名称和 API Key 保持不变）。";
+      el("modelSettingsFeedback").textContent = updateLabel("dlg.model.protocolApplied", "已应用该协议的默认模型与地址（名称和 API Key 保持不变）。");
     }
   }
 
@@ -1275,15 +1296,15 @@
     const bilibili = platform === "bilibili";
     const twitch = platform === "twitch";
     el("cookieImportIntro").textContent = bilibili
-      ? "从 bilibili.com 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。yt-dlp 登录检查只要求 SESSDATA；其他有效 Cookie 会一并保留。"
+      ? updateLabel("dlg.cookie.intro.bilibili", "从 bilibili.com 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。yt-dlp 登录检查只要求 SESSDATA；其他有效 Cookie 会一并保留。")
       : twitch
-        ? "从 twitch.tv 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。公开 Twitch 直播不要求 Cookie。"
-        : "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。";
+        ? updateLabel("dlg.cookie.intro.twitch", "从 twitch.tv 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。公开 Twitch 直播不要求 Cookie。")
+        : updateLabel("dlg.cookie.intro.youtube", "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。");
     el("cookiePayload").placeholder = bilibili
       ? "SESSDATA　xxxxxxxx…\nbili_jct　yyyyyyyy…\nDedeUserID　12345"
       : twitch
-        ? "auth-token　xxxxxxxx…\npersistent　1\n（公开直播可不导入）"
-        : "SID　xxxxxxxx…\nHSID　yyyyyyyy…\n（直接从 DevTools Cookie 列表复制即可）";
+        ? updateLabel("dlg.cookie.ph.twitch", "auth-token　xxxxxxxx…\npersistent　1\n（公开直播可不导入）")
+        : updateLabel("dlg.cookie.ph.youtube", "SID　xxxxxxxx…\nHSID　yyyyyyyy…\n（直接从 DevTools Cookie 列表复制即可）");
   }
 
   function openCookieImport() {
@@ -1303,7 +1324,7 @@
     event.preventDefault();
     const feedback = el("cookieImportFeedback");
     const submit = el("submitCookieImport");
-    feedback.textContent = "正在导入…";
+    feedback.textContent = updateLabel("dlg.cookie.importing", "正在导入…");
     feedback.dataset.tone = "";
     submit.disabled = true;
     try {
@@ -1324,10 +1345,16 @@
         feedback.dataset.tone = "error";
       } else {
         const platformName = data.platform === "bilibili" ? "Bilibili" : data.platform === "twitch" ? "Twitch" : "YouTube";
-        feedback.textContent = `已导入 ${data.accepted} 个 ${platformName} Cookie（${data.names.join("、")}）${data.persisted ? "，已按平台保存到本机" : "，磁盘保存失败，仅本次运行有效"}。现在可以探测对应平台地址。`;
+        feedback.textContent = updateLabel(
+          data.persisted ? "dlg.cookie.importedSaved" : "dlg.cookie.importedMemory",
+          data.persisted
+            ? `已导入 ${data.accepted} 个 ${platformName} Cookie（${data.names.join("、")}），已按平台保存到本机。现在可以解析对应平台地址。`
+            : `已导入 ${data.accepted} 个 ${platformName} Cookie（${data.names.join("、")}），磁盘保存失败，仅本次运行有效。现在可以解析对应平台地址。`,
+          { count: data.accepted, platform: platformName, names: data.names.join("、") },
+        );
         feedback.dataset.tone = "success";
       }
-      el("message").textContent = "登录 Cookie 已导入，探测与启动将使用该登录态。";
+      el("message").textContent = updateLabel("dlg.cookie.importedNotice", "登录 Cookie 已导入，解析与播放将使用该登录态。");
     } catch (error) {
       feedback.textContent = error.message || String(error);
       feedback.dataset.tone = "error";
@@ -1341,7 +1368,7 @@
     const feedback = el("modelSettingsFeedback");
     const save = el("saveModelSettings");
     save.disabled = true;
-    feedback.textContent = "正在保存…";
+    feedback.textContent = updateLabel("dlg.model.saving", "正在保存…");
     feedback.dataset.tone = "";
     try {
       const payload = structuredClone(providerCatalog);
@@ -1349,7 +1376,7 @@
       providerCatalog = data;
       renderRoleSelectors(data);
       renderProviderProfiles();
-      feedback.textContent = "已保存。下次启动直播时使用新配置。";
+      feedback.textContent = updateLabel("dlg.model.savedNext", "已保存。下次启动直播时使用新配置。");
       feedback.dataset.tone = "success";
       if (targetSelector && data.subtitle?.targetLanguage) targetSelector.value = data.subtitle.targetLanguage;
       await refreshLanguageCapabilities();
