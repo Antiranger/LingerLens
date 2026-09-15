@@ -11,9 +11,67 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'lingerlens', privileges: {
   standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true,
 } }]);
 const smoke = process.argv.includes('--smoke-test') && process.env.LINGERLENS_SMOKE_OUTPUT;
-// Some Windows environments lack a usable Chromium GPU DLL. The player is
-// video-streaming work for FFmpeg, so software rendering is a safe fallback.
-app.commandLine.appendSwitch('disable-gpu');
+/*
+ * 默认走 Chromium 的正常渲染路径，软件渲染只做兜底。
+ *
+ * 这里原本无条件 appendSwitch('disable-gpu')。同机、同一直播、同一应用、各 10
+ * 分钟的实测对照（只差这一个开关）：
+ *
+ *   不传 --disable-gpu： p95 8.3ms    最慢 64.8ms    >500ms 0 次     丢帧 0.06%
+ *   传   --disable-gpu： p95 17784ms  最慢 43407ms   >500ms 249 次   丢帧 26.46%
+ *
+ * 代价不止在画面上：连本机 3 毫秒就能答完的 /api/status 都被拖成 43 秒，整个系统
+ * 的输入响应一起变钝。
+ *
+ * 别把结论说成"打开硬件加速"：实测这台机器两条路都不做硬件解码
+ * （gpu_compositing 与 video_decode 都是 disabled_software）。差别在于
+ * --disable-gpu 会把 Chromium 赶进一条降级的纯软渲染路径；不传它时走的是正常
+ * 路径（GPU 进程 + 多线程光栅），底层即便仍是软件 GL 也快得多。
+ *
+ * LINGERLENS_DISABLE_GPU=1 手动强制软解；LINGERLENS_GPU_FALLBACK=1 是自动兜底
+ * 重启时给自己打的标记，保证只退一次。
+ */
+const gpuForcedOff = process.env.LINGERLENS_DISABLE_GPU === '1';
+const gpuAlreadyFellBack = process.env.LINGERLENS_GPU_FALLBACK === '1';
+if (gpuForcedOff || gpuAlreadyFellBack) {
+  app.commandLine.appendSwitch('disable-gpu');
+} else {
+  // 别因为驱动落在黑名单上就把用户降级成软解。
+  app.commandLine.appendSwitch('ignore-gpu-blocklist');
+  app.commandLine.appendSwitch('enable-gpu-rasterization');
+}
+
+function fallBackToSoftwareRendering(reason) {
+  console.log(`[main] falling back to software rendering (${reason}); relaunching once`);
+  process.env.LINGERLENS_GPU_FALLBACK = '1';
+  // 单实例锁必须先释放，否则新进程会因为拿不到锁而立刻退出。
+  try { app.releaseSingleInstanceLock(); } catch { /* older Electron builds */ }
+  app.relaunch();
+  app.exit(0);
+}
+
+/*
+ * 兜底的判据是 GPU 进程异常退出，不是 app.getGPUFeatureStatus()。
+ *
+ * 那个状态是"当前快照"，在 whenReady 之后立刻读往往还没稳定：实测本机在完全
+ * 没传 --disable-gpu 的情况下，它照样把 compositing / rasterization /
+ * video_decode 全报成 disabled_software。拿它当判据，会把本来能走正常渲染路径
+ * 的机器误判成必须软解——那正是这个性能问题本身。
+ *
+ * 真正说明"这台机器起不来 GPU"的信号，是 GPU 进程非正常退出。
+ */
+function watchGpuProcessHealth() {
+  app.on('child-process-gone', (_event, details) => {
+    if (details?.type !== 'GPU' || details.reason === 'clean-exit') return;
+    if (gpuForcedOff || gpuAlreadyFellBack) return;
+    if (window) {
+      // 会话已经跑起来了，重启会打断用户；GPU 进程会被 Chromium 自己拉起。
+      console.log(`[main] GPU process gone after startup (${details.reason}); keeping this session`);
+      return;
+    }
+    fallBackToSoftwareRendering(`gpu process gone: ${details.reason}`);
+  });
+}
 if (smoke) app.setPath('userData', path.resolve(smoke, 'user-data'));
 let window;
 let backend;
@@ -146,6 +204,7 @@ else {
     void (async () => { try { await backend?.stop(); } finally { app.exit(process.exitCode ?? 0); } })();
   });
   app.on('window-all-closed', () => app.quit());
+  watchGpuProcessHealth();
   app.whenReady().then(start).catch(fail);
 }
 
@@ -165,6 +224,9 @@ async function fail(error) {
 }
 
 async function start() {
+  // 只记录，不做判据：这个状态在启动初期还不稳定，见 watchGpuProcessHealth 的说明。
+  const mode = gpuForcedOff ? 'software (requested)' : gpuAlreadyFellBack ? 'software (fallback)' : 'normal';
+  console.log('[main] render path:', mode, JSON.stringify(app.getGPUFeatureStatus()));
   Menu.setApplicationMenu(null);
   // The layout is a three-column desktop board with `body { min-width: 1080px }`
   // and its own 1240px breakpoint below which the live chat column is hidden.
