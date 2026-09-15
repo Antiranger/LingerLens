@@ -63,6 +63,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run desktop:dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check the notices cover everything that was frozen in
+        run: |
+          npm run guard:licences:frozen
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the update manifest from the artifact just produced
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version

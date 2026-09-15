@@ -45,12 +45,28 @@ def main():
                 raise RuntimeError('Unexpected FFmpeg archive layout')
             with z.open(matches[0]) as source, (media / 'bin' / name).open('wb') as target:
                 shutil.copyfileobj(source, target)
-        for name in ('LICENSE', 'README.txt'):
-            matches = [p for p in z.namelist() if p.endswith('/' + name)]
-            if len(matches) != 1:
-                raise RuntimeError('Missing FFmpeg license or build provenance')
-            (media / 'notices' / name).write_bytes(z.read(matches[0]))
+        # The two upstream providers lay their notices out differently: GyanD
+        # ships LICENSE plus a README, BtbN ships one LICENSE.txt and no README.
+        # A licence is mandatory; build provenance is optional because it also
+        # lands in SOURCE.json and BUILD-CONFIGURATION.txt below.
+        licence = [p for p in z.namelist() if p.endswith(('/LICENSE', '/LICENSE.txt'))]
+        if len(licence) != 1:
+            raise RuntimeError('Missing FFmpeg license in the pinned archive')
+        (media / 'notices' / 'LICENSE').write_bytes(z.read(licence[0]))
+        readme = [p for p in z.namelist() if p.endswith('/README.txt')]
+        if len(readme) == 1:
+            (media / 'notices' / 'README.txt').write_bytes(z.read(readme[0]))
     (media / 'notices' / 'SOURCE.json').write_text(json.dumps(dep, indent=2), encoding='utf-8')
+    # Record the build's own configuration line. This is the evidence for the
+    # licence claim: `--enable-gpl`, `--enable-nonfree`, or any GPL-only external
+    # library such as libx264 would appear here, and its absence is what makes
+    # an LGPL build LGPL. Written from the binary rather than from the manifest,
+    # so it cannot drift from what actually ships.
+    configuration = subprocess.run(
+        [str(media / 'bin' / 'ffmpeg.exe'), '-hide_banner', '-version'],
+        capture_output=True, text=True, timeout=60, check=True,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    (media / 'notices' / 'BUILD-CONFIGURATION.txt').write_text(configuration.stdout, encoding='utf-8')
     yt = ROOT / 'prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe'
     expected = Path(str(yt) + '.sha256').read_text(encoding='utf-8').split()[0]
     if sha256(yt) != expected:

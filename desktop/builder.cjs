@@ -10,6 +10,7 @@ module.exports = {
     { from: 'build-desktop/backend/laglingo-backend', to: 'backend', filter: ['**/*'] },
     { from: 'LICENSE', to: 'LICENSE-LagLingo.txt' },
     { from: 'THIRD_PARTY_NOTICES.md', to: 'THIRD_PARTY_NOTICES.md' },
+    { from: 'licenses', to: 'licenses', filter: ['**/*'] },
     { from: 'desktop/DEPENDENCIES.md', to: 'DEPENDENCIES.md' },
   ],
   win: { target: [{ target: 'nsis', arch: ['x64'] }],

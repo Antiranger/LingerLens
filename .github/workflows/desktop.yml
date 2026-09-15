@@ -36,6 +36,10 @@ jobs:
           .venv-desktop/Scripts/python.exe -m unittest discover -s desktop/tests -p test_*.py
       - name: Build unsigned installer without publishing
         run: npm run desktop:dist
+      - name: Check the notices cover everything that was frozen in
+        run: |
+          npm run guard:licences:frozen
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: laglingo-windows-x64-preview

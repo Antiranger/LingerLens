@@ -6,8 +6,10 @@
   },
   "ffmpeg": {
     "version": "9.0.1",
-    "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
-    "sha256": "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9",
-    "release": "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1"
+    "flavour": "lgpl",
+    "build": "n9.0.1-29-gad500d59cb",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-14-13-17/ffmpeg-n9.0.1-29-gad500d59cb-win64-lgpl-9.0.zip",
+    "sha256": "084874559d629b29cea0cae5b4d3cbb8e384d323f4eb3f1835bd9705d83bf58e",
+    "release": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-14-13-17"
   }
 }
