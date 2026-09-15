@@ -1720,6 +1720,9 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   border-bottom: var(--bw) solid var(--ink);
   background: var(--card);
 }
+/* .tab 的 border-right 是给工作台那条紧挨着的页签当分隔线用的。这里的页签之
+   间有 gap，那根线就变成悬在中间的竖杠了，所以只在这一组里取消。 */
+.connection-tabs .tab { border-right: none; }
 .dialog-body {
   padding: var(--s5);
   display: grid;
