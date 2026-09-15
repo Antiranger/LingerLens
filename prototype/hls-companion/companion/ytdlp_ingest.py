@@ -221,6 +221,35 @@ class YtDlpLiveIngest:
         ffmpeg_live_args = [
             "--downloader-args",
             "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 2",
+            # Keep the source's own timestamps instead of letting yt-dlp's
+            # ffmpeg downloader re-base each leg to its mpegts muxer default
+            # (1.400s). That re-basing destroys the only shared reference the
+            # two independently extracted legs have: the source clock.
+            #
+            # Verified 2026-09-16 against live YouTube HLS (TBS NEWS DIG
+            # LpcTlp8ukXU and ANNnewsCH ExSfF5pk8TY):
+            #   * both renditions carry ONE absolute 90kHz clock, agreeing to
+            #     13ms across sample windows. The audio-only rendition has no
+            #     transport timestamps of its own -- its absolute time arrives
+            #     in the ID3 PRIV frame (com.apple.streaming.transportStream
+            #     Timestamp), which FFmpeg's HLS/ADTS demuxer already reads;
+            #   * the mpegts muxer's default output offset is what rewrites it:
+            #     1.400 without this flag, ~27000 with it, rising with wall
+            #     clock, on both the video-only and the audio-only leg;
+            #   * repeated --downloader-args for the same downloader key
+            #     CONCATENATE rather than replace (measured: the reconnect
+            #     string and -copyts as two entries, and as one entry, both
+            #     yield absolute PTS), so this is safe beside the entry above;
+            #   * the packaging ffmpeg tolerates the absolute input unchanged:
+            #     its fMP4 tfdt is byte-identical to a rebased run and its
+            #     program_date_time stays wall-clock derived.
+            #
+            # No consumer reads these PTS as an absolute value today -- every
+            # one of them takes sourcePtsLast - sourcePtsFirst -- so this flag
+            # on its own changes no behaviour. It is what makes the two legs'
+            # shared origin observable.
+            "--downloader-args",
+            "ffmpeg_i:-copyts",
         ]
         is_hls = not self.selected_protocol or self.selected_protocol.startswith("m3u8")
         hls_args = [
