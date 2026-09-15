@@ -487,7 +487,11 @@ button[aria-busy="true"]::before {
   font-size: 15px;
   font-weight: 500;
   color: rgba(255,255,255,.85);
-  max-width: 560px;
+  /* 560px 是按最初那句中文定死的。拉丁/西里尔语言同样一句话要长 25~50%，
+     于是只有中文能排一行、其余全部折行。这是上限而非定宽：中文自然宽只需
+     480px，放宽它不会把中文那一行拉长，只让德文（671px，最宽）也排得下。
+     min(...,100%) 是窄窗口兜底。 */
+  max-width: min(720px, 100%);
 }
 .hero-right {
   display: grid;
