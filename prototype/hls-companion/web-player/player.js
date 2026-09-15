@@ -1911,7 +1911,9 @@
         row = document.createElement("div");
         row.className = "subtitle-cue-row";
         row.dataset.cueId = id;
-        row.innerHTML = '<div class="subtitle-src"></div><div class="subtitle-zh"></div>';
+        // 译文在上、原文在下：读的是译文，原文只是参考。反过来的话视线每读
+        // 一行都要先跳过原文。
+        row.innerHTML = '<div class="subtitle-zh"></div><div class="subtitle-src"></div>';
         rowsById.set(id, row);
       }
       // Cue updates advance seq/revision. Include visible fields as a defensive

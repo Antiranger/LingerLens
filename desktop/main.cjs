@@ -195,7 +195,14 @@ async function start() {
   window.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('lingerlens://app/')) event.preventDefault();
   });
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  // Deny everything except fullscreen. Electron lists 'fullscreen' among the
+  // requestable permissions, so a blanket deny blocked the board's own
+  // fullscreen button -- and requestFullscreen() never settled, neither
+  // resolving nor rejecting, which is why the button looked dead rather than
+  // refused. Nothing else on this page needs a permission.
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
+    callback(permission === 'fullscreen');
+  });
   // Permanent, not conditional: the destination can be switched on later from
   // the diagnostics bar, which is the only way a packaged build can log at all.
   devLog = createDevLog();

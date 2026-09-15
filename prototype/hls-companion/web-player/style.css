@@ -612,6 +612,7 @@ button[aria-busy="true"]::before {
   --pane-right-w: 320px;
   display: grid;
   grid-template-columns: var(--pane-left-w) minmax(0, 1fr) var(--pane-right-w);
+  /* 行高由中间舞台决定（舞台是列宽的 16:9，宽窗口下本来就有一千多像素）。 */
   min-height: 620px;
   position: relative;
   z-index: 0;
@@ -788,9 +789,20 @@ body.is-resizing-panes { user-select: none; }
   #paneChat .chat-target { display: none; }
 }
 
-/* ── 时间轴（原型 468-540） ── */
+/* ── 时间轴（原型 468-540） ──
+   绝对定位，脱离流的不是布局而是「内在高度」。它原来是 flex:1，于是行的自动
+   高度会把列表内容也算进去：字幕一多，整行跟着长高，overflow-y: auto 就永远
+   没有溢出可滚，列表把整页撑到几千像素，舞台连同全屏键被推出视口。
+   改成 bottom/top 贴合面板后，高度只由舞台决定，列表装满就自己滚。
+   52px 是 .pane-head 的高度（CSS 里同构，实测确认），top 必须和它一致。
+   注意：.pane 不能加 overflow:hidden —— .pane-resizer 故意骑在边框外侧
+   （right/left: -8px），裁掉就拖不动了。 */
 .timeline {
-  flex: 1;
+  position: absolute;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  left: 0;
   overflow-y: auto;
   padding: var(--s3);
   display: flex;
@@ -847,8 +859,10 @@ body.is-resizing-panes { user-select: none; }
 .live-message-row:nth-child(3n) .timeline-author { background: var(--yellow); }
 .live-message-row:nth-child(4n) .timeline-author { background: #F5B7FF; }
 .live-message-row:hover { background: #EEF9D4; }
-.timeline-text-source { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.45; overflow-wrap: anywhere; }
-.timeline-text-translated { margin: 2px 0 0; font-size: 13px; color: var(--ink-70); line-height: 1.45; overflow-wrap: anywhere; }
+/* 译文是主角：在上面、更大、加粗，原文退到下面当参考。反过来（原文加粗、
+   译文又小又灰）会让用户真正在读的那一行最不显眼。 */
+.timeline-text-translated { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.45; overflow-wrap: anywhere; }
+.timeline-text-source { margin: 2px 0 0; font-size: 13px; color: var(--ink-70); line-height: 1.45; overflow-wrap: anywhere; }
 .timeline-text-translated:has(+ .timeline-text-source) { border-bottom: 1px dashed var(--ink-45); padding-bottom: 3px; }
 .timeline-row:focus-visible { outline: 3px dashed var(--indigo); outline-offset: -3px; }
 @keyframes cue-in {
