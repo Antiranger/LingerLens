@@ -369,7 +369,7 @@ phase 2: after workers drained the queue
 ```
 File ".../subtitle_pipeline.py", line 321, in __init__
     self._caption_deadline_changed = asyncio.Event()
-  File "D:\<python>\lib\asyncio\locks.py", line 177, in __init__
+  File "<python>/lib/asyncio/locks.py", line 177, in __init__
     self._loop = events.get_event_loop()
 RuntimeError: There is no current event loop in thread 'MainThread'.
 ```

@@ -703,8 +703,7 @@ profile 终身停在 1 条观测。不修它，第 1 件的收益也拿不到 �
 
 ## 附录：复现实验
 
-脚本在
-`C:\Users\<user>\AppData\Local\Temp\claude\F--Projects-LagLingo\ecd91b02-cb05-47f4-9616-d8caaf707b44\scratchpad\`：
+脚本在一次性的临时工作目录里（已随会话结束删除）：
 
 | 脚本 | 验证的结论 |
 |---|---|

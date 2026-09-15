@@ -206,7 +206,7 @@ R1 落地后按交接文档 §8 的方法复测，判定阈值：
 
 ## 8. 实验记录（本机可复现）
 
-环境：FFmpeg 9.0（`C:\Users\<user>\Tools\ffmpeg\9.0\bin\ffmpeg.exe`）。构造与实测源同构的输入：1280×720@30fps、**GOP = 5 秒**（`-g 150 -keyint_min 150 -sc_threshold 0`）、H.264 + AAC、MPEG-TS 封装（模拟 yt-dlp `--hls-use-mpegts` 的 stdout）。`ffprobe` 确认关键帧在 1.42 / 6.42 / 11.42 / 16.42… 秒，间隔精确 5.0s。
+环境：FFmpeg 9.0（本机独立安装的那份，不是仓库内置的）。构造与实测源同构的输入：1280×720@30fps、**GOP = 5 秒**（`-g 150 -keyint_min 150 -sc_threshold 0`）、H.264 + AAC、MPEG-TS 封装（模拟 yt-dlp `--hls-use-mpegts` 的 stdout）。`ffprobe` 确认关键帧在 1.42 / 6.42 / 11.42 / 16.42… 秒，间隔精确 5.0s。
 
 ### 8.1 `split_by_time` 的效果（R1 的依据）
 

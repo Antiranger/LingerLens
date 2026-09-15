@@ -35,7 +35,7 @@ The native-player extension spike is retained as evidence, but its first YouTube
 - Current state: prototype implementation complete; user should run the visible 10-second ffplay test and report smoothness/offset.
 
 ## Prototype 2 session
-- Read `C:/Users/<user>/AppData/Local/Temp/laglingo_browser_hls_companion_handoff.md` completely and replaced the completed prior plan with a scoped Prototype 2 plan.
+- Read `%TEMP%/laglingo_browser_hls_companion_handoff.md` completely and replaced the completed prior plan with a scoped Prototype 2 plan.
 - Re-inspected the repository and local toolchain. Confirmed current yt-dlp CLI/FFmpeg/Node availability, local `aiohttp`, absent Python `yt_dlp` module, and current hls.js npm release.
 - Reviewed current official yt-dlp/Chrome Native Messaging/Cookies guidance needed for the extraction and login seams.
 - Selected an isolated `prototype/hls-companion/` implementation with private FFmpeg HLS output, delayed public playlist publication, bundled hls.js, and a minimal MV3 Native Messaging cookie bridge.
@@ -70,7 +70,7 @@ The native-player extension spike is retained as evidence, but its first YouTube
 - A 130-second real-live run completed without FFmpeg/403 failure after the contiguous source cache changes. A second currently-live source remained running for 130 seconds with a monotonic public timeline; its source advanced in larger bursts, so longer 30-minute visual testing remains required.
 - Subsequent 1080p60 testing disproved the generic proxy/Streamlink/N_m3u8DL-RE approaches for this YouTube stream: all eventually stopped around a fragment 403 or playlist-consumption mismatch.
 - Inspected ytarchive source and identified its YouTube-specific recovery model: build `googlevideo base + &sq=N`, set Host/Referer/Origin headers, track `X-Head-Seqnum`, refresh VideoInfo/download URLs on 403, download concurrently, and write strictly in sequence.
-- Created focused next-session handoff: `C:/Users/<user>/AppData/Local/Temp/laglingo_youtube_403_ingest_handoff.md`. Do not ask the user to retest the current experimental player until a 120-second 403 recovery loop passes.
+- Created focused next-session handoff: `%TEMP%/laglingo_youtube_403_ingest_handoff.md`. Do not ask the user to retest the current experimental player until a 120-second 403 recovery loop passes.
 
 ## YouTube fragment 403 diagnosis session
 - Restored both handoffs, the project planning files, and the current ingest code. Confirmed `server.py` is still on the disproved Streamlink experiment and `hls_ingest.py` must not be expanded.
