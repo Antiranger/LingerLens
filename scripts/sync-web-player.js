@@ -29,9 +29,14 @@ const FROZEN_SOURCES = [
 function walk(directory, base = directory) {
   const out = [];
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) out.push(...walk(full, base));
-    else if (entry.isFile()) out.push(path.relative(base, full));
+    // Compiled bytecode is rewritten every time anything imports the package,
+    // so counting it would make the staleness check fire on every test run.
+    if (entry.isDirectory()) {
+      if (entry.name === "__pycache__" || entry.name === "node_modules") continue;
+      out.push(...walk(path.join(directory, entry.name), base));
+    } else if (entry.isFile() && !entry.name.endsWith(".pyc")) {
+      out.push(path.relative(base, path.join(directory, entry.name)));
+    }
   }
   return out;
 }
