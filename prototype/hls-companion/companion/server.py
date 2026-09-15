@@ -290,6 +290,11 @@ class CompanionApplication:
         status = self.session.status()
         ingest_snapshot = self.source_ingest.snapshot() if self.source_ingest else None
         status["sourceDelaySeconds"] = 0.0
+        # The content position the subtitle anchor samples for the video side,
+        # next to privateMediaSeconds (the packaged counter) so the difference
+        # between them -- the packaging backlog -- is readable from status.
+        # Reuses the snapshot above rather than taking a second one.
+        status["videoContentSeconds"] = self._video_content_seconds(ingest_snapshot)
         ingest_list = [dict(ingest_snapshot, role="media")] if ingest_snapshot else []
         if self.asr_audio_ingest is not None:
             ingest_list.append(dict(self.asr_audio_ingest.snapshot(), role="asr-audio"))
@@ -999,6 +1004,7 @@ class CompanionApplication:
             ingest_status=ingest_status,
             media_anchor=media_anchor,
             anchor_probe=anchor_probe,
+            video_backlog=self._current_video_stage_backlog if anchor_probe is not None else None,
             source_pts_mapper=source_pts_mapper,
             hold_minimum=float(subtitle.get("holdSecondsMin", 1.2)),
             hold_maximum=float(subtitle.get("holdSecondsMax", 7.0)),
@@ -1029,9 +1035,44 @@ class CompanionApplication:
             return None
         return "234/233/ba[protocol^=m3u8]/worst[protocol^=m3u8]"
 
+    @staticmethod
+    def _video_content_seconds(ingest_snapshot: dict | None) -> float | None:
+        """Video-leg content position from an ingest snapshot, if it reports PTS.
+
+        Packaging cannot run ahead of the pump that is furthest behind, so the
+        binding extent is the smallest one.
+        """
+        extents = [
+            float(leg["sourcePtsLast"]) - float(leg["sourcePtsFirst"])
+            for leg in ((ingest_snapshot or {}).get("legThroughput") or [])
+            if leg.get("sourcePtsFirst") is not None and leg.get("sourcePtsLast") is not None
+        ]
+        return min(extents) if extents else None
+
+    def _current_video_stage_backlog(self) -> float | None:
+        """Received media the video leg's packaging stage is still holding.
+
+        ``privateMediaSeconds`` counts what FFmpeg has already *packaged*, so it
+        trails the media this leg has received by whatever the packaging stage
+        has not cut and written yet -- measured 0.7-6.0s on a live 5s-segment
+        stream, and structurally non-zero because a segment cannot be counted
+        until it is complete. The media anchor differences two such stage-output
+        counters, so without this term every cue would be short by it, i.e.
+        seconds early.
+        """
+        try:
+            ingest = self.source_ingest.snapshot() if self.source_ingest else None
+        except Exception:  # noqa: BLE001 - a probe must never break the anchor
+            ingest = None
+        content = self._video_content_seconds(ingest)
+        packaged = self._current_private_media_seconds()
+        if content is None or packaged is None:
+            return None
+        return content - packaged
+
     def _current_private_media_seconds(self) -> float | None:
         publisher = self.session.publisher if self.session else None
-        return publisher.private_media_seconds if publisher is not None else None
+        return getattr(publisher, "private_media_seconds", None)
 
     async def _wait_for_private_hls(self) -> float:
         """Wait for one complete private segment and its authoritative PDT."""

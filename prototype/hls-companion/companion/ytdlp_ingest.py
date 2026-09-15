@@ -286,11 +286,29 @@ class YtDlpLiveIngest:
         self.started_at = time.monotonic()
         self.last_output_at = self.started_at
         self._legs_past_extraction = set()
+        # A fresh download is a fresh PTS clock. The local ffmpeg muxer re-bases
+        # every leg's output to its own 1.4s origin, so samples recorded before
+        # this start() describe a different timeline; without this reset
+        # (sourcePtsLast - sourcePtsFirst) would silently span two sessions and
+        # report a content extent nobody received.
+        self.source_pts = []
+        self.source_pts_first = []
+        # Which elementary stream each pump carries. The media leg's pumps are
+        # one transport stream per selected format with video first, so the pump
+        # slot name is also the probe's slot. The dedicated ASR audio leg has a
+        # single selector and its transport stream carries audio only, so its
+        # slot is "audio" regardless of the media leg's ordering. Keying the
+        # probe off the media leg's slot names left want_audio False there and
+        # the probe then waited forever for a video PID that does not exist in
+        # an audio-only stream -- sourcePtsFirst/sourcePtsLast stayed null for
+        # the whole session, so the audio leg's position on the source clock was
+        # never observable.
+        probe_slots = ("audio",) if self.leg_role == "audio" else ("video", "audio")
         self.pumps = [
             _TcpPump(
                 label if self.leg_role == "media" else self.leg_role,
                 on_first_byte=self._leg_reached_download(index),
-                pts_probe=MpegTsPtsProbe(want_audio=label == "audio"),
+                pts_probe=MpegTsPtsProbe(want_audio=probe_slots[index] == "audio"),
                 on_pts=self._record_pts(index),
             )
             for index, label in enumerate(("video", "audio")[: len(self.selectors)])

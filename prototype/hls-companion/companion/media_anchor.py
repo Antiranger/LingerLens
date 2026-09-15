@@ -9,6 +9,17 @@ video leg's private media space:
 
     cue_media_position = pcm_seconds + anchor.offset
 
+The window median differences two *stage-output* counters, so it is short by
+whatever already-received media each stage is still holding:
+
+    C_measured = C_true + (audio stage backlog - video stage backlog)
+
+A stage cannot count media until it has emitted it, and the video packaging
+stage structurally holds a segment's worth (measured 0.7-6.0s live) while the
+audio decode stage holds ~0. Callers close that gap by supplying `correction`,
+which is added to `offset`; it is deliberately kept out of the sampled window so
+the sampling stays on the smooth counters the rate gate was tuned for.
+
 Sampling is rate-gated: only intervals where BOTH legs advanced at ~1x
 (relative to wall clock) count. Startup backlogs decoded at CPU speed (25x)
 and stall intervals (0x) are rejected, so bursts cannot poison the estimate.
@@ -51,6 +62,16 @@ class MediaAnchor:
         self._latest_c: float | None = None
         self._deviating_run = 0
         self._deviating_sign = 0
+        self._correction: Callable[[], float] | None = None
+
+    def set_correction(self, correction: Callable[[], float] | None) -> None:
+        """Supply the stage-backlog gap that the window median cannot see.
+
+        Kept out of `add_sample` on purpose: the correction is quantized by
+        segment finalization, and feeding it into the sampled window would
+        replace the smooth counters the rate gate depends on with a sawtooth.
+        """
+        self._correction = correction
 
     def add_sample(self, video_seconds: float | None, pcm_seconds: float) -> None:
         """Ingest one (video-leg, audio-leg) position pair at the current tick."""
@@ -85,7 +106,10 @@ class MediaAnchor:
             return
         c_value = float(video_seconds) - float(pcm_seconds)
         self._latest_c = c_value
-        median = self.offset
+        # Compare against the window's own centre, not the corrected offset: a
+        # skip is a movement of the window, and the caller's correction is a
+        # separate, slowly varying quantity.
+        median = self.window_offset
         if median is not None and abs(c_value - median) > self._reset_threshold:
             sign = 1 if c_value > median else -1
             self._deviating_run = self._deviating_run + 1 if sign == self._deviating_sign else 1
@@ -108,10 +132,20 @@ class MediaAnchor:
         return len(self._window)
 
     @property
-    def offset(self) -> float | None:
+    def window_offset(self) -> float | None:
+        """The raw window median, without the caller's stage-backlog correction."""
         if not self.ready:
             return None
         return statistics.median(self._window)
+
+    @property
+    def offset(self) -> float | None:
+        median = self.window_offset
+        if median is None:
+            return None
+        if self._correction is None:
+            return median
+        return median + self._correction()
 
     @property
     def spread(self) -> float | None:
@@ -126,7 +160,7 @@ class MediaAnchor:
 
     @property
     def drift(self) -> float | None:
-        median = self.offset
+        median = self.window_offset
         if median is None or self._latest_c is None:
             return None
         return self._latest_c - median

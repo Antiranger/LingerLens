@@ -238,6 +238,7 @@ class SubtitlePipeline:
         subprocess_factory: Callable[..., Any] = asyncio.create_subprocess_exec,
         media_anchor: MediaAnchor | None = None,
         anchor_probe: Callable[[], float | None] | None = None,
+        video_backlog: Callable[[], float | None] | None = None,
         source_pts_mapper: Callable[[float], float | None] | None = None,
     ) -> None:
         if pcm_queue_chunks < 1:
@@ -307,6 +308,7 @@ class SubtitlePipeline:
         # leg's media space through the continuously measured anchor.
         self.media_anchor = media_anchor
         self.anchor_probe = anchor_probe
+        self.video_backlog_callback = video_backlog
         self.source_pts_mapper = source_pts_mapper
         self.input_format: str | None = None
         self._pcm_queue: asyncio.Queue[tuple[bytes, float]] | None = None
@@ -319,6 +321,20 @@ class SubtitlePipeline:
         self._stopping = False
         self._pcm_offset = 0.0
         self._last_sent_pcm_offset = 0.0
+        # Stage-backlog correction the anchor adds to its window median, plus
+        # the rolling minima it is derived from. Exposed in status so the
+        # correction is visible instead of implicit.
+        self._video_backlog_window: deque[float] = deque(maxlen=5)
+        self._audio_backlog_window: deque[float] = deque(maxlen=5)
+        self._anchor_backlog_video: float | None = None
+        self._anchor_backlog_audio: float | None = None
+        self._anchor_correction: float | None = None
+        if media_anchor is not None:
+            # The window median differences two stage-output counters, so it is
+            # short by the stages' backlogs. Supplied as a separate term rather
+            # than folded into the samples, which keeps the rate gate working on
+            # the smooth counters.
+            media_anchor.set_correction(lambda: self._anchor_correction or 0.0)
         # Per-utterance VAD boundaries keyed by the provider's item id. A single
         # pair of "pending start/end" slots cannot work: the next utterance's
         # speech_started routinely arrives in the same millisecond as the
@@ -462,6 +478,54 @@ class SubtitlePipeline:
         self.media_epoch = float(media_epoch)
         self._flush_pending_finals()
 
+    def _leg_backlog(self, snapshot: Any, output_seconds: float) -> float | None:
+        """How much received media one leg's stage is holding back.
+
+        ``output_seconds`` is what the stage has emitted; the leg's own PTS
+        extent is what it has received. The difference is the backlog, which a
+        single reading overstates by up to one segment because a segment cannot
+        be counted until it is complete.
+        """
+        extents = [
+            float(leg["sourcePtsLast"]) - float(leg["sourcePtsFirst"])
+            for leg in ((snapshot or {}).get("legThroughput") or [])
+            if leg.get("sourcePtsFirst") is not None and leg.get("sourcePtsLast") is not None
+        ]
+        if not extents:
+            return None
+        return min(extents) - output_seconds
+
+    def _update_anchor_correction(self) -> None:
+        """Refresh `C += video backlog - audio backlog` once per sample tick.
+
+        Computed here rather than inside the correction callable because
+        `MediaAnchor.offset` is read several times per status request, and the
+        rolling minimum must advance once per tick, not once per reader.
+        """
+        if self.media_anchor is None:
+            return
+        try:
+            audio_snapshot = (
+                self.ingest_status_callback() if self.ingest_status_callback is not None else None
+            )
+        except Exception as exc:  # a bad probe must never kill the pipeline
+            self.stats.last_error = self._error_text(exc)
+            audio_snapshot = None
+        try:
+            video_backlog = self.video_backlog_callback() if self.video_backlog_callback is not None else None
+        except Exception as exc:  # noqa: BLE001
+            self.stats.last_error = self._error_text(exc)
+            video_backlog = None
+        audio_backlog = self._leg_backlog(audio_snapshot, self._pcm_offset)
+        for window, raw in ((self._video_backlog_window, video_backlog), (self._audio_backlog_window, audio_backlog)):
+            # A restarted leg re-bases its PTS, which would make the difference
+            # meaningless; clamp instead of feeding a garbage correction.
+            if raw is not None and -1.0 <= raw <= 60.0:
+                window.append(raw)
+        self._anchor_backlog_video = min(self._video_backlog_window) if self._video_backlog_window else 0.0
+        self._anchor_backlog_audio = min(self._audio_backlog_window) if self._audio_backlog_window else 0.0
+        self._anchor_correction = self._anchor_backlog_video - self._anchor_backlog_audio
+
     async def _anchor_sampler(self) -> None:
         """Feed the media anchor with (video-leg, audio-leg) positions.
 
@@ -470,6 +534,13 @@ class SubtitlePipeline:
         gate rejects nearly everything. Averaging over 2.5s smooths the
         quantization into the pass band while still rejecting stalls (0x)
         and backlog bursts (25x).
+
+        The sampled pair stays the two stage-output counters. Substituting the
+        legs' raw PTS extents here instead was measured to collapse accepted
+        samples from 30 to 6 of 30, because a PTS extent moves only when a
+        whole segment lands and the gate then rejects the intervals where just
+        one side moved. The stage backlog those counters omit is supplied
+        separately as `correction`.
         """
         while self._running:
             await asyncio.sleep(2.5)
@@ -477,6 +548,7 @@ class SubtitlePipeline:
                 return
             try:
                 self.media_anchor.add_sample(self.anchor_probe(), self._pcm_offset)
+                self._update_anchor_correction()
             except Exception as exc:  # a bad probe must never kill the pipeline
                 self.stats.last_error = self._error_text(exc)
             if self.media_anchor.ready and self._pending_finals:
@@ -1531,6 +1603,13 @@ class SubtitlePipeline:
                     "ready": self.media_anchor.ready,
                     "samples": self.media_anchor.samples,
                     "offset": round(self.media_anchor.offset, 3) if self.media_anchor.offset is not None else None,
+                    # Same window median without the stage-backlog correction, so
+                    # the correction in force is `offset - windowOffset`.
+                    "windowOffset": (
+                        round(self.media_anchor.window_offset, 3)
+                        if self.media_anchor.window_offset is not None
+                        else None
+                    ),
                     "spread": round(self.media_anchor.spread, 3) if self.media_anchor.spread is not None else None,
                     "drift": round(self.media_anchor.drift, 3) if self.media_anchor.drift is not None else None,
                 }
@@ -1541,6 +1620,18 @@ class SubtitlePipeline:
             "pendingFinalsDropped": self.stats.pending_finals_dropped,
             "pcmOffset": round(self._pcm_offset, 3),
             "asrSeconds": round(self._pcm_offset, 3),
+            # The stage backlog the anchor adds back to its median, and the two
+            # rolling minima it comes from. `offset - windowOffset` is the
+            # correction actually in force.
+            "anchorBacklogVideo": (
+                round(self._anchor_backlog_video, 3) if self._anchor_backlog_video is not None else None
+            ),
+            "anchorBacklogAudio": (
+                round(self._anchor_backlog_audio, 3) if self._anchor_backlog_audio is not None else None
+            ),
+            "anchorCorrection": (
+                round(self._anchor_correction, 3) if self._anchor_correction is not None else None
+            ),
             "asrUsage": {"seconds": round(self._pcm_offset, 3)},
             "asrEstimatedCostCny": asr_cost,
             "asrCostCurrency": asr_currency_code,
