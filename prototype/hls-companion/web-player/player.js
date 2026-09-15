@@ -557,7 +557,7 @@
     }
     el("quality").disabled = true;
     el("setupPlayback").hidden = true;
-    el("probe").textContent = "准备中…";
+    el("probe").textContent = "解析中…";
     el("probe").setAttribute("aria-busy", "true");
     el("setupFeedback").textContent = "正在读取直播信息和可用清晰度…";
     setBusy(true);
@@ -582,13 +582,13 @@
       el("start").disabled = false;
       el("streamTitle").textContent = data.title || "直播格式已就绪";
       el("setupPlayback").hidden = false;
-      el("setupFeedback").textContent = "准备好了，选择清晰度后点击启动。";
+      el("setupFeedback").textContent = "解析完成，选择清晰度后点击开始播放。";
       el("message").textContent = "直播已就绪。";
       setState("准备就绪", "active");
     } catch (error) {
       showError(error);
     } finally {
-      el("probe").textContent = "准备";
+      el("probe").textContent = "解析";
       el("probe").removeAttribute("aria-busy");
       setBusy(false);
     }
@@ -650,7 +650,7 @@
     el("quality").innerHTML = '<option value="auto">自动（最高兼容）</option>';
     el("start").disabled = true;
     el("setupPlayback").hidden = true;
-    el("setupFeedback").textContent = "已停止。可以重新准备，或粘贴另一场直播的链接。";
+    el("setupFeedback").textContent = "已停止。可以重新解析，或粘贴另一场直播的链接。";
     el("stop").disabled = true;
     el("streamTitle").textContent = "等待直播地址";
     el("message").textContent = "已停止当前直播。";
@@ -933,7 +933,7 @@
       setMediaLoading(false);
       banner.hidden = false;
       const detail = String(data.error || "未知错误").slice(0, 80);
-      banner.textContent = `直播会话出错：${detail}——请停止后重新启动`;
+      banner.textContent = `直播会话出错：${detail}。请停止后重新开始播放`;
       // 会话级错误不走 showError，而且后端随后就会把 FFmpeg 的尾部输出发到
       // /api/logs；两条一起看才是完整现场，所以这里也记一条。
       diagnosticsBar?.push("error", "session", detail);
@@ -1601,7 +1601,7 @@
     const needed = current + Math.max(1, Math.ceil(1.5 - margin));
     subtitleBudget.suggested = Math.max(11, Math.min(60, needed));
     el("applyDelayButton").hidden = false;
-    el("applyDelayButton").textContent = `字幕来不及：延迟调到 ${subtitleBudget.suggested} 秒`;
+    el("applyDelayButton").textContent = updateLabel("msg.raiseDelay", `增加 ${subtitleBudget.suggested} 秒缓冲`, { n: subtitleBudget.suggested });
   }
 
   async function applySuggestedDelay() {
@@ -1613,7 +1613,7 @@
       await request("/api/target-delay", { seconds: suggested });
       el("targetDelay").value = String(suggested);
       localStorage.setItem("lingerlens.targetDelaySeconds", String(suggested));
-      el("message").textContent = `已把本地延迟调到 ${suggested} 秒。字幕就绪预算现在有余量；负载回落后可手动调回。`;
+      el("message").textContent = `已把目标延迟调到 ${suggested} 秒，字幕显示余量现在够了；负载回落后可以手动调回。`;
       subtitleBudget.lowSince = null;
       button.hidden = true;
     } catch (error) {
@@ -1821,7 +1821,7 @@
       if (stats.received !== undefined) routine.push(`收到: ${stats.received}`);
       if (stats.translated !== undefined) routine.push(`翻译: ${stats.translated}`);
       if (stats.translationFailed) problems.push(`失败: ${stats.translationFailed}`);
-      const failureLabels = { timeout: "翻译超时", deadline: "翻译预算耗尽", empty: "空译文", json_format: "JSON格式错误", batch_count: "批次数量不符", batch_item: "批次内容或编号异常", batch_ids: "批次编号不符", response_format: "响应格式异常", rate_limit: "翻译限流", authentication: "翻译认证失败", provider_error: "翻译调用失败" };
+      const failureLabels = { timeout: "翻译超时", deadline: "翻译超时未完成", empty: "空译文", json_format: "JSON格式错误", batch_count: "批次数量不符", batch_item: "批次内容或编号异常", batch_ids: "批次编号不符", response_format: "响应格式异常", rate_limit: "翻译限流", authentication: "翻译认证失败", provider_error: "翻译调用失败" };
       if (stats.translationLastFailure) problems.push(failureLabels[stats.translationLastFailure] || "翻译失败");
       if (chatOverlay.getStats().dropped) routine.push(`画面省略: ${chatOverlay.getStats().dropped}`);
       if (stats.translationSkipped) routine.push(`跳过: ${stats.translationSkipped}`);
@@ -2069,7 +2069,7 @@
     else el("start").removeAttribute("aria-busy");
     if (stopping) el("stop").setAttribute("aria-busy", "true");
     else el("stop").removeAttribute("aria-busy");
-    el("start").querySelector(".button-label").textContent = starting ? "正在启动" : "启动";
+    el("start").querySelector(".button-label").textContent = starting ? "正在启动" : "开始播放";
     el("stop").querySelector(".button-label").textContent = stopping ? "正在停止" : "停止";
     renderSessionControls();
   }
@@ -2096,7 +2096,7 @@
   el("url").addEventListener("input", () => {
     el("quality").disabled = true;
     el("setupPlayback").hidden = true;
-    el("setupFeedback").textContent = "点击准备，读取这场直播的清晰度。";
+    el("setupFeedback").textContent = "点击解析，读取这场直播的清晰度。";
     renderSessionControls();
   });
   el("start").addEventListener("click", start);
