@@ -179,5 +179,79 @@ class MediaAnchorTests(unittest.TestCase):
         self.assertAlmostEqual(anchor.offset or 0, 100.0, places=6)
 
 
+class ExactOffsetTests(unittest.TestCase):
+    """The source-clock offset, which the window can only estimate.
+
+    Live measurement 2026-09-16 (600s, TBS NEWS DIG): the window differences
+    `privateMediaSeconds - pcm`, and that quantity is a sawtooth -- packaged
+    segments land whole while PCM advances smoothly -- whose centre sat a
+    stage-frontier gap away from C. Mean was -0.719s against a true C of
+    +5.006s, and the offset the window produced swung across a 9.1s range
+    (cues up to ~4.5s early, up to ~4s late). The two legs' source origins, by
+    contrast, held to a range of 0.000s.
+    """
+
+    def make_anchor(self, **kwargs):
+        clock = FakeClock()
+        anchor = MediaAnchor(clock=clock, **kwargs)
+        return anchor, clock
+
+    def test_exact_offset_is_usable_with_an_empty_window(self) -> None:
+        anchor, _ = self.make_anchor()
+        anchor.set_exact_offset(lambda: 5.006)
+        # No samples at all: the window has nothing to say, but the mapping is
+        # already exact and must not be held back waiting for convergence.
+        self.assertTrue(anchor.ready)
+        self.assertAlmostEqual(anchor.exact_offset or 0, 5.006, places=6)
+        self.assertAlmostEqual(anchor.offset or 0, 5.006, places=6)
+        self.assertAlmostEqual(anchor.map_pcm(10.0) or 0, 15.006, places=6)
+        # The window diagnostics must degrade to None, not raise on an empty
+        # deque -- `ready` is now true while `_window` is still empty.
+        self.assertIsNone(anchor.window_offset)
+        self.assertIsNone(anchor.spread)
+        self.assertIsNone(anchor.drift)
+
+    def test_exact_offset_overrides_a_converged_window(self) -> None:
+        anchor, clock = self.make_anchor()
+        anchor.add_sample(100.0, 0.0)
+        run_steady(anchor, clock, 5, video_base=100.0)
+        self.assertAlmostEqual(anchor.offset or 0, 100.0, places=6)
+        anchor.set_exact_offset(lambda: 5.006)
+        self.assertAlmostEqual(anchor.offset or 0, 5.006, places=6)
+        # The window keeps being sampled, so the disagreement stays visible.
+        self.assertAlmostEqual(anchor.window_offset or 0, 100.0, places=6)
+
+    def test_unmeasurable_exact_offset_falls_back_to_the_window(self) -> None:
+        anchor, clock = self.make_anchor()
+        anchor.add_sample(100.0, 0.0)
+        run_steady(anchor, clock, 5, video_base=100.0)
+        # A leg with no absolute clock, or one that re-based mid-session, must
+        # degrade to the sampled window rather than to a wrong number.
+        anchor.set_exact_offset(lambda: None)
+        self.assertAlmostEqual(anchor.offset or 0, 100.0, places=6)
+        self.assertIsNone(anchor.exact_offset)
+
+    def test_failing_exact_offset_provider_does_not_break_the_mapping(self) -> None:
+        anchor, clock = self.make_anchor()
+        anchor.add_sample(100.0, 0.0)
+        run_steady(anchor, clock, 5, video_base=100.0)
+
+        def explode() -> float:
+            raise RuntimeError("probe exploded")
+
+        anchor.set_exact_offset(explode)
+        self.assertIsNone(anchor.exact_offset)
+        self.assertAlmostEqual(anchor.offset or 0, 100.0, places=6)
+
+    def test_no_provider_at_all_keeps_the_original_behaviour(self) -> None:
+        anchor, clock = self.make_anchor()
+        anchor.add_sample(100.0, 0.0)
+        self.assertIsNone(anchor.exact_offset)
+        self.assertFalse(anchor.ready)
+        run_steady(anchor, clock, 5, video_base=100.0)
+        self.assertTrue(anchor.ready)
+        self.assertAlmostEqual(anchor.offset or 0, 100.0, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

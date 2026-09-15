@@ -47,6 +47,108 @@ class AsrAudioLegSelectorTests(unittest.TestCase):
             self.assertIsNone(CompanionApplication._asr_audio_leg_selector(info), msg=extractor)
 
 
+class SourceClockOffsetTests(unittest.TestCase):
+    """C = ptsFirst(asr-audio) - ptsFirst(media video), read off the source clock.
+
+    The two legs ARE independently extracted; that makes their origins
+    different, not incomparable. Live measurement 2026-09-16 held this at
+    +5.006s with a range of 0.000s over 600s, while the window median the
+    anchor used before swung across 9.1s.
+
+    The dangerous case is a leg that never had an absolute clock: the mpegts
+    muxer's default output origin is 1.4s, and subtracting two such origins
+    yields ~0 -- confidently wrong, not merely imprecise. Every such case must
+    return None so the anchor keeps its sampled window.
+    """
+
+    REBASED = 1.4
+    ABSOLUTE_AUDIO = 27886.406
+    ABSOLUTE_VIDEO = 27881.4
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        args = argparse.Namespace(
+            runtime_dir=root / "media",
+            providers_file=root / "providers.json",
+            publish_delay=2.0,
+            cookies_from_browser=None,
+            host="127.0.0.1",
+            port=8765,
+        )
+        self.companion = CompanionApplication(args)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def leg(self, first: float | None, pumps: int = 1):
+        return SimpleNamespace(source_pts_first=[first] * pumps)
+
+    def wire(self, audio, video) -> None:
+        self.companion.asr_audio_ingest = audio
+        self.companion.source_ingest = video
+
+    def test_subtracts_the_two_absolute_origins(self) -> None:
+        self.wire(self.leg(self.ABSOLUTE_AUDIO), self.leg(self.ABSOLUTE_VIDEO, pumps=2))
+        self.assertAlmostEqual(
+            self.companion._source_clock_offset() or 0,
+            self.ABSOLUTE_AUDIO - self.ABSOLUTE_VIDEO,
+            places=6,
+        )
+
+    def test_reads_the_media_legs_video_pump_not_its_audio_pump(self) -> None:
+        # Pump 0 is the video leg; pump 1 accompanies it in the packaging mux.
+        # Reading the wrong pump would shift C by the mux's internal A/V skew.
+        video = SimpleNamespace(source_pts_first=[self.ABSOLUTE_VIDEO, self.ABSOLUTE_VIDEO + 3.0])
+        self.wire(self.leg(self.ABSOLUTE_AUDIO), video)
+        self.assertAlmostEqual(
+            self.companion._source_clock_offset() or 0,
+            self.ABSOLUTE_AUDIO - self.ABSOLUTE_VIDEO,
+            places=6,
+        )
+
+    def test_rebased_origins_are_refused(self) -> None:
+        self.wire(self.leg(self.REBASED), self.leg(self.REBASED, pumps=2))
+        self.assertIsNone(self.companion._source_clock_offset())
+
+    def test_one_rebased_leg_is_refused(self) -> None:
+        self.wire(self.leg(self.ABSOLUTE_AUDIO), self.leg(self.REBASED, pumps=2))
+        self.assertIsNone(self.companion._source_clock_offset())
+
+    def test_a_young_streams_small_absolute_origin_is_accepted(self) -> None:
+        # Regression: the guard first tested for "hours", which is wrong. A
+        # stream that began minutes ago legitimately reports an absolute origin
+        # of a few hundred seconds -- measured 216s live on a freshly started
+        # ANNnewsCH stream, tracking wall clock across two launches 50s apart.
+        # Gating on magnitude silently disabled the exact offset for every
+        # young stream.
+        audio = SimpleNamespace(source_pts_first=[266.479])
+        video = SimpleNamespace(source_pts_first=[261.473, 261.5])
+        self.wire(audio, video)
+        self.assertAlmostEqual(
+            self.companion._source_clock_offset() or 0, 5.006, places=3
+        )
+
+    def test_missing_or_absent_pts_is_refused(self) -> None:
+        self.wire(None, None)
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.wire(self.leg(None), self.leg(self.ABSOLUTE_VIDEO, pumps=2))
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.wire(self.leg(self.ABSOLUTE_AUDIO), SimpleNamespace(source_pts_first=[]))
+        self.assertIsNone(self.companion._source_clock_offset())
+
+    def test_a_leg_that_rebases_mid_session_is_refused(self) -> None:
+        # _pcm_offset is monotonic across a decoder restart, so a fresh
+        # subtraction after a leg restarts no longer describes where pcm 0 sits
+        # on the packaged timeline. Refusing it leaves the sampled anchor in
+        # charge, which re-converges on its own.
+        audio = self.leg(self.ABSOLUTE_AUDIO)
+        self.wire(audio, self.leg(self.ABSOLUTE_VIDEO, pumps=2))
+        self.assertIsNotNone(self.companion._source_clock_offset())
+        audio.source_pts_first = [self.ABSOLUTE_AUDIO + 30.0]
+        self.assertIsNone(self.companion._source_clock_offset())
+
+
 class ProviderApiTests(AioHTTPTestCase):
     async def get_application(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -506,10 +608,14 @@ class ProviderApiTests(AioHTTPTestCase):
                 "translationProviderId": "bailian-qwen35-flash",
             })
             self.assertEqual(selected[:2], ["bailian-fun-asr-2026-02-28", "bailian-qwen35-flash"])
-            # Independent YouTube legs must use the continuously measured
-            # MediaAnchor. First MPEG-TS PTS values are per-leg offsets, not a
-            # shared epoch, and mapping through them makes cues run early.
+            # Independent YouTube legs keep the MediaAnchor, but not as their
+            # primary source of truth: both renditions carry ONE absolute 90kHz
+            # clock (held to a range of 0.000s over 600s live), so the offset is
+            # the difference of the two legs' origins rather than a median of two
+            # stage-output counters. source_pts_mapper stays None because the
+            # mapping now lives on the anchor itself.
             self.assertIsNone(pipeline.source_pts_mapper)
+            self.assertIsNotNone(pipeline.media_anchor)
             await companion._stop_subtitles()
 
     async def test_cookie_import_filters_domains_and_returns_token(self) -> None:

@@ -63,6 +63,34 @@ class MediaAnchor:
         self._deviating_run = 0
         self._deviating_sign = 0
         self._correction: Callable[[], float] | None = None
+        self._exact: Callable[[], float | None] | None = None
+
+    def set_exact_offset(self, provider: Callable[[], float | None] | None) -> None:
+        """Supply an offset measured on the source clock itself, when there is one.
+
+        The window below estimates C by differencing two *stage output*
+        counters. That is why it needs a backlog correction, a rate gate, a
+        window and a jump reset -- and why it still wanders by seconds: the two
+        stages sit at different distances behind the live edge, and that
+        distance is a property of the moment, not of the streams.
+
+        When both legs carry the source's own timestamps, C is just the
+        difference between the two legs' origins, and none of those problems
+        exist. The provider must return None whenever that difference is not
+        trustworthy, so that a missing measurement degrades to the sampled
+        window instead of to a confidently wrong number.
+        """
+        self._exact = provider
+
+    @property
+    def exact_offset(self) -> float | None:
+        """The source-clock offset, or None when it is not measurable."""
+        if self._exact is None:
+            return None
+        try:
+            return self._exact()
+        except Exception:  # a bad probe must not take the cue mapping down with it
+            return None
 
     def set_correction(self, correction: Callable[[], float] | None) -> None:
         """Supply the stage-backlog gap that the window median cannot see.
@@ -125,7 +153,10 @@ class MediaAnchor:
 
     @property
     def ready(self) -> bool:
-        return len(self._window) >= self._min_samples
+        # An exact source-clock offset needs no window to converge, so it makes
+        # the mapping usable from the first tick instead of after
+        # `min_samples` rate-gated pairs.
+        return self.exact_offset is not None or len(self._window) >= self._min_samples
 
     @property
     def samples(self) -> int:
@@ -133,13 +164,21 @@ class MediaAnchor:
 
     @property
     def window_offset(self) -> float | None:
-        """The raw window median, without the caller's stage-backlog correction."""
-        if not self.ready:
+        """The raw window median, without the caller's stage-backlog correction.
+
+        Gated on the window's own sample count, NOT on `ready`: with an exact
+        source-clock offset in force `ready` is true from the first tick, and
+        taking a median of the still-empty window would raise.
+        """
+        if len(self._window) < self._min_samples:
             return None
         return statistics.median(self._window)
 
     @property
     def offset(self) -> float | None:
+        exact = self.exact_offset
+        if exact is not None:
+            return exact
         median = self.window_offset
         if median is None:
             return None
@@ -150,7 +189,7 @@ class MediaAnchor:
     @property
     def spread(self) -> float | None:
         """Interquartile range of the window; a healthy anchor stays < 0.5s."""
-        if not self.ready:
+        if len(self._window) < self._min_samples:
             return None
         ordered = sorted(self._window)
         mid = len(ordered) // 2

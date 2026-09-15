@@ -1603,6 +1603,15 @@ class SubtitlePipeline:
                     "ready": self.media_anchor.ready,
                     "samples": self.media_anchor.samples,
                     "offset": round(self.media_anchor.offset, 3) if self.media_anchor.offset is not None else None,
+                    # The source-clock offset when both legs carry the source's
+                    # own timestamps. When it is present it IS the offset; when
+                    # it is null the offset above came from the window instead,
+                    # so a session that quietly fell back is visible here.
+                    "exactOffset": (
+                        round(self.media_anchor.exact_offset, 3)
+                        if self.media_anchor.exact_offset is not None
+                        else None
+                    ),
                     # Same window median without the stage-backlog correction, so
                     # the correction in force is `offset - windowOffset`.
                     "windowOffset": (

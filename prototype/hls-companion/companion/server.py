@@ -116,6 +116,19 @@ PLAYER_LIVE_SYNC_SECONDS = 12.0
 # exactly on the streams most likely to be slow (2026-09-08 perf experiment).
 PRIVATE_HLS_READY_TIMEOUT_SECONDS = 30.0
 
+# Without `-copyts`, yt-dlp's ffmpeg downloader lets its mpegts muxer re-base
+# each leg's output to the muxer's own default origin -- measured at exactly
+# 1.400s for video and 1.3787s for audio (one AAC frame earlier, 1024/48000).
+# That artifact is a constant of the muxer, not of the stream, so a first PTS
+# below this threshold means the leg has no absolute clock at all.
+#
+# The threshold deliberately does NOT test for "hours": a stream that began
+# minutes ago legitimately reports an absolute origin of a few hundred seconds
+# (measured 216s live on a freshly started ANNnewsCH stream, tracking wall clock
+# across two launches 50s apart). Gating on magnitude rather than on the rebase
+# artifact would silently disable the exact offset for every young stream.
+MPEGTS_REBASE_ORIGIN = 2.0
+
 
 SUPPORTED_AUTH_PLATFORMS = {
     "youtube": {
@@ -160,6 +173,10 @@ class CompanionApplication:
         # pipeline, independent of the video packaging path's health.
         self.asr_audio_ingest: YtDlpLiveIngest | None = None
         self._asr_audio_leg = False
+        # The (audio, video) source-clock origin pair the exact offset was
+        # latched from; a later mismatch means a leg re-based and the exact
+        # offset is refused for the rest of the session.
+        self._source_clock_origins: tuple[float, float] | None = None
         self.providers_path = args.providers_file
         self.providers_config = load_config(self.providers_path)
         self.auth_file = Path(args.providers_file).parent / "auth-snapshot.json"
@@ -971,13 +988,27 @@ class CompanionApplication:
             ingest_status = lambda: self.asr_audio_ingest.snapshot() if self.asr_audio_ingest else {}  # noqa: E731
             media_anchor: MediaAnchor | None = MediaAnchor()
             anchor_probe = self._current_private_media_seconds
-            # The two yt-dlp legs are independently extracted. Their first
-            # MPEG-TS PTS values are not a shared epoch (each leg may start at
-            # a different live-window boundary), so subtracting those first
-            # samples produces a fixed but potentially large subtitle skew.
-            # Use the continuously measured MediaAnchor instead; it samples
-            # both legs only while they advance at real time and re-anchors
-            # after skips.
+            # The two yt-dlp legs ARE independently extracted, but that does not
+            # make their timestamps incomparable -- it makes their origins
+            # different, which is exactly what a subtraction measures. Both
+            # YouTube live renditions carry one absolute 90kHz clock, and
+            # `-copyts` (ytdlp_ingest.command) keeps it on both legs instead of
+            # letting each leg's mpegts muxer re-base to its own 1.4s origin.
+            # Measured over a 600s live session: ptsFirst(asr-audio) -
+            # ptsFirst(media video) held at +5.006s with a range of 0.000s.
+            #
+            # This replaces the sampled anchor as the primary offset. The window
+            # median it differences is `privateMediaSeconds - pcm`, and that
+            # quantity is a sawtooth (packaged segments land whole while PCM
+            # advances smoothly) whose centre sits a stage-frontier gap away from
+            # C -- measured mean -0.719s against a true C of +5.006s. No median,
+            # gate, window or reset recovers C from it, and in the same session
+            # the offset it produced swung across a 9.1s range: cues up to ~4.5s
+            # early and up to ~4s late. The source-clock subtraction has none of
+            # that, so the anchor is kept only as the fallback and as the
+            # diagnostic it is still good for.
+            self._source_clock_origins = None
+            media_anchor.set_exact_offset(self._source_clock_offset)
             source_pts_mapper = None
         else:
             ingest_status = lambda: self.source_ingest.snapshot() if self.source_ingest else {}  # noqa: E731
@@ -1073,6 +1104,52 @@ class CompanionApplication:
     def _current_private_media_seconds(self) -> float | None:
         publisher = self.session.publisher if self.session else None
         return getattr(publisher, "private_media_seconds", None)
+
+    def _source_clock_offset(self) -> float | None:
+        """C = (ASR leg's source origin) - (packaging video leg's source origin).
+
+        Both legs are separate yt-dlp processes, so their PES PTS are only
+        comparable because `-copyts` keeps the source's own timestamps instead
+        of letting each leg's mpegts muxer re-base to its own 1.4s origin.
+        Content at source time T is then at pcm = T - A0 on the subtitle leg and
+        at privateMediaSeconds = T - V0 in the packaged playlist, so the mapping
+        the anchor needs is exactly A0 - V0.
+
+        None means "not measurable on the source clock", never "zero":
+          * a leg that reports no PTS yet, or
+          * a leg whose first PTS is at the mpegts muxer's re-base origin, i.e.
+            it was re-based and never had an absolute clock -- subtracting two
+            such origins yields ~0, which is confidently wrong rather than
+            merely imprecise, or
+          * a leg that re-based mid-session. The origins move but `_pcm_offset`
+            does not restart with them (it is monotonic across a decoder
+            restart), so a fresh subtraction no longer describes where pcm 0
+            sits on the packaged timeline.
+
+        In every one of those cases the anchor falls back to its sampled window,
+        which re-converges on its own.
+        """
+        audio_first = self._leg_origin(self.asr_audio_ingest, 0)
+        video_first = self._leg_origin(self.source_ingest, 0)
+        if audio_first is None or video_first is None:
+            return None
+        if audio_first < MPEGTS_REBASE_ORIGIN or video_first < MPEGTS_REBASE_ORIGIN:
+            return None
+        if self._source_clock_origins is None:
+            # Latch the first pair that was valid. Later reads must match it.
+            self._source_clock_origins = (audio_first, video_first)
+        elif (audio_first, video_first) != self._source_clock_origins:
+            return None
+        return self._source_clock_origins[0] - self._source_clock_origins[1]
+
+    @staticmethod
+    def _leg_origin(ingest: Any, index: int) -> float | None:
+        """One pump's first PES PTS, or None if that leg has not reported one."""
+        first = getattr(ingest, "source_pts_first", None) if ingest is not None else None
+        if not first or index >= len(first):
+            return None
+        value = first[index]
+        return float(value) if value is not None else None
 
     async def _wait_for_private_hls(self) -> float:
         """Wait for one complete private segment and its authoritative PDT."""
