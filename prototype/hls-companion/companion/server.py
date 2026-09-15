@@ -129,6 +129,20 @@ PRIVATE_HLS_READY_TIMEOUT_SECONDS = 30.0
 # artifact would silently disable the exact offset for every young stream.
 MPEGTS_REBASE_ORIGIN = 2.0
 
+# The two legs are launched by the same start() call, milliseconds apart, and
+# each HLS reader begins at a live-window boundary, so their origins can differ
+# only by a few segment durations. Measured: 0.014s between the media leg's own
+# two pumps, 5.006s and 5.016s between the ASR leg and the video leg, and
+# 15.023s when a leg was deliberately started 12s late.
+#
+# The bound guards the one case that would otherwise look perfectly valid: the
+# source clock is 33 bits at 90kHz and wraps every 26.5 hours, so a wrap landing
+# between the two legs' first packets leaves one leg reporting ~95443s and the
+# other ~0 -- both "absolute", both plausible, and their difference wrong by
+# 26.5 hours. Refusing an implausible skew falls back to the sampled window,
+# which is a safe answer, whereas the subtraction would not be.
+SOURCE_CLOCK_MAX_LEG_SKEW = 600.0
+
 
 SUPPORTED_AUTH_PLATFORMS = {
     "youtube": {
@@ -1120,7 +1134,9 @@ class CompanionApplication:
           * a leg whose first PTS is at the mpegts muxer's re-base origin, i.e.
             it was re-based and never had an absolute clock -- subtracting two
             such origins yields ~0, which is confidently wrong rather than
-            merely imprecise, or
+            merely imprecise,
+          * two origins implausibly far apart, which is what a 33-bit PTS wrap
+            landing between the two legs' first packets looks like, or
           * a leg that re-based mid-session. The origins move but `_pcm_offset`
             does not restart with them (it is monotonic across a decoder
             restart), so a fresh subtraction no longer describes where pcm 0
@@ -1134,6 +1150,8 @@ class CompanionApplication:
         if audio_first is None or video_first is None:
             return None
         if audio_first < MPEGTS_REBASE_ORIGIN or video_first < MPEGTS_REBASE_ORIGIN:
+            return None
+        if abs(audio_first - video_first) > SOURCE_CLOCK_MAX_LEG_SKEW:
             return None
         if self._source_clock_origins is None:
             # Latch the first pair that was valid. Later reads must match it.

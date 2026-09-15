@@ -148,6 +148,15 @@ class SourceClockOffsetTests(unittest.TestCase):
         audio.source_pts_first = [self.ABSOLUTE_AUDIO + 30.0]
         self.assertIsNone(self.companion._source_clock_offset())
 
+    def test_an_implausible_leg_skew_is_refused(self) -> None:
+        # The source clock is 33 bits at 90kHz and wraps every 26.5 hours. A
+        # wrap landing between the two legs' first packets leaves one leg at
+        # ~95443s and the other near 0: both look absolute and the subtraction
+        # would be wrong by 26.5 hours, so the skew itself has to be checked.
+        wrapped = SimpleNamespace(source_pts_first=[95443.0])
+        self.wire(wrapped, self.leg(4.0, pumps=2))
+        self.assertIsNone(self.companion._source_clock_offset())
+
 
 class ProviderApiTests(AioHTTPTestCase):
     async def get_application(self):
