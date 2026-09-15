@@ -499,17 +499,24 @@
     if (liveChip) liveChip.hidden = tone === "idle" || tone === "error";
   };
 
-  const seconds = (value) => Number.isFinite(value) ? `${value.toFixed(1)} 秒` : "—";
+  const seconds = (value) => Number.isFinite(value) ? `${value.toFixed(1)} ${updateLabel("unit.seconds", "秒")}` : "—";
   const integer = (value) => Number(value || 0).toLocaleString("zh-CN");
   /* 费用必须按它自己的币种显示。币种由后端随 Provider 一起给出（中国厂商
      人民币，其余美元），前端不做任何换算——没有汇率就不会算错。 */
   const CURRENCY_SYMBOLS = { CNY: "¥", USD: "$" };
+  /* Number(null) 是 0，所以「有没有值」必须显式判断：以前用
+     Number.isFinite(Number(value)) 会把「不可估算」判成 0 元，把 ¥0.0000
+     当成一个真实金额显示出来。 */
+  const hasCost = (value) => value !== null && value !== undefined && value !== ""
+    && Number.isFinite(Number(value));
   const money = (value, currency) => {
-    const code = String(currency || "CNY").toUpperCase();
-    const symbol = CURRENCY_SYMBOLS[code] || `${code} `;
-    return `${symbol}${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`;
+    const amount = Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 6 });
+    const code = String(currency || "").toUpperCase();
+    const symbol = CURRENCY_SYMBOLS[code];
+    // 币种缺失时宁可只给数字，也不默认成人民币——猜错币种比不写币种更糟。
+    return symbol ? `${symbol}${amount}` : code ? `${amount} ${code}` : amount;
   };
-  const costText = (value, currency, reason) => Number.isFinite(Number(value))
+  const costText = (value, currency, reason) => hasCost(value)
     ? money(value, currency)
     : `${updateLabel("cost.notEstimable", "不可估算")}${reason ? `（${reason}）` : ""}`;
   /* 主力与兜底可能是不同币种，这时没有「一个」合计，逐币种列出。 */
@@ -851,15 +858,15 @@
       el("uptime").textContent = seconds(Number(data.uptimeSeconds));
       const subtitles = data.subtitles || {};
       el("subtitleProviderStatus").innerHTML = subtitles.asrProviderId
-        ? `<span><small>ASR</small>${escapeHtml(subtitles.asrProviderLabel || subtitles.asrProviderId)}</span><span><small>翻译</small>${escapeHtml(subtitles.translationProviderLabel || subtitles.translationProviderId || "仅原文")}</span>`
+        ? `<span><small>ASR</small>${escapeHtml(subtitles.asrProviderLabel || subtitles.asrProviderId)}</span><span><small>${updateLabel("cost.translation", "翻译")}</small>${escapeHtml(subtitles.translationProviderLabel || subtitles.translationProviderId || updateLabel("cost.originalOnly", "仅原文"))}</span>`
         : "<span class=\"usage-empty\">未运行</span>";
       const asrUsage = subtitles.asrUsage || { seconds: subtitles.asrSeconds || 0 };
       const translationUsage = subtitles.translationUsage || {};
-      el("asrUsageCost").innerHTML = `<span><small>音频</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒</span><span><small>费用</small>${costText(subtitles.asrEstimatedCostCny, subtitles.asrCostCurrency, subtitles.asrEstimateReason)}</span>`;
-      el("translationUsageCost").innerHTML = `<span><small>输入</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>缓存</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>输出</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>费用</small>${costsText(translationUsage.costsByCurrency, subtitles.translationEstimateReason)}</span>`;
+      el("asrUsageCost").innerHTML = `<span><small>${updateLabel("cost.audio", "音频")}</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${updateLabel("unit.seconds", "秒")}</span><span><small>${updateLabel("cost.costLabel", "费用")}</small>${costText(subtitles.asrEstimatedCostCny, subtitles.asrCostCurrency, subtitles.asrEstimateReason)}</span>`;
+      el("translationUsageCost").innerHTML = `<span><small>${updateLabel("cost.input", "输入")}</small>${integer(translationUsage.nonCachedInputTokens)}</span><span><small>${updateLabel("cost.cached", "缓存")}</small>${integer(translationUsage.cachedInputTokens)}</span><span><small>${updateLabel("cost.output", "输出")}</small>${integer(translationUsage.outputTokens)}</span><span class=\"usage-cost\"><small>${updateLabel("cost.costLabel", "费用")}</small>${costsText(translationUsage.costsByCurrency, subtitles.translationEstimateReason)}</span>`;
       el("totalUsageCost").textContent = costsText(subtitles.costsByCurrency, subtitles.totalEstimateReason);
       const latency = subtitles.avgTranslationLatencyMs;
-      el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} 秒` : "—";
+      el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} ${updateLabel("unit.seconds", "秒")}` : "—";
       updateSubtitleBudget(subtitles, measuredDelay, Number(data.targetDelaySeconds));
       if (data.quality) el("resolution").textContent = `${data.quality.width || "?"}×${data.quality.height || "?"}${data.quality.fps ? ` @ ${data.quality.fps}fps` : ""}`;
     } catch (error) {
@@ -1610,7 +1617,7 @@
       : "—";
     const scheduler = subtitleScheduler ? subtitleScheduler.stats : null;
     el("schedulerDrops").textContent = scheduler
-      ? `${scheduler.droppedLateCues} 丢 / ${scheduler.lateCues} 迟到`
+      ? `${scheduler.droppedLateCues} ${updateLabel("cost.dropped", "丢")} / ${scheduler.lateCues} ${updateLabel("cost.late", "迟到")}`
       : "—";
 
     const spans = cueDurationPercentiles();

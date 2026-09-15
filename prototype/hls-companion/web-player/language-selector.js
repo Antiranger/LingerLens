@@ -40,12 +40,19 @@
 
   /* Display names may be localized with Intl.DisplayNames for the UI locale;
    * server validation stays authoritative and catalog-independent. */
-  let displayNames = null;
+  const displayNamesByLocale = new Map();
   function localizedName(tag, locale) {
+    const wanted = locale || "zh-CN";
     try {
       if (typeof Intl !== "undefined" && Intl.DisplayNames) {
-        displayNames = displayNames || new Intl.DisplayNames([locale || "zh-CN"], { type: "language" });
-        const name = displayNames.of(tag);
+        // 按语言缓存，不是只建一次：以前写成 `displayNames = displayNames || new ...`，
+        // 于是第一次用 zh-CN 建好之后，切到英文仍然拿中文名（英文界面里显示「日语」）。
+        let names = displayNamesByLocale.get(wanted);
+        if (!names) {
+          names = new Intl.DisplayNames([wanted], { type: "language" });
+          displayNamesByLocale.set(wanted, names);
+        }
+        const name = names.of(tag);
         if (name && name !== tag) return name;
       }
     } catch (_) { /* older browser: catalog English name */ }
@@ -109,7 +116,9 @@
    * options: { value, placeholder, locale, onChange(tag), disabled } */
   function createLanguageSelector(host, options) {
     const settings = options || {};
-    const locale = settings.locale || (typeof document !== "undefined" ? document.documentElement.lang : "zh-CN");
+    // 必须是可变的：语言名由 Intl.DisplayNames 按界面语言本地化，若在创建时
+    // 用 const 捕获一次，切到英文后选择器里仍然显示「日语」。
+    let locale = settings.locale || (typeof document !== "undefined" ? document.documentElement.lang : "zh-CN");
     comboCounter += 1;
     const listId = `lang-listbox-${comboCounter}`;
     const fallback = host.querySelector(".language-native-fallback");
@@ -145,6 +154,13 @@
       close();
       if (notify && typeof settings.onChange === "function") settings.onChange(tag);
     }
+
+    // 界面语言变了就重新取 locale 并按新语言重写已选中的那行名字。
+    document.addEventListener("i18n:changed", () => {
+      locale = (typeof document !== "undefined" && document.documentElement.lang)
+        || settings.locale || "zh-CN";
+      commit(value, false);
+    });
 
     function open({ showAll = false } = {}) {
       if (showAll) input.value = "";
