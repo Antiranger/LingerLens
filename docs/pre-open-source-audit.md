@@ -44,7 +44,7 @@
 | `docs/live-delay-solution.md` | 本机 FFmpeg 安装路径里的 Windows 用户名 |
 | `docs/speaker-intonation-postmortem-and-replan.md` | 一次性临时工作目录路径，**同时泄漏了一个会话 UUID 和会话 slug** |
 | `docs/notes/progress.md` ×2 | `%TEMP%` 下的交接文件路径 |
-| `docs/audit-2026-09-core-algorithm-and-stability.md` | 一段 traceback 里的 `D:\<python>\lib\...` |
+| `docs/audit-2026-09-core-algorithm-and-stability.md` | 一段 traceback 里带着作者机器上的 Python 安装盘符路径 |
 
 已全部替换为中性写法（`%TEMP%/…`、`<python>/lib/…`、"本机独立安装的那份"），**含义未变**。
 
