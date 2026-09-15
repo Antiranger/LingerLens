@@ -42,6 +42,19 @@
   const diagnosticsLog = window.LagLingoDiagnostics?.createDiagnosticsLog() || null;
   let diagnosticsClient = null;
   let diagnosticsBar = null;
+  let updateClient = null;
+  let buildIdentity = null;
+
+  /* 版本与构建时间：这两样合起来才能回答「我手上这份是不是最新」。 */
+  function describeBuild(data) {
+    if (!data?.version) return null;
+    const stamp = data.builtAt ? new Date(data.builtAt) : null;
+    const when = stamp && !Number.isNaN(stamp.getTime())
+      ? `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, "0")}-${String(stamp.getDate()).padStart(2, "0")} `
+        + `${String(stamp.getHours()).padStart(2, "0")}:${String(stamp.getMinutes()).padStart(2, "0")}`
+      : "—";
+    return { version: data.version, builtAt: when, packaged: Boolean(data.packaged) };
+  }
 
   function diagnosticsContext() {
     const label = (key, fallback) => window.I18N?.t(key, null, fallback) || fallback;
@@ -49,6 +62,8 @@
       [label("diag.ctx.locale", "界面语言")]: window.I18N?.current || document.documentElement.lang || "zh-CN",
       [label("diag.ctx.state", "会话状态")]: lastSessionState,
       [label("diag.ctx.target", "目标延迟")]: `${el("targetDelay")?.value ?? "—"}s`,
+      [label("diag.ctx.build", "构建")]: buildIdentity
+        ? `${buildIdentity.version} · ${buildIdentity.builtAt} · ${buildIdentity.packaged ? "packaged" : "dev"}` : "—",
       [label("diag.ctx.page", "页面")]: location.href,
       [label("diag.ctx.useragent", "用户代理")]: navigator.userAgent,
     };
@@ -116,6 +131,85 @@
     log: diagnosticsLog,
     onCopy: copyDiagnostics,
   }) || null;
+
+  /* ── 更新 ──────────────────────────────────────────────────
+     主进程在启动 10 秒后自己查一次；这里只负责把状态显示出来，以及用户按
+     下按钮时触发检查/下载。下载期间才轮询进度，其余时候一次都不发。 */
+  const updateLabel = (key, fallback, vars) =>
+    window.I18N?.t(key, vars, fallback) || Object.entries(vars || {})
+      .reduce((text, [name, value]) => text.replace(`{${name}}`, value), fallback);
+
+  let lastUpdateSignature = null;
+  let updateProgressTimer = null;
+
+  function stopUpdateProgress() {
+    if (updateProgressTimer) clearInterval(updateProgressTimer);
+    updateProgressTimer = null;
+  }
+
+  function renderUpdate(state) {
+    const identity = describeBuild(state);
+    if (identity) {
+      buildIdentity = identity;
+      const node = el("diagBuild");
+      if (node) {
+        node.textContent = `${identity.version} · ${identity.builtAt}`;
+        node.title = `${identity.version} · ${identity.builtAt} · ${identity.packaged ? "packaged" : "dev"}`;
+      }
+    }
+    const update = state?.update || {};
+    const version = update.update?.version || "";
+    const signature = `${update.status}:${version}:${update.error || ""}`;
+    const button = el("diagUpdate");
+    if (!button) return;
+    if (signature === lastUpdateSignature) {
+      // Progress changes far more often than status; only the label moves.
+      if (update.status === "downloading" && update.progress) {
+        const percent = Math.min(99, Math.round((update.progress.received / Math.max(1, update.progress.total)) * 100));
+        button.textContent = updateLabel("diag.update.downloading", `下载中 {percent}%`, { percent });
+      }
+      return;
+    }
+    lastUpdateSignature = signature;
+    button.hidden = false;
+    button.disabled = false;
+    stopUpdateProgress();
+
+    if (update.status === "available") {
+      button.textContent = updateLabel("diag.update.download", "下载更新 {version}", { version });
+      // 模板串里不能写 ${current}：那是 JS 插值，不是 updateLabel 的占位符。
+      diagnosticsBar?.push("info", "update",
+        updateLabel("diag.update.found", "发现新版本 {version}（当前 {current}）",
+          { version, current: state?.version || "" }));
+    } else if (update.status === "downloading") {
+      button.disabled = true;
+      button.textContent = updateLabel("diag.update.downloading", "下载中 {percent}%", { percent: 0 });
+      updateProgressTimer = setInterval(() => { void updateClient?.status().then(renderUpdate); }, 1000);
+    } else if (update.status === "ready" || update.status === "installing") {
+      button.disabled = true;
+      button.textContent = updateLabel("diag.update.restarting", "正在重启并安装…");
+      diagnosticsBar?.push("info", "update", updateLabel("diag.update.ready", "更新已下载并校验通过，即将重启安装"));
+    } else if (update.status === "failed") {
+      button.textContent = updateLabel("diag.update.retry", "重试检查更新");
+      // 检查失败（离线、公司网络、还没有 release）是常态，不该刷屏。
+      if (update.error && update.error !== "no fetch available") {
+        diagnosticsBar?.push("warn", "update", updateLabel("diag.update.failed", "检查更新失败：{error}", { error: update.error }));
+      }
+    } else if (update.status === "current") {
+      button.textContent = updateLabel("diag.update.current", "已是最新版本");
+    } else {
+      button.textContent = updateLabel("diag.update.check", "检查更新");
+    }
+  }
+
+  updateClient = window.LagLingoDiagnostics?.createUpdateClient({ onUpdate: renderUpdate }) || null;
+  el("diagUpdate")?.addEventListener("click", async () => {
+    const status = updateClient?.get()?.update?.status;
+    if (status === "available") await updateClient.install();
+    else await updateClient.check();
+    renderUpdate(updateClient?.get());
+  });
+  void updateClient?.status().then(renderUpdate);
   function providerHasCredential(provider) {
     return provider?.apiKeyConfigured === true
       || Boolean(provider?.apiKey && provider.apiKey !== "***");

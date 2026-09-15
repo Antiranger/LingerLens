@@ -5,7 +5,7 @@ module.exports = {
   asar: true,
   electronDist: 'build-desktop/electron',
   afterPack: async context => require('./audit-package.cjs').auditPackage(context.appOutDir),
-  files: ['desktop/main.cjs', 'desktop/backend.cjs', 'desktop/smoke.cjs', 'desktop/loading.html', 'package.json'],
+  files: ['desktop/main.cjs', 'desktop/backend.cjs', 'desktop/updater.cjs', 'desktop/smoke.cjs', 'desktop/loading.html', 'package.json'],
   extraResources: [
     { from: 'build-desktop/backend/laglingo-backend', to: 'backend', filter: ['**/*'] },
     { from: 'LICENSE', to: 'LICENSE-LagLingo.txt' },

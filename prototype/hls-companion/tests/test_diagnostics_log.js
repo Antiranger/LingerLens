@@ -6,6 +6,7 @@ const {
   createDiagnosticsLog,
   createDiagnosticsClient,
   createDiagnosticsBar,
+  createUpdateClient,
   formatDiagnostics,
   hintFor,
 } = require(path.resolve(__dirname, "../web-player/diagnostics-log.js"));
@@ -353,6 +354,78 @@ test("a bar without its DOM, or without a log, is a null rather than a crash", (
   assert.equal(createDiagnosticsBar({ document: createDocument([]), log: createDiagnosticsLog() }), null);
   assert.equal(createDiagnosticsBar({ document: createDocument(BAR_IDS) }), null);
 });
+
+/* ── 更新客户端 ── */
+
+function updateServer(routes) {
+  const seen = [];
+  const fetchFn = async (url, options = {}) => {
+    seen.push(`${options.method || "GET"} ${url}`);
+    const handler = routes[`${options.method || "GET"} ${url}`];
+    if (!handler) return { ok: false, status: 404, json: async () => ({}) };
+    // `http` is the transport status; the rest is the body. They are different
+    // things and the client treats them differently.
+    const { http = 200, ...body } = typeof handler === "function" ? handler() : handler;
+    return { ok: http < 400, status: http, json: async () => body };
+  };
+  return { fetchFn, seen };
+}
+
+test("the update client reports the build identity alongside the update state", async () => {
+  const { fetchFn } = updateServer({
+    "GET /api/app-update": { version: "0.1.0", packaged: true, builtAt: "2026-09-15T04:17:38.000Z", update: { status: "idle" } },
+  });
+  const client = createUpdateClient({ fetch: fetchFn });
+  const state = await client.status();
+  assert.equal(state.version, "0.1.0");
+  assert.equal(state.packaged, true);
+  assert.equal(state.update.status, "idle");
+});
+
+test("a 502 from install is surfaced with its reason, not swallowed as a transport error", async () => {
+  const { fetchFn } = updateServer({
+    "POST /api/app-update/install": { http: 502, status: "failed", error: "checksum mismatch" },
+  });
+  const client = createUpdateClient({ fetch: fetchFn });
+  const state = await client.install();
+  assert.equal(state.update.status, "failed");
+  assert.match(state.update.error, /checksum mismatch/);
+});
+
+test("a transport failure leaves the client usable and reporting failed", async () => {
+  const client = createUpdateClient({ fetch: async () => { throw new Error("ECONNREFUSED"); } });
+  assert.equal((await client.status()).update.status, "failed");
+  assert.match((await client.check()).update.error, /ECONNREFUSED/);
+  assert.equal(typeof client.get(), "object");
+});
+
+test("check and install hit the routes the main process serves", async () => {
+  const { fetchFn, seen } = updateServer({
+    "GET /api/app-update": { version: "0.1.0", update: { status: "idle" } },
+    "POST /api/app-update/check": { status: "current" },
+    "POST /api/app-update/install": { status: "ready" },
+  });
+  const client = createUpdateClient({ fetch: fetchFn });
+  await client.status();
+  await client.check();
+  await client.install();
+  assert.deepEqual(seen, [
+    "GET /api/app-update",
+    "POST /api/app-update/check",
+    "POST /api/app-update/install",
+  ]);
+});
+
+test("the plain-text report carries the build identity so a bug report is unambiguous", () => {
+  const log = createDiagnosticsLog({ now: () => 1 });
+  const text = formatDiagnostics({
+    log,
+    context: { "构建": "0.1.0 · 2026-09-15 12:17 · packaged", "界面语言": "zh-CN" },
+    countLabel: "记录",
+  });
+  assert.ok(text.includes("构建: 0.1.0 · 2026-09-15 12:17 · packaged"));
+});
+
 
 /* ── 复制出来的诊断文本 ── */
 

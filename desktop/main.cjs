@@ -1,7 +1,10 @@
 const { app, BrowserWindow, protocol, net, session, Menu, dialog, shell, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
+const { spawn } = require('node:child_process');
 const { startBackend } = require('./backend.cjs');
+const { createUpdater } = require('./updater.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'laglingo', privileges: {
   standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true,
@@ -15,6 +18,68 @@ let window;
 let backend;
 let quitting = false;
 let endpoint;
+let updater;
+
+/*
+ * Build identity. `app.getVersion()` alone cannot tell two builds of 0.1.0
+ * apart, which is exactly the confusion that made a week-old install look like
+ * a release without the diagnostics feature. The executable's own mtime is the
+ * cheapest thing that actually distinguishes them.
+ */
+function buildInfo() {
+  let builtAt = null;
+  try {
+    builtAt = fsSync.statSync(process.execPath).mtime.toISOString();
+  } catch { /* stat can fail on an unusual install layout; not worth failing over */ }
+  return { version: app.getVersion(), packaged: app.isPackaged, builtAt, electron: process.versions.electron };
+}
+
+/*
+ * Relaunch after an update.
+ *
+ * The installer cannot replace a running executable, and `runAfterFinish` is
+ * deliberately false so a fresh install does not launch itself. That leaves
+ * nobody to start the app again, so wait for the installer to finish and start
+ * it detached. `ping` delays without needing a console, unlike `timeout`.
+ */
+function scheduleRelaunch(target, seconds = 12) {
+  if (process.platform !== 'win32' || !target) return;
+  try {
+    spawn('cmd.exe', ['/c', `ping -n ${seconds + 1} 127.0.0.1 >nul & start "" "${target}"`],
+      { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch { /* If the relaunch cannot be scheduled the user still has a fresh install. */ }
+}
+
+async function handleAppUpdate(request, url) {
+  const json = (body, status = 200) => new Response(JSON.stringify(body), {
+    status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+  if (url.pathname === '/api/app-update' && request.method === 'GET') {
+    return json({ ...buildInfo(), update: updater.getState() });
+  }
+  if (url.pathname === '/api/app-update/check' && request.method === 'POST') {
+    return json(await updater.check());
+  }
+  if (url.pathname === '/api/app-update/install' && request.method === 'POST') {
+    const destination = path.join(app.getPath('temp'), `LagLingo-${updater.getState().update?.version || 'update'}-setup.exe`);
+    const state = await updater.download(destination);
+    if (state.status !== 'ready') return json(state, 502);
+    try {
+      spawn(state.installerPath, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+    } catch (error) {
+      return json({ ...state, status: 'failed', error: `无法运行安装程序：${error.message}` }, 502);
+    }
+    // Answer the renderer first, then step aside so the installer can replace
+    // this executable, and arrange for the new build to come back up.
+    setTimeout(() => {
+      scheduleRelaunch(process.execPath);
+      quitting = true;
+      void (async () => { try { await backend?.stop(); } finally { app.exit(); } })();
+    }, 750);
+    return json({ ...state, status: 'installing', relaunchInSeconds: 12 });
+  }
+  return json({ error: 'not found' }, 404);
+}
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -80,11 +145,15 @@ async function start() {
     onExit: () => { if (endpoint && !quitting) void fail(); } });
   endpoint = await backend.ready;
   if (quitting) return;
+  updater = createUpdater({ currentVersion: app.getVersion() });
   // Stable origin preserves localStorage even though the private backend port
   // changes. HLS stays streaming HTTP internally; no renderer Node privileges.
   protocol.handle('laglingo', async request => {
     const url = new URL(request.url);
     if (url.hostname !== 'app' || url.port || url.username || url.password) return new Response('', { status: 403 });
+    // Update control belongs to the main process: it is the only side that can
+    // replace the executable, and nothing it does belongs in the backend.
+    if (url.pathname.startsWith('/api/app-update')) return handleAppUpdate(request, url);
     const target = endpoint.origin + url.pathname + url.search;
     const headers = new Headers(request.headers);
     headers.set('X-LagLingo-Session', endpoint.token);
@@ -99,6 +168,10 @@ async function start() {
     } catch { return new Response('Backend unavailable', { status: 503 }); }
   });
   await window.loadURL('laglingo://app/');
+  // Check once per run, well after startup so it never competes with the first
+  // stream a user opens. Failures are reported, never retried in a loop: an
+  // update check that hammers a dead host is worse than no update check.
+  setTimeout(() => { void updater?.check(); }, 10000);
   if (smoke) {
     const { runSmoke } = require('./smoke.cjs');
     await runSmoke({ window, dataDir: app.getPath('userData'), outputDir: smoke, backendPid: backend.pid,

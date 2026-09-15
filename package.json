@@ -20,6 +20,7 @@
     "desktop:refresh": "npm run desktop:backend && npm run desktop:pack",
     "desktop:sync-ui": "node scripts/sync-web-player.js",
     "desktop:dist": "electron-builder --config desktop/builder.cjs --win nsis --x64 --publish never",
+    "release:manifest": "node scripts/make-update-manifest.js",
     "desktop:test": "node --test tests/desktop.test.js && .venv-desktop\\Scripts\\python.exe -m unittest discover -s desktop/tests -p test_*.py"
   },
   "engines": {

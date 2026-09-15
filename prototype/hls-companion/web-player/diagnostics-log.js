@@ -244,6 +244,58 @@
     };
   }
 
+  /*
+   * 更新接口。它由主进程提供，不经过后端：只有主进程能替换正在运行的可执行
+   * 文件，所以这些路由在 protocol.handle 里就被截下了。
+   *
+   * `status` 同时带回这份构建的身份（版本、是否打包、构建时间）—— 这正是
+   * 「我手上这份是不是最新」唯一能一眼回答的地方。
+   */
+  function createUpdateClient(options = {}) {
+    const fetchFn = options.fetch || (typeof global.fetch === "function" ? global.fetch.bind(global) : null);
+    const onUpdate = options.onUpdate || (() => {});
+    let latest = null;
+
+    async function call(path, method) {
+      const response = await fetchFn(path, { method, cache: "no-store" });
+      const data = await response.json().catch(() => ({}));
+      // 502 是「下载失败」，它带着可读的原因，不是传输层错误。
+      if (!response.ok && response.status !== 502) throw new Error(`HTTP ${response.status}`);
+      return data;
+    }
+
+    function publish(data) {
+      latest = data;
+      onUpdate(data);
+      return data;
+    }
+
+    return {
+      async status() {
+        try {
+          return publish(await call("/api/app-update", "GET"));
+        } catch (error) {
+          return publish({ error: error.message || String(error), update: { status: "failed" } });
+        }
+      },
+      async check() {
+        try {
+          return publish({ ...(latest || {}), update: await call("/api/app-update/check", "POST") });
+        } catch (error) {
+          return publish({ ...(latest || {}), update: { status: "failed", error: error.message || String(error) } });
+        }
+      },
+      async install() {
+        try {
+          return publish({ ...(latest || {}), update: await call("/api/app-update/install", "POST") });
+        } catch (error) {
+          return publish({ ...(latest || {}), update: { status: "failed", error: error.message || String(error) } });
+        }
+      },
+      get: () => latest,
+    };
+  }
+
   function createDiagnosticsBar(options = {}) {
     const doc = options.document || global.document;
     const log = options.log;
@@ -387,6 +439,7 @@
     createDiagnosticsLog,
     createDiagnosticsClient,
     createDiagnosticsBar,
+    createUpdateClient,
     formatDiagnostics,
     hintFor,
   };

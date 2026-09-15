@@ -311,6 +311,8 @@ test("the diagnostics bar is wired end to end and every id it needs exists", () 
   assert.match(html, /id="diagList"/);
   assert.match(html, /id="diagCopy"/);
   assert.match(html, /id="diagClear"/);
+  assert.match(html, /id="diagUpdate"/);
+  assert.match(html, /id="diagBuild"/);
   assert.match(html, /diagnostics-log\.js/);
   // The collapsed bar must not cost vertical space: it lives inside the top
   // bar's own status area, and only the expanded panel leaves the flow.

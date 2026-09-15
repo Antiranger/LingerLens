@@ -1,0 +1,87 @@
+name: Publish desktop release
+
+# Publishes an installer and the update manifest to the PUBLIC download channel.
+# The source repository stays private; only release assets are public, which is
+# what lets the installed app check for updates without any credentials.
+#
+# Requires a secret named RELEASES_TOKEN: a fine-grained PAT with
+# "Contents: read and write" on the release repository. The workflow's own
+# GITHUB_TOKEN is scoped to this repository and cannot publish there.
+#
+# Triggered by a tag so the version in package.json, the tag, and the artifact
+# name cannot drift apart: the job fails if they disagree.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASES_REPO: Antiranger/LagLingo-releases
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install build dependencies
+        run: |
+          python -m venv .venv-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv-desktop/Scripts/python.exe -m pip install -r desktop/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --ignore-scripts
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $pkg) {
+            Write-Error "tag v$tag does not match package.json version $pkg"
+            exit 1
+          }
+      - name: Verify the tree before building
+        run: |
+          npm run guard:release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run guard:tracked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build backend and installer
+        run: |
+          npm run desktop:refresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run desktop:dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the update manifest from the artifact just produced
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $name = "LagLingo-$version-windows-x64-setup.exe"
+          $url = "https://github.com/$env:RELEASES_REPO/releases/download/v$version/$name"
+          node scripts/make-update-manifest.js "release/$name" "$url"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish to the public download channel
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            Write-Error "RELEASES_TOKEN is not set; refusing to publish nowhere"
+            exit 1
+          }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $name = "LagLingo-$version-windows-x64-setup.exe"
+          gh release create "v$version" --repo "$env:RELEASES_REPO" --title "LagLingo $version" `
+            --notes "Unsigned preview build. Windows SmartScreen may warn on first run." `
+            "release/$name" "release/manifest.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "published v$version to $env:RELEASES_REPO"

@@ -16,7 +16,7 @@ function auditPackage(directory) {
   }
   walk(root);
   const allowed = new Set(['/desktop', '/desktop/main.cjs', '/desktop/backend.cjs',
-    '/desktop/smoke.cjs', '/desktop/loading.html', '/package.json']);
+    '/desktop/updater.cjs', '/desktop/smoke.cjs', '/desktop/loading.html', '/package.json']);
   for (const file of asar.listPackage(path.join(root, 'app.asar'))) {
     if (!allowed.has(file.replaceAll('\\', '/'))) findings.push(file);
   }

@@ -379,6 +379,14 @@ button[aria-busy="true"]::before {
   line-height: 1.5;
 }
 .diag-actions { display: flex; gap: var(--s2); }
+/* 构建标识推到最右：它是参考信息，不该和操作按钮抢注意力。 */
+.diag-build {
+  margin-left: auto;
+  align-self: center;
+  font-size: 11px;
+  color: var(--ink-45);
+  white-space: nowrap;
+}
 .diag-list {
   margin: 0;
   padding: 0;

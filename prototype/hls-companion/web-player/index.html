@@ -40,8 +40,10 @@
       <div id="diagBody" class="diagbar-body" hidden>
         <p id="diagHint" class="diag-hint" hidden></p>
         <div class="diag-actions">
+          <button id="diagUpdate" class="btn btn-go btn-compact" type="button" hidden>检查更新</button>
           <button id="diagCopy" class="btn btn-secondary btn-compact" type="button">复制诊断信息</button>
           <button id="diagClear" class="btn btn-ghost btn-compact" type="button">清空</button>
+          <span id="diagBuild" class="diag-build mono" title="当前构建"></span>
         </div>
         <ol id="diagList" class="diag-list"></ol>
         <p id="diagEmpty" class="diag-empty">还没有需要报告的运行信息。</p>
