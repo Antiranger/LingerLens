@@ -1246,8 +1246,13 @@
           : event.target.value;
     }
     if (field === "kind") {
+      // 模型、地址和选项描述的是"怎么连"，必须跟着协议一起换。之前这里保留
+      // 旧值并让用户自己核对，结果就是协议写 Soniox、地址是 DashScope、模型是
+      // Fun-ASR 这样连不上的组合，而且用户没有任何依据知道该填什么。
+      // 名称和 API Key 不动：前者是用户起的名字，后者是凭据，清掉不可恢复。
+      applyProviderKindDefaults(provider, provider.kind);
       renderProviderProfiles();
-      el("modelSettingsFeedback").textContent = "协议已修改，保留了现有模型和地址，请检查它们是否匹配新协议。";
+      el("modelSettingsFeedback").textContent = "已应用该协议的默认模型与地址（名称和 API Key 保持不变）。";
     }
   }
 
