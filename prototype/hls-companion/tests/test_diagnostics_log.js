@@ -7,7 +7,9 @@ const {
   createDiagnosticsClient,
   createDiagnosticsBar,
   createUpdateClient,
+  createDevLogClient,
   formatDiagnostics,
+  formatRecordLines,
   hintFor,
 } = require(path.resolve(__dirname, "../web-player/diagnostics-log.js"));
 
@@ -470,4 +472,81 @@ test("known failure signatures get an actionable hint and unknown ones do not", 
   assert.match(hintFor("translations failed for 3 cues"), /翻译/);
   assert.match(hintFor("this stream requires a cookie"), /Cookie/);
   assert.equal(hintFor("something entirely new"), null);
+});
+
+/*
+ * 一个真实的直播死链。它以前匹配不到任何规则，于是中文界面上只剩一句英文的
+ * yt-dlp 原文、没有任何可操作的解释——而这恰恰是最常见的一种失败。
+ */
+test("a dead stream link gets its own hint rather than none", () => {
+  const hint = hintFor("yt-dlp format probe failed (exit 1): ERROR: [youtube] aaaaaaaaaaa: This video is unavailable");
+  assert.match(hint, /换一个正在直播的链接/);
+  // 顺序很重要：`Backend unavailable` 必须继续归网络那条，处置办法完全不同。
+  assert.match(hintFor("Backend unavailable"), /本地后台没有响应/);
+  assert.doesNotMatch(hintFor("Backend unavailable"), /换一个正在直播的链接/);
+});
+
+/* ── 开发日志落盘 ── */
+
+test("dev log lines carry a stable level token, not a localized one", () => {
+  const rows = [
+    { t: new Date(2026, 8, 15, 16, 24, 25).getTime() / 1000, level: "error", source: "ui", message: "boom" },
+    { t: new Date(2026, 8, 15, 16, 24, 26).getTime() / 1000, level: "warn", source: "request", message: "rejected" },
+  ];
+  assert.deepEqual(formatRecordLines(rows), [
+    "2026-09-15 16:24:25  [error] ui  boom",
+    "2026-09-15 16:24:26  [warn] request  rejected",
+  ]);
+  assert.deepEqual(formatRecordLines(null), [], "no rows is not a crash");
+});
+
+test("the dev log client asks the main process and reports what came back", async () => {
+  const calls = [];
+  let reply = { enabled: true, file: "C:\\logs\\a.log", lines: 0, error: null, active: true };
+  const client = createDevLogClient({
+    fetch: async (url, options = {}) => {
+      calls.push(`${options.method || "GET"} ${url}`);
+      if (url.endsWith("/start")) reply = { ...reply, file: "C:\\logs\\new.log" };
+      if (url.endsWith("/stop")) reply = { ...reply, enabled: false, active: false, file: null };
+      if (url === "/api/diagnostics" && options.method === "POST") {
+        return { ok: true, json: async () => ({ ...reply, written: 2 }) };
+      }
+      return { ok: true, json: async () => reply };
+    },
+  });
+
+  assert.equal(client.get(), null, "nothing is known before the first status()");
+  assert.equal((await client.status()).enabled, true);
+  assert.equal(await client.send(["a", "b"]), 2);
+  assert.equal((await client.start()).file, "C:\\logs\\new.log");
+  assert.equal((await client.stop()).active, false);
+  await client.reveal();
+  assert.deepEqual(calls, [
+    "GET /api/diagnostics",
+    "POST /api/diagnostics",
+    "POST /api/diagnostics/start",
+    "POST /api/diagnostics/stop",
+    "POST /api/diagnostics/reveal",
+  ]);
+});
+
+test("the dev log client never posts records when logging is not armed", async () => {
+  const calls = [];
+  const client = createDevLogClient({
+    fetch: async (url, options = {}) => {
+      calls.push(`${options.method || "GET"} ${url}`);
+      return { ok: true, json: async () => ({ enabled: false, active: false, file: null, lines: 0 }) };
+    },
+  });
+  await client.status();
+  assert.equal(await client.send(["a"]), 0);
+  assert.deepEqual(calls, ["GET /api/diagnostics"], "an unarmed app sends no records at all");
+});
+
+test("a failed control call surfaces as state instead of throwing", async () => {
+  const client = createDevLogClient({ fetch: async () => { throw new Error("Failed to fetch"); } });
+  await client.status();
+  const state = await client.start();
+  assert.equal(state.enabled, false);
+  assert.match(state.error, /Failed to fetch/);
 });

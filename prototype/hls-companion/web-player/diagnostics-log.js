@@ -461,7 +461,7 @@
    */
   function createDevLogClient(options = {}) {
     const fetchFn = options.fetch || (typeof global.fetch === "function" ? global.fetch.bind(global) : null);
-    const off = { enabled: false, file: null, error: null, lines: 0, terminalOnly: false };
+    const off = { enabled: false, file: null, error: null, lines: 0, terminalOnly: false, active: false };
     let state = null;
 
     async function status() {
@@ -475,9 +475,24 @@
       return state;
     }
 
+    /* 三个控制动作都返回新的完整状态，调用方直接拿它渲染，不用再问一次。 */
+    async function control(action) {
+      try {
+        const response = await fetchFn(`/api/diagnostics/${action}`, { method: "POST", cache: "no-store" });
+        const data = await response.json().catch(() => ({}));
+        state = { ...off, ...state, ...data };
+      } catch (error) {
+        state = { ...off, ...state, error: error.message || String(error) };
+      }
+      return state;
+    }
+
     return {
       status,
       get: () => state,
+      start: () => control("start"),
+      stop: () => control("stop"),
+      reveal: () => control("reveal"),
       async send(lines) {
         const payload = Array.isArray(lines) ? lines.filter(Boolean) : [];
         if (!state?.enabled || !payload.length) return 0;

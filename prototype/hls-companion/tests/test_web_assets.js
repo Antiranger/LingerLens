@@ -347,6 +347,26 @@ test("the diagnostics bar is wired end to end and every id it needs exists", () 
   for (const key of ["diag.hint.media", "diag.level.error", "diag.report.title", "diag.ctx.useragent"]) {
     assert.ok(i18n.includes(`"${key}"`), `i18n is missing ${key}`);
   }
+
+  // The packaged build has no launcher script to preset an environment
+  // variable, so these two buttons are the only way a user can produce a log
+  // file at all. Losing the wiring silently removes that ability.
+  assert.match(html, /id="diagLogToggle"/);
+  assert.match(html, /id="diagLogOpen"/);
+  assert.match(js, /el\("diagLogToggle"\)\?\.addEventListener\("click"/);
+  assert.match(js, /el\("diagLogOpen"\)\?\.addEventListener\("click"/);
+  // Starting a recording must also write out what already happened: the user is
+  // only here because something already went wrong.
+  assert.match(js, /function toggleDevLog[\s\S]{0,400}?devLogCursor = 0;/);
+  for (const key of ["diag.log.record", "diag.log.stop", "diag.log.open", "diag.log.private"]) {
+    const occurrences = i18n.split(`"${key}"`).length - 1;
+    assert.equal(occurrences, 5, `${key} must exist in all five locales, found ${occurrences}`);
+  }
+  // Button labels are composed in JS, so they are outside the reverse-lookup
+  // table i18n uses for dynamic sinks; the locale-change event is what keeps
+  // them from freezing in the previous language.
+  assert.match(i18n, /dispatchEvent\(new CustomEvent\("i18n:changed"/);
+  assert.match(js, /addEventListener\("i18n:changed"/);
 });
 
 test("realtime workbench UI elements and live message contracts are wired", () => {

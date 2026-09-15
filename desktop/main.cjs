@@ -3,7 +3,8 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const { spawn } = require('node:child_process');
-const { startBackend, openDevLog } = require('./backend.cjs');
+const { startBackend, createDevLog, localStamp } = require('./backend.cjs');
+const { defaultLogPath } = require('./devlog.cjs');
 const { createUpdater } = require('./updater.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'lingerlens', privileges: {
@@ -83,26 +84,48 @@ async function handleAppUpdate(request, url) {
 }
 
 /*
- * The renderer's diagnostic timeline, persisted to the dev log file.
+ * The renderer's diagnostic timeline, and the controls that decide whether it
+ * is being written down at all.
  *
  * The renderer is sandboxed with no filesystem access, and the main process is
- * the only side that already owns the log file. So this rides the existing
+ * the only side that owns the log file. So this rides the existing
  * `lingerlens://` protocol intercept rather than adding a preload script or an
  * IPC channel -- the renderer's privilege set stays exactly as it was.
  *
- * A GET doubles as the feature query: when no log file is configured the
- * renderer sees `enabled: false` and never posts anything at all.
+ * A GET doubles as the feature query: the renderer reads it once at start-up
+ * and only posts records when `enabled` is true.
  */
-async function handleDiagnostics(request) {
+async function handleDiagnostics(request, url) {
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-  const state = devLog
-    ? devLog.state()
-    : { enabled: false, file: null, error: null, lines: 0, terminalOnly: false };
+  const state = devLog.state();
+
+  if (url.pathname === '/api/diagnostics/start') {
+    if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+    // A fresh file per arming: one session, one artifact to hand over.
+    const file = defaultLogPath(app.getPath('userData'));
+    const stamp = localStamp();
+    // The start-up header only reaches somewhere if the environment variable
+    // armed this before the window existed. Say plainly when it did not, so a
+    // reader never assumes the file is a complete record of the session.
+    return json(devLog.arm(file,
+      `\n[LingerLens ${stamp}] 从这一刻开始记录（此前的输出没有保存）\n`
+      + `[LingerLens ${stamp}] backend: ${backend?.label || 'unknown'}\n`));
+  }
+  if (url.pathname === '/api/diagnostics/stop') {
+    if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+    return json(devLog.disarm());
+  }
+  if (url.pathname === '/api/diagnostics/reveal') {
+    if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+    const target = state.file ? path.dirname(state.file) : app.getPath('userData');
+    // shell.openPath resolves with a message on failure rather than rejecting.
+    return json({ ...state, opened: await shell.openPath(target) });
+  }
+
   if (request.method === 'GET') return json(state);
   if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-  if (!devLog) return json({ ...state, written: 0 });
   let payload;
   try {
     payload = await request.json();
@@ -173,7 +196,9 @@ async function start() {
     if (!url.startsWith('lingerlens://app/')) event.preventDefault();
   });
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  devLog = openDevLog();
+  // Permanent, not conditional: the destination can be switched on later from
+  // the diagnostics bar, which is the only way a packaged build can log at all.
+  devLog = createDevLog();
   backend = startBackend({ packaged: app.isPackaged, resources: process.resourcesPath,
     root: path.join(__dirname, '..'), dataDir: app.getPath('userData'),
     proxy: await desktopProxy(), log: devLog,
@@ -191,7 +216,7 @@ async function start() {
     if (url.pathname.startsWith('/api/app-update')) return handleAppUpdate(request, url);
     // Diagnostics persistence is a main-process concern for the same reason:
     // only this side owns the log file.
-    if (url.pathname === '/api/diagnostics') return handleDiagnostics(request);
+    if (url.pathname.startsWith('/api/diagnostics')) return handleDiagnostics(request, url);
     const target = endpoint.origin + url.pathname + url.search;
     const headers = new Headers(request.headers);
     headers.set('X-LingerLens-Session', endpoint.token);

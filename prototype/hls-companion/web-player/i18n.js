@@ -243,6 +243,8 @@ const I18N = (() => {
       "diag.hint.auth": "This stream needs a login. Import a cookie for the platform and try again.",
       "diag.ctx.locale": "UI language", "diag.ctx.state": "Session state", "diag.ctx.target": "Local target",
       "diag.devlog.on": "recording {file}", "diag.devlog.failed": "log write failed",
+      "diag.log.record": "Record log to file", "diag.log.stop": "Stop recording", "diag.log.open": "Open log folder",
+      "diag.log.private": "Writes the diagnostic log to a file you can send. It can contain private stream URLs — check it before sharing.",
       "diag.ctx.devlog": "Dev log",
       "diag.ctx.page": "Page", "diag.ctx.useragent": "User agent",
       "diag.report.title": "LingerLens diagnostics", "diag.report.time": "Generated", "diag.report.count": "Records",
@@ -354,6 +356,8 @@ const I18N = (() => {
       "diag.hint.auth": "この配信にはログインが必要です。プラットフォームの Cookie をインポートして再試行してください。",
       "diag.ctx.locale": "UI 言語", "diag.ctx.state": "セッション状態", "diag.ctx.target": "ローカル目標",
       "diag.devlog.on": "{file} に記録中", "diag.devlog.failed": "ログの書き込みに失敗",
+      "diag.log.record": "ログをファイルに記録", "diag.log.stop": "記録を停止", "diag.log.open": "ログフォルダーを開く",
+      "diag.log.private": "診断ログを送付できるファイルに書き出します。非公開の配信 URL が含まれることがあるため、共有前に確認してください。",
       "diag.ctx.devlog": "開発ログ",
       "diag.ctx.page": "ページ", "diag.ctx.useragent": "ユーザーエージェント",
       "diag.report.title": "LingerLens 診断情報", "diag.report.time": "生成日時", "diag.report.count": "記録",
@@ -465,6 +469,8 @@ const I18N = (() => {
       "diag.hint.auth": "Dieser Stream erfordert eine Anmeldung. Importieren Sie ein Cookie für die Plattform und versuchen Sie es erneut.",
       "diag.ctx.locale": "UI-Sprache", "diag.ctx.state": "Sitzungsstatus", "diag.ctx.target": "Lokales Ziel",
       "diag.devlog.on": "Aufzeichnung in {file}", "diag.devlog.failed": "Log-Schreiben fehlgeschlagen",
+      "diag.log.record": "Log in Datei aufzeichnen", "diag.log.stop": "Aufzeichnung stoppen", "diag.log.open": "Log-Ordner öffnen",
+      "diag.log.private": "Schreibt das Diagnoseprotokoll in eine Datei zum Versenden. Sie kann private Stream-URLs enthalten — vor dem Teilen prüfen.",
       "diag.ctx.devlog": "Entwicklungslog",
       "diag.ctx.page": "Seite", "diag.ctx.useragent": "User-Agent",
       "diag.report.title": "LingerLens-Diagnose", "diag.report.time": "Erstellt", "diag.report.count": "Einträge",
@@ -576,6 +582,8 @@ const I18N = (() => {
       "diag.hint.auth": "Для этой трансляции нужен вход. Импортируйте cookie платформы и повторите.",
       "diag.ctx.locale": "Язык интерфейса", "diag.ctx.state": "Состояние сеанса", "diag.ctx.target": "Локальная цель",
       "diag.devlog.on": "запись в {file}", "diag.devlog.failed": "не удалось записать журнал",
+      "diag.log.record": "Записать журнал в файл", "diag.log.stop": "Остановить запись", "diag.log.open": "Открыть папку журнала",
+      "diag.log.private": "Записывает журнал диагностики в файл, который можно отправить. Он может содержать приватные ссылки на трансляции — проверьте перед отправкой.",
       "diag.ctx.devlog": "Журнал разработки",
       "diag.ctx.page": "Страница", "diag.ctx.useragent": "User-Agent",
       "diag.report.title": "Диагностика LingerLens", "diag.report.time": "Создано", "diag.report.count": "Записей",
@@ -611,6 +619,8 @@ const I18N = (() => {
     "diag.hint.auth": "这路直播需要登录。导入对应平台的 Cookie 后重试。",
     "diag.ctx.locale": "界面语言", "diag.ctx.state": "会话状态", "diag.ctx.target": "本地目标",
     "diag.devlog.on": "记录中 {file}", "diag.devlog.failed": "日志写入失败",
+    "diag.log.record": "记录日志到文件", "diag.log.stop": "停止记录", "diag.log.open": "打开日志文件夹",
+    "diag.log.private": "把诊断日志写进一个可以发送的文件。它可能包含私有直播地址——分享前先看一眼。",
     "diag.ctx.devlog": "开发日志",
     "diag.ctx.page": "页面", "diag.ctx.useragent": "用户代理",
     "diag.ctx.build": "构建",
@@ -843,6 +853,12 @@ const I18N = (() => {
       if (node) setContent(node, kind || "text", t(key));
     }
     observeDynamicSinks();
+    /*
+     * 有些文案是 JS 按状态拼出来的（诊断栏的按钮标签、开发日志徽标），既不在
+     * 静态 BINDINGS 里，也不适合塞进反向查表的 DYNAMIC_SINKS。它们自己监听
+     * 这个事件重画，比让 i18n 去猜哪段文字对应哪个 key 可靠。
+     */
+    document.dispatchEvent(new CustomEvent("i18n:changed", { detail: { locale: current } }));
     return current;
   }
 

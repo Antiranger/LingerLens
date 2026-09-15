@@ -2,7 +2,7 @@ const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const { randomBytes } = require('node:crypto');
 const path = require('node:path');
-const { openDevLog } = require('./devlog.cjs');
+const { createDevLog } = require('./devlog.cjs');
 
 // Local wall-clock rather than UTC: a long-run log gets read against what the
 // clock on the wall said when something went wrong.
@@ -12,7 +12,7 @@ function localStamp(date = new Date()) {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function startBackend({ packaged, resources, root, dataDir, proxy = null, log = openDevLog(),
+function startBackend({ packaged, resources, root, dataDir, proxy = null, log = createDevLog(),
   onExit = () => {} }) {
   const command = packaged
     ? path.join(resources, 'backend', 'lingerlens-backend.exe')
@@ -28,18 +28,17 @@ function startBackend({ packaged, resources, root, dataDir, proxy = null, log = 
   const token = randomBytes(32).toString('hex');
   let stopped = false;
   let stopPromise;
-  if (log) {
-    // A timestamped header keeps an eight-hour log navigable.
-    log.write(`\n[LingerLens ${localStamp()}] backend: ${command} ${args.join(' ')}\n`);
-    if (log.error) {
-      // Someone asked for a file and did not get one. Say so in the log's own
-      // place, because the UI reads this back through /api/diagnostics.
-      log.write(`[LingerLens] dev log file unavailable -> ${log.error}\n`);
-    }
-    child.stderr.on('data', chunk => log.write(chunk));
-  } else {
-    child.stderr.resume(); // Do not persist media/provider output containing private URLs.
+  // The listener stays attached whether or not anything is armed: the user can
+  // switch logging on from the UI long after start-up, and in 'off' mode write()
+  // drops the chunk, which is exactly what resume() used to do. Attaching it
+  // unconditionally is also what keeps a full pipe from stalling the child.
+  log.write(`\n[LingerLens ${localStamp()}] backend: ${command} ${args.join(' ')}\n`);
+  if (log.error) {
+    // Someone asked for a file and did not get one. Say so in the log's own
+    // place, because the UI reads this back through /api/diagnostics.
+    log.write(`[LingerLens] log file unavailable -> ${log.error}\n`);
   }
+  child.stderr.on('data', chunk => log.write(chunk));
   child.stdin.on('error', () => {});
   const exited = new Promise(resolve => child.once('exit', (code) => { resolve(); if (!stopped) onExit(code); }));
   const ready = new Promise((resolve, reject) => {
@@ -90,6 +89,8 @@ function startBackend({ packaged, resources, root, dataDir, proxy = null, log = 
     })();
     return stopPromise;
   }
-  return { ready, stop, pid: child.pid };
+  // `label` lets the main process write a truthful header when logging is armed
+  // mid-session and the start-up header never reached anywhere.
+  return { ready, stop, pid: child.pid, label: `${command} ${args.join(' ')}` };
 }
-module.exports = { startBackend, openDevLog, localStamp };
+module.exports = { startBackend, createDevLog, localStamp };

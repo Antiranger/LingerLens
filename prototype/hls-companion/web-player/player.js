@@ -166,6 +166,19 @@
   }
 
   function renderDevLogState(state) {
+    const active = Boolean(state?.active) && !state?.error;
+    const toggle = el("diagLogToggle");
+    if (toggle) {
+      toggle.textContent = active
+        ? updateLabel("diag.log.stop", "停止记录", {})
+        : updateLabel("diag.log.record", "记录日志到文件", {});
+      // 说清楚代价再让人点：日志里可能有私有直播地址。
+      toggle.title = updateLabel("diag.log.private", "日志可能包含私有直播地址，分享前先看一眼。", {});
+      toggle.disabled = Boolean(state?.error);
+    }
+    const open = el("diagLogOpen");
+    if (open) open.hidden = !active;
+
     const node = el("diagLogState");
     if (node) {
       if (state?.error) {
@@ -196,6 +209,23 @@
   async function initDevLog() {
     if (!devLogClient) return;
     renderDevLogState(await devLogClient.status());
+  }
+
+  /*
+     开始记录时把游标归零，让**已经发生**的错误也补写进去。用户是被某个故障
+     逼来点这个按钮的，只记下点击之后的事情等于什么都没帮上。
+  */
+  async function toggleDevLog() {
+    if (!devLogClient) return;
+    const wasActive = Boolean(devLogClient.get()?.active);
+    const state = wasActive ? await devLogClient.stop() : await devLogClient.start();
+    devLogAlerted = false;
+    if (!wasActive && state?.enabled) {
+      devLogCursor = 0;
+      await flushDevLog();
+      diagnosticsBar?.render();
+    }
+    renderDevLogState(state);
   }
 
   /* ── 更新 ──────────────────────────────────────────────────
@@ -278,6 +308,10 @@
   void updateClient?.status().then(renderUpdate);
   /* 先问一次开发日志有没有配、能不能写，再决定后面发不发记录。 */
   void initDevLog();
+  el("diagLogToggle")?.addEventListener("click", () => { void toggleDevLog(); });
+  el("diagLogOpen")?.addEventListener("click", () => { void devLogClient?.reveal(); });
+  /* 按钮标签是 JS 按状态拼的，语言切换时 i18n 那套反向查表管不到它。 */
+  document.addEventListener("i18n:changed", () => renderDevLogState(devLogClient?.get()));
   function providerHasCredential(provider) {
     return provider?.apiKeyConfigured === true
       || Boolean(provider?.apiKey && provider.apiKey !== "***");
@@ -2185,6 +2219,7 @@
     bar: diagnosticsBar,
     client: diagnosticsClient,
     devLog: devLogClient,
+    toggleDevLog,
     flushDevLog,
   };
   window.__lingerlensSetSubtitleTestWallTime = (value) => {

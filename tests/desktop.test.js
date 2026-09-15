@@ -7,7 +7,7 @@ const path = require('node:path');
 const config = require('../desktop/builder.cjs');
 const manifest = require('../desktop/dependencies.json');
 const { localStamp } = require('../desktop/backend.cjs');
-const { openDevLog, MAX_LINES_PER_POST } = require('../desktop/devlog.cjs');
+const { createDevLog, defaultLogPath, MAX_LINES_PER_POST } = require('../desktop/devlog.cjs');
 const updater = require('../desktop/updater.cjs');
 
 test('installer keeps user data and installs per user without starting itself', () => {
@@ -33,9 +33,20 @@ test('desktop dependency download pins HTTPS and a full SHA-256', () => {
 
 // The backend's stderr can carry private stream URLs, so silence is the
 // default and anything else has to be asked for by name.
-test('dev logging stays off unless LINGERLENS_BACKEND_LOG asks for it', () => {
-  for (const value of [undefined, '', '  ', '0', 'off', 'OFF']) {
-    assert.equal(openDevLog({ LINGERLENS_BACKEND_LOG: value }), null, `${value} must stay silent`);
+test('dev logging stays off unless something asks for it', () => {
+  const original = process.stderr.write;
+  const seen = [];
+  process.stderr.write = chunk => { seen.push(chunk); return true; };
+  try {
+    for (const value of [undefined, '', '  ', '0', 'off', 'OFF', 'false', 'no']) {
+      const log = createDevLog({ LINGERLENS_BACKEND_LOG: value });
+      assert.equal(log.state().active, false, `${value} must not arm`);
+      assert.equal(log.state().enabled, false, `${value} must not write a file`);
+      log.write('dropped\n');
+    }
+    assert.deepEqual(seen, [], 'silence means stderr too, not just no file');
+  } finally {
+    process.stderr.write = original;
   }
 });
 
@@ -45,14 +56,16 @@ test('dev logging accepts a boolean switch and a file path', () => {
   const seen = [];
   process.stderr.write = chunk => { seen.push(chunk); return true; };
   try {
-    const terminal = openDevLog({ LINGERLENS_BACKEND_LOG: '1' });
+    const terminal = createDevLog({ LINGERLENS_BACKEND_LOG: '1' });
     assert.equal(terminal.state().enabled, false, 'terminal-only writes no file');
+    assert.equal(terminal.state().active, true);
     terminal.write('to terminal\n');
     assert.deepEqual(seen, ['to terminal\n']);
 
     const target = path.join(dir, 'backend.log');
-    const tee = openDevLog({ LINGERLENS_BACKEND_LOG: target });
-    assert.deepEqual(tee.state(), { enabled: true, file: target, error: null, lines: 0, terminalOnly: false });
+    const tee = createDevLog({ LINGERLENS_BACKEND_LOG: target });
+    assert.deepEqual(tee.state(),
+      { enabled: true, file: target, error: null, lines: 0, terminalOnly: false, active: true });
     tee.write('to both\n');
     assert.deepEqual(seen, ['to terminal\n', 'to both\n']);
     assert.equal(fs.readFileSync(target, 'utf8'), 'to both\n');
@@ -60,6 +73,55 @@ test('dev logging accepts a boolean switch and a file path', () => {
     process.stderr.write = original;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/*
+ * The packaged build has no launcher script to set an environment variable
+ * before start-up, so this is the only route a normal user has: arm it from
+ * the diagnostics bar while the app is already running.
+ */
+test('logging can be armed and disarmed while the app is running', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
+  const original = process.stderr.write;
+  process.stderr.write = () => true;
+  try {
+    const log = createDevLog({});
+    assert.equal(log.state().active, false, 'a bare app records nothing');
+
+    const first = path.join(dir, 'first.log');
+    log.arm(first, 'header one\n');
+    assert.deepEqual(log.state(),
+      { enabled: true, file: first, error: null, lines: 0, terminalOnly: false, active: true });
+    assert.equal(fs.readFileSync(first, 'utf8'), 'header one\n', 'the header lands immediately');
+    log.write('backend said something\n');
+
+    // Disarming must stop the writes rather than just hide the badge.
+    log.disarm();
+    assert.equal(log.state().active, false);
+    assert.equal(log.state().file, null);
+    log.write('after disarm\n');
+    assert.equal(fs.readFileSync(first, 'utf8'), 'header one\nbackend said something\n');
+
+    // Re-arming starts a new file with its own line count.
+    const second = path.join(dir, 'second.log');
+    log.arm(second, 'header two\n');
+    assert.equal(log.state().lines, 0);
+    assert.equal(fs.readFileSync(second, 'utf8'), 'header two\n');
+    assert.equal(fs.readFileSync(first, 'utf8'), 'header one\nbackend said something\n',
+      'the earlier file is left alone');
+  } finally {
+    process.stderr.write = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a user-requested log lands next to the app data', () => {
+  const file = defaultLogPath('C:\\Users\\someone\\AppData\\Roaming\\lingerlens',
+    new Date(2026, 8, 15, 16, 24, 1));
+  assert.equal(file,
+    path.join('C:\\Users\\someone\\AppData\\Roaming\\lingerlens', 'logs', 'lingerlens-20260915-162401.log'));
+  // No colons anywhere: the stamp goes into a filename on Windows.
+  assert.doesNotMatch(path.basename(file), /[:*?"<>|]/);
 });
 
 /*
@@ -74,7 +136,7 @@ test('a dev log path creates its parent directory instead of silently doing noth
   process.stderr.write = () => true;
   try {
     const target = path.join(dir, 'nested', 'deeper', 'run.log');
-    const log = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    const log = createDevLog({ LINGERLENS_BACKEND_LOG: target });
     assert.equal(log.state().error, null);
     assert.equal(log.state().enabled, true);
     log.write('created\n');
@@ -93,7 +155,7 @@ test('an unwritable dev log path keeps the player alive but reports the failure'
     // portable way to force the failure without touching permissions.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
     try {
-      const log = openDevLog({ LINGERLENS_BACKEND_LOG: dir });
+      const log = createDevLog({ LINGERLENS_BACKEND_LOG: dir });
       const state = log.state();
       assert.equal(state.enabled, false);
       assert.equal(state.file, dir, 'the path that failed is still reportable');
@@ -114,7 +176,7 @@ test('diagnostic lines are capped, flattened and counted', () => {
   process.stderr.write = () => true;
   try {
     const target = path.join(dir, 'run.log');
-    const log = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    const log = createDevLog({ LINGERLENS_BACKEND_LOG: target });
     assert.equal(log.writeLines([]), 0, 'nothing to write is not a write');
     assert.equal(log.writeLines(['  ', '\n']), 0, 'blank entries are not records');
     assert.equal(log.writeLines(['a\r\nb']), 1, 'an embedded newline must not forge a line');
@@ -136,7 +198,7 @@ test('a dev log that disappears mid-run stops writing but never throws', () => {
   process.stderr.write = () => true;
   try {
     const target = path.join(dir, 'run.log');
-    const log = openDevLog({ LINGERLENS_BACKEND_LOG: target });
+    const log = createDevLog({ LINGERLENS_BACKEND_LOG: target });
     log.write('before\n');
     // An entire directory removed underneath a long run, e.g. someone tidying up.
     fs.rmSync(dir, { recursive: true, force: true });
