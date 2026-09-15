@@ -70,10 +70,49 @@ GitHub 上的 `actions/checkout` **本身就是一次干净克隆**，所以「�
 
 字体是 **OFL-1.1**，再分发必须附授权声明——见 `THIRD_PARTY_NOTICES.md` 的 Bundled web fonts 一节。**新增任何第三方二进制或字体时，同一件事必须照做**，否则就是许可证违规。
 
+**重新打包**
+
+- 只改了 `web-player/` 用 `npm run desktop:sync-ui`（秒级）。改了 `desktop/main.cjs`、`desktop/backend.cjs` 或任何 Python 才需要 `npm run desktop:refresh`（`desktop:backend && desktop:pack`）。
+- **`desktop:refresh` 必须先把 dev 实例关掉。** 它会重新解压 Electron 到 `build-desktop\electron\`，而正在运行的 dev 进程锁着那些 DLL，必然失败在 `PermissionError: [Errno 13] ... d3dcompiler_47.dll`。这个报错不提 Electron、也不提 dev 实例，很容易被误读成磁盘或杀软问题。
+- `release\LagLingo-0.1.0-windows-x64-setup.exe` **不会**被 `desktop:refresh` 更新，它是 `npm run desktop:dist` 的产物。2026-09-15 时它还是 09-08 的旧版本，比 `win-unpacked` 落后一周。
+
 **贡献者路径**
 
 - `README.md` 的 quick start 必须是新人实际会走的那条路，且必须与 `bootstrap.ps1`、`package.json engines` 三处一致。这三处不一致过一次（README 说 18+、engines 说 22.12+），已在 1edd548 修掉。
 - `CONTEXT.md` 是领域术语表（什么是 Language Tag、Target Language、UI Locale）。改领域概念时同步更新它，不要让术语在代码里各自漂移。
+
+## 诊断：出问题时看哪里
+
+**后端日志开关 `LAGLINGO_BACKEND_LOG`**
+
+后端的 `print` 全部落在 stderr（`companion_entry.py:116` 把 stdout 改道到 stderr，stdout 只留给那一行 ready 握手），而 `backend.cjs` 默认把它排空丢弃——因为媒体和 provider 输出里可能带私有流地址。开关是按次运行的显式选项：
+
+| 取值 | 行为 |
+|---|---|
+| 不设 / `0` / `off` | 丢弃，什么都不写（默认） |
+| `1` / `on` / `true` | 转发到主进程 stderr |
+| 其它任意值 | 当作文件路径，同时写终端和该文件 |
+
+开日志时会在开头写一行带**本地时间**的 header（不是 UTC），方便拿八小时的日志对时钟。
+
+注意 Electron 在 Windows 上是 GUI 子系统程序，`process.stderr` 不保证接在控制台上——实测 `npm run desktop:dev` 在后台作业里跑，终端一个字都收不到。**要长时间跑就用文件形式。**
+
+**但这个开关现在几乎打不出东西，先别指望它。** 实测证据（`.scratch/laglingo-audit/backend-stderr-probe.py`，手工拉起真后端 + 已知 token，走 13 条路由，其中 7 条是故意构造的畸形请求）：
+
+```
+POST /api/start  400  {"error": "Expecting value: line 1 column 1 (char 0)"}
+POST /api/probe  400  {"error": "Only HTTPS YouTube/Bilibili/Twitch live page URLs are accepted"}
+...
+=== backend stderr ===
+(empty)
+=== 0 characters ===
+```
+
+原因是后端在 desktop 模式下**只有一处**会写 stderr：`server.py:1420` 的「未预期请求失败」，也就是 500。而 7 条错误请求全部走了 `server.py:1417` 的 `ValueError/RuntimeError` 分支——那个分支返回 400 JSON 但**不打印**。另一处 `server.py:1368`（原生 IPC 不可用）在 desktop 里因为 `enable_native_control=False` 永远到不了。`companion/` 整个包没有任何 `logging` 配置，也没有日志文件。
+
+**已经存在但被丢掉的诊断数据**：`/api/status` 返回 `ffmpegLogTail`（`core.py:1137`，FFmpeg 最后 6 行输出，只在出错时非空）。后端**已经**在采集它，但 web-player 里没有任何一处读它——`ffmpegLogTail` 在整个 `web-player/` 里零命中。这恰好是长时运行最需要的那份数据。
+
+**要判断运行状况，现在只有两条路**：窗口里 `Ctrl+Shift+I` 开 DevTools（渲染进程的 console / network 是真的有内容），或者加 `--remote-debugging-port` 用 CDP 直接问渲染进程。
 
 ## 不变量
 
