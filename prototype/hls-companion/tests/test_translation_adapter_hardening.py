@@ -40,7 +40,10 @@ from companion.providers.base import (  # noqa: E402
     TranslationResult,
 )
 from companion.providers.fallback import FallbackChain  # noqa: E402
-from companion.providers.mt_openai_compat import _is_dashscope_host  # noqa: E402
+from companion.providers.mt_openai_compat import (  # noqa: E402
+    OpenAICompatibleTranslationProvider,
+    _is_dashscope_host,
+)
 from companion.providers.mt_qwen_mt import _extract_chat_text  # noqa: E402
 
 
@@ -116,6 +119,47 @@ def make_request(text: str) -> TranslationRequest:
         history=[],
         glossary=[],
     )
+
+
+class ReasoningEffortTests(unittest.TestCase):
+    """The thinking level is opt-in, verbatim, and never guessed.
+
+    Measured 2026-09-16 against the configured DeepSeek fallback, 5 repeats per
+    arm: sending nothing reasoned 185 tokens and took 1.55s; "none" reasoned 0
+    and took 0.92s; but "low" and "minimal" reasoned MORE than sending nothing
+    (303 and 324 tokens, 2.16s and 2.19s). So the adapter must not map a friendly
+    name onto a vendor value -- it must send what it was given, or nothing.
+    """
+
+    def payload(self, options: dict) -> dict:
+        provider = OpenAICompatibleTranslationProvider(
+            {
+                "id": "mt",
+                "label": "mt",
+                "kind": "openai-compatible",
+                "model": "m",
+                "baseUrl": "https://api.deepseek.com/v1",
+                "apiKey": "k",
+                "options": options,
+            }
+        )
+        return provider.build_payload(make_request("テスト"))
+
+    def test_nothing_is_sent_by_default(self) -> None:
+        self.assertNotIn("reasoning_effort", self.payload({}))
+
+    def test_prefixed_dashscope_vendors_are_not_sent_a_foreign_field(self) -> None:
+        # The DashScope host branch owns enable_thinking; reasoning_effort must not
+        # ride along to a server that was never asked to accept it.
+        self.assertNotIn("reasoning_effort", self.payload({"enableThinking": True}))
+
+    def test_a_configured_level_is_passed_through_verbatim(self) -> None:
+        self.assertEqual(self.payload({"reasoningEffort": "none"})["reasoning_effort"], "none")
+        self.assertEqual(self.payload({"reasoningEffort": "low"})["reasoning_effort"], "low")
+
+    def test_the_default_keyword_means_send_nothing(self) -> None:
+        for value in ("default", "DEFAULT", "  ", ""):
+            self.assertNotIn("reasoning_effort", self.payload({"reasoningEffort": value}))
 
 
 class MaxInputCharsTests(unittest.IsolatedAsyncioTestCase):

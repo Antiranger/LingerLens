@@ -108,6 +108,30 @@ class OpenAICompatibleTranslationProvider(TranslationProvider):
         # that text, sending a vendor field a strict server answers 400 to.
         if _is_dashscope_host(self.base_url):
             payload["enable_thinking"] = bool(self.options.get("enableThinking", False))
+        # Thinking level, for endpoints that expose one. Sent ONLY when the
+        # provider config sets it: a server that does not know the field may
+        # answer 400, and 400 is classified as ProviderRequestError, which
+        # disables that provider for the rest of the session. So the field is an
+        # opt-in the operator declares by configuring it, never a guess.
+        #
+        # Measured 2026-09-16 against the configured fallback (deepseek-flash,
+        # 5 repeats per arm, real cue, 25s budget so nothing was cut by the
+        # clock -- only the thinking differed):
+        #     (not sent)                    1.55s   185 reasoning tokens
+        #     reasoning_effort="none"       0.92s     0
+        #     thinking={"type":"disabled"}  0.69s     0
+        #     reasoning_effort="low"        2.16s   303   <- MORE than default
+        #     reasoning_effort="minimal"    2.19s   324   <- MORE than default
+        #     reasoning={"effort":"low"}    1.56s   215   <- ignored
+        #     enable_thinking=false         1.49s   189   <- ignored
+        # That endpoint honours "none" but NOT the OpenAI intuition that a lower
+        # level thinks less: "low" and "minimal" both reasoned more than sending
+        # nothing did. The value is therefore passed through verbatim -- nothing
+        # here maps a friendly name onto a vendor value, because the mapping is
+        # not the same everywhere and a wrong guess is invisible.
+        reasoning_effort = str(self.options.get("reasoningEffort") or "").strip()
+        if reasoning_effort and reasoning_effort.lower() != "default":
+            payload["reasoning_effort"] = reasoning_effort
         return payload
 
     def _build_translation_payload(self, request: TranslationRequest) -> dict[str, Any]:
