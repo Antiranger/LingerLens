@@ -130,33 +130,45 @@ test("a publisher stall beyond the segment length still reports", () => {
   });
 });
 
-test("a short-segment stream keeps the original 5s threshold", () => {
+test("the ingest legs are judged on the same segment-scaled threshold", () => {
+  // Measured live over 600s: the media leg's byte idle reached 5.6s and the
+  // per-pump byte gap 5.7s on a healthy stream whose segments are 5.005s, so a
+  // flat 5s threshold sat inside the normal peak. Both signals are bounded by
+  // the segment cadence -- the publisher emits one segment per cadence, a
+  // download leg receives one segment's bytes per cadence.
+  const normal = classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 0.2,
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 5.6 }],
+    targetDuration: 6,
+  });
+  assert.equal(normal.active, false);
+
+  const outage = classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 0.2,
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 20 }],
+    targetDuration: 6,
+  });
+  assert.equal(outage.active, true);
+  assert.equal(outage.kind, "upstream");
+});
+
+test("a short-segment stream keeps the original 5s threshold on both sides", () => {
   // 1s segments must not become MORE sensitive than they were before: the
   // scaled threshold is a floor, not a replacement.
   const stalled = classifySourceHealth({
     state: "running",
     playlistReady: true,
     sourceStallSeconds: 6,
-    sourceIngest: [{ role: "media", sourceIdleSeconds: 0.4 }],
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 6 }],
     targetDuration: 1,
   });
   assert.equal(stalled.active, true);
-  assert.equal(stalled.kind, "packaging");
-});
-
-test("the ingest legs keep the flat threshold, not the segment-scaled one", () => {
-  // The publisher emits discrete segments; the ingest legs are a continuous
-  // byte stream where 5s means what it says. Scaling that one too would hide a
-  // real download outage behind a long segment length.
-  const outage = classifySourceHealth({
-    state: "running",
-    playlistReady: true,
-    sourceStallSeconds: 0.2,
-    sourceIngest: [{ role: "media", sourceIdleSeconds: 6 }],
-    targetDuration: 6,
-  });
-  assert.equal(outage.active, true);
-  assert.equal(outage.kind, "upstream");
+  // Upstream wins when the legs are the ones that went quiet.
+  assert.equal(stalled.kind, "upstream");
 });
 
 test("no targetDuration keeps the previous behaviour exactly", () => {

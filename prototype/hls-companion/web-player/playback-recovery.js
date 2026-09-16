@@ -96,7 +96,8 @@
   }
 
   /**
-   * Seconds without a new segment before it counts as a publisher stall.
+   * Seconds without a new segment, or without a delivered byte, before the
+   * source counts as stalled.
    *
    * Scaled to the stream: a 1s-segment stream keeps the original 5s, a
    * 5s-segment stream gets 8s. With no value at hand the original constant
@@ -113,14 +114,22 @@
    *
    * `sourceStallSeconds` is measured at the publisher (new private HLS
    * segments), while `sourceIngest[].sourceIdleSeconds` is measured at the
-   * yt-dlp download legs.  The former can briefly stop while FFmpeg is still
-   * receiving bytes, so it must not be presented as an upstream outage.
+   * yt-dlp download legs -- from the MEDIA bytes they relay, never from their
+   * log output. That distinction is load-bearing: a download that has stalled
+   * but keeps printing retry lines every 0.5s is not a healthy source, and a
+   * log-line clock cannot tell the difference.
    *
-   * The two are judged against DIFFERENT thresholds on purpose: the publisher
-   * emits discrete segments, so its threshold has to clear the segment length
-   * (see STALL_MARGIN_SECONDS), while the ingest legs are a continuous byte
-   * stream where a flat 5s means what it says. Measured worst ingest idle on a
-   * healthy 1080p60 stream: ~4.1s.
+   * Both are judged against the same segment-scaled threshold, for the same
+   * reason: each is bounded by the segment cadence. The publisher emits one
+   * segment per cadence; a download leg receives one segment's bytes per
+   * cadence and is otherwise silent. Measured on a healthy 1080p60 stream over
+   * 600s (1481 samples, 5.005s segments): media leg idle p50 2.8s / max 5.6s,
+   * per-pump byte gap p50 5.2s / max 5.7s -- the normal peak IS the segment
+   * length on both sides. A flat 5s threshold sat inside that peak, which read
+   * as a network outage while the stream was fine.
+   *
+   * Upstream still wins over packaging: when the download legs are the ones
+   * that went quiet, that is the more actionable diagnosis of the two.
    */
   function classifySourceHealth({
     state,
@@ -147,9 +156,20 @@
 
     // If ingest telemetry is available, it is the authority for an upstream
     // outage. A publisher-only stall is a local packaging delay.
+    //
+    // BOTH sides are judged against the segment-scaled threshold, because both
+    // signals are bounded by the segment cadence: the publisher *emits* one
+    // segment per cadence, and each ingest leg *receives* one segment's bytes
+    // per cadence. Measured on a healthy 1080p60 stream over 600s (1481
+    // samples), with segments at 5.005s:
+    //     media leg idle      p50 2.8s  p95 5.1s  max 5.6s
+    //     per-pump byte gap   p50 5.2s  p95 5.6s  max 5.7s
+    // i.e. the normal peak IS the segment length on this side too. A flat 5s
+    // threshold sat inside that peak, which is the false "upstream outage"
+    // that a log-line clock used to hide.
     const upstream = mediaIdleValue === null
       ? publisherStall > publisherThreshold
-      : mediaIdleValue > SOURCE_STALL_SECONDS;
+      : mediaIdleValue > publisherThreshold;
     const packaging = !upstream && publisherStall > publisherThreshold;
     return {
       active: upstream || packaging,

@@ -18,6 +18,13 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
+class _RunningProcess:
+    """Just enough of subprocess.Popen for snapshot() to consider the leg live."""
+
+    def poll(self):
+        return None
+
+
 class YtDlpLiveIngestTests(unittest.TestCase):
     def test_command_owns_live_download_and_does_not_expose_cookie_values(self) -> None:
         ingest = MODULE.YtDlpLiveIngest(
@@ -181,6 +188,67 @@ class YtDlpLiveIngestTests(unittest.TestCase):
             MODULE.time.monotonic = original_monotonic
             pump_a.stop()
             pump_b.stop()
+
+    def test_source_idle_is_measured_from_bytes_not_from_log_lines(self) -> None:
+        """A stalled download that keeps logging must NOT read as healthy.
+
+        Live 2026-09-16: the source delivered 0 bytes/second on every leg for
+        eight minutes while yt-dlp's ffmpeg kept printing a progress line every
+        0.5s. `sourceIdleSeconds` was built from "time since the last stderr
+        line", so it reported 0.2s, RecoveryPolicy stayed 'healthy', no leg was
+        ever restarted, and the player sat paused for the rest of the session
+        waiting for a buffer that could not arrive.
+        """
+        ingest = MODULE.YtDlpLiveIngest("https://example.test/live", "312+234", [], yt_dlp="yt-dlp.exe")
+        pump = MODULE._TcpPump("video")
+        ingest.pumps = [pump]
+        ingest.processes = [_RunningProcess()]
+        now = [500.0]
+        original_monotonic = MODULE.time.monotonic
+        MODULE.time.monotonic = lambda: now[0]
+        try:
+            ingest.started_at = 400.0
+            # Nothing has arrived yet: measured from the start, not reported as 0.
+            self.assertEqual(ingest.snapshot()["sourceIdleSeconds"], 100.0)
+
+            pump.last_byte_at = 499.5
+            self.assertEqual(ingest.snapshot()["sourceIdleSeconds"], 0.5)
+
+            # The whole point: log activity is not evidence of a live source.
+            ingest.log_tail.append("frame=510087 fps=57 ... time=02:21:44.96 elapsed=2:29:41.68")
+            self.assertEqual(ingest.snapshot()["sourceIdleSeconds"], 0.5)
+
+            # And a genuinely silent leg keeps climbing.
+            now[0] = 520.0
+            self.assertEqual(ingest.snapshot()["sourceIdleSeconds"], 20.5)
+        finally:
+            MODULE.time.monotonic = original_monotonic
+            pump.stop()
+
+    def test_the_worst_pump_decides_how_idle_a_leg_is(self) -> None:
+        """The packaging ffmpeg needs every stream the leg carries.
+
+        A media leg whose video pump has gone quiet is starving the output even
+        while its audio pump is busy, so reporting the healthiest pump would
+        hide exactly the failure worth reporting.
+        """
+        ingest = MODULE.YtDlpLiveIngest("https://example.test/live", "312+234", [], yt_dlp="yt-dlp.exe")
+        video = MODULE._TcpPump("video")
+        audio = MODULE._TcpPump("audio")
+        ingest.pumps = [video, audio]
+        ingest.processes = [_RunningProcess()]
+        now = [1000.0]
+        original_monotonic = MODULE.time.monotonic
+        MODULE.time.monotonic = lambda: now[0]
+        try:
+            ingest.started_at = 990.0
+            video.last_byte_at = 994.0      # 6s quiet
+            audio.last_byte_at = 999.9      # busy
+            self.assertEqual(ingest.snapshot()["sourceIdleSeconds"], 6.0)
+        finally:
+            MODULE.time.monotonic = original_monotonic
+            video.stop()
+            audio.stop()
 
     def test_tcp_pump_forwards_bytes(self) -> None:
         payload = b"audio-transport-stream"

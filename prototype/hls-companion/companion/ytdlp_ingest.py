@@ -74,6 +74,12 @@ class _TcpPump:
         self._source: Any = None
         self.forwarded_chunks = 0
         self.forwarded_bytes = 0
+        # When this leg last received MEDIA. The leg's health signal is built
+        # from this and never from stderr: a download that has stalled but is
+        # still logging retries looks perfectly alive to a log-line clock, which
+        # is exactly how a live session sat frozen for 8 minutes while
+        # /api/status reported sourceIdleSeconds 0.2 and "healthy".
+        self.last_byte_at: float | None = None
 
     @property
     def url(self) -> str:
@@ -105,6 +111,11 @@ class _TcpPump:
                     chunk = (read1(65536) if read1 is not None else self._source.read(65536))
                     if not chunk:
                         return
+                    # Stamped on the READ, not after the send: this answers "is
+                    # the source delivering", which is what sourceIdleSeconds is
+                    # consumed as. A blocked sendall stops the next read anyway,
+                    # so the two differ only by one chunk's worth of time.
+                    self.last_byte_at = time.monotonic()
                     if self._pts_probe is not None:
                         points = self._pts_probe.feed(chunk)
                         if points and self._on_pts is not None:
@@ -179,7 +190,6 @@ class YtDlpLiveIngest:
         self.pumps: list[_TcpPump] = []
         self._log_threads: list[threading.Thread] = []
         self.started_at: float | None = None
-        self.last_output_at: float | None = None
         self.error: str | None = None
         self.log_tail: deque[str] = deque(maxlen=30)
         self._stop_requested = False
@@ -313,7 +323,6 @@ class YtDlpLiveIngest:
         self.error = None
         self.log_tail.clear()
         self.started_at = time.monotonic()
-        self.last_output_at = self.started_at
         self._legs_past_extraction = set()
         # A fresh download is a fresh PTS clock. The local ffmpeg muxer re-bases
         # every leg's output to its own 1.4s origin, so samples recorded before
@@ -466,7 +475,7 @@ class YtDlpLiveIngest:
             "formatSelector": self.format_selector,
             "legs": len(self.selectors),
             "running": running,
-            "sourceIdleSeconds": round(time.monotonic() - self.last_output_at, 1) if running and self.last_output_at else None,
+            "sourceIdleSeconds": self._source_idle_seconds() if running else None,
             "sourceError": self.error,
             "legThroughput": legs,
             # Last yt-dlp stderr lines (URLs already redacted) so a silently
@@ -474,6 +483,24 @@ class YtDlpLiveIngest:
             # shell access to the companion host.
             "logTail": list(self.log_tail)[-8:],
         }
+
+    def _source_idle_seconds(self) -> float | None:
+        """Seconds since this leg last received media bytes.
+
+        The WORST pump decides. The packaging ffmpeg needs every stream the leg
+        carries, so a leg whose video pump has gone quiet is starving the output
+        even while its audio pump is still busy -- reporting the healthiest pump
+        would hide exactly the failure worth reporting.
+
+        Before any pump has delivered anything, this measures from the start of
+        the download, so a leg that never produces media is still eventually
+        reported instead of reading as "0 seconds idle".
+        """
+        now = time.monotonic()
+        idles = [now - pump.last_byte_at for pump in self.pumps if pump.last_byte_at is not None]
+        if idles:
+            return round(max(idles), 1)
+        return round(now - self.started_at, 1) if self.started_at else None
 
     def _leg_reached_download(self, index: int) -> Callable[[], None]:
         def mark() -> None:
@@ -495,7 +522,6 @@ class YtDlpLiveIngest:
                 clean = raw_line.decode("utf-8", "replace").strip()
                 if clean:
                     self.log_tail.append(self._redact(clean))
-                self.last_output_at = time.monotonic()
         except (OSError, ValueError) as exc:
             if not self._stop_requested and process.poll() is None and not self.error:
                 self._fail(f"yt-dlp log pipe failed: {type(exc).__name__}: {exc}")
