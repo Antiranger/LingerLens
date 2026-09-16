@@ -335,6 +335,10 @@ class CompanionApplication:
                 stall_seconds=ingest_snapshot.get("sourceIdleSeconds"),
                 process_running=bool(ingest_snapshot.get("running")),
                 source_error=ingest_snapshot.get("sourceError"),
+                # The publisher's own segment length, so this classification runs
+                # on the same ruler as the stall banner instead of on constants
+                # that predate the byte clock.
+                target_duration=status.get("targetDuration"),
             )
             status["sourceRecovery"] = {
                 "state": decision.state,
