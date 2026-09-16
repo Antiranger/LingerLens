@@ -24,7 +24,7 @@
 | `providers/base.py` | ASR/翻译抽象（能力位、事件、请求/结果） | 全文件，纯数据类 |
 | `providers/asr_qwen_realtime.py` | kind `dashscope-qwen-realtime`：`qwen3-asr-flash-realtime` 的 OpenAI Realtime 形状 WS。`_map_event`（L100）把服务端事件映射为 ASREvent；`speech_started/stopped`、`transcription.text`（text+stash）、`transcription.completed`（transcript） | |
 | `providers/asr_dashscope_task.py` | kind `dashscope-task-asr`：任务式协议（begin_time/end_time/words） | `_map_event` L99 |
-| `providers/mt_openai_compat.py` | OpenAI Chat Completions 翻译。**仅当 baseUrl 含 dashscope.aliyuncs.com 才附加 `extra_body.enable_thinking`**（用户当前用的是 `http://127.0.0.1:8045/v1` + `gemini-3.1-flash-lite`） | `build_payload` |
+| `providers/mt_openai_compat.py` | OpenAI Chat Completions 翻译。**顶层 `enable_thinking: false` 只发给 DashScope 主机（按 host 匹配，不是子串匹配），且不由配置项控制**；其他主机只有在配置了 `options.reasoningEffort` 时才附加 `reasoning_effort`（用户当前用的是 `http://127.0.0.1:8045/v1` + `gemini-3.7-flash-low`，替补 `deepseek-flash` 配了 `none`） | `build_payload` |
 | `providers/mt_qwen_mt.py` | Qwen-MT 翻译（translation_options） | |
 | `providers/fallback.py` | FallbackChain：连续失败 N 次冷却 60s | |
 | `providers/config.py` | providers.json 加载/校验/脱敏/原子写；`update_model_settings`（模型设置 UI 的后端，ASR 固定 qwen3-asr-flash-realtime） | |

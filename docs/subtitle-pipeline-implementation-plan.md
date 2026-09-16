@@ -102,7 +102,7 @@
 
 ### 2.2 翻译侧
 
-- **通用 LLM（默认）**：OpenAI 兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`，`POST /chat/completions`，`Authorization: Bearer <key>`。模型 `qwen3.5-flash`，**必须关思考**（`extra_body: {"enable_thinking": false}`），否则延迟抖动不可控。
+- **通用 LLM（默认）**：OpenAI 兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`，`POST /chat/completions`，`Authorization: Bearer <key>`。模型 `qwen3.5-flash`，**必须关思考**，否则延迟抖动不可控。该字段是顶层 `enable_thinking`（曾是嵌套的 `extra_body`，服务端会静默忽略嵌套写法），且**不由配置项控制**：适配器对 DashScope 主机无条件发送 `enable_thinking: false`。历史上它读的是一个 `options.enableThinking`，而保存路径每次写入都把它强制改成 `false`、界面也从未暴露过它——那不是设置，是伪装成设置的硬规则。
 - **Qwen-MT（回退/极速）**：同一个 OpenAI 兼容端点，模型 `qwen-mt-flash` / `qwen-mt-plus` / `qwen-mt-turbo` / `qwen-mt-lite`，翻译参数走 `extra_body.translation_options`：
   ```json
   { "translation_options": {
@@ -303,7 +303,6 @@ class TranslationProvider(abc.ABC):
         "apiKeyEnv": "DASHSCOPE_API_KEY",
         "options": {
           "temperature": 0.3, "maxTokens": 256, "timeoutSeconds": 6,
-          "enableThinking": false,
           "contextPairs": 6, "contextSeconds": 90
         }
       },
