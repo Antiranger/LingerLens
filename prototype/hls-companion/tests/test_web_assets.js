@@ -242,8 +242,23 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   // treating every publisher-only packaging pause as a download outage.
   assert.match(js, /if \(data\.state === "error"\) \{[\s\S]*?setMediaLoading\(false\);/);
   assert.match(js, /health\.kind === "upstream"/);
-  assert.match(js, /网络端未收到直播流数据，正在尝试重新连接/);
+  // The stall text must not promise a recovery the app never attempts: nothing
+  // anywhere consumes RecoveryPolicy.action, so "attempting to reconnect" was a
+  // claim with no mechanism behind it.
+  assert.match(js, /直播源暂时没有新数据，正在等待恢复/);
+  assert.doesNotMatch(js, /正在尝试重新连接/);
+  assert.doesNotMatch(js, /正在自动恢复/);
   assert.doesNotMatch(js, /上游直播数据中断，正在自动恢复/);
+  // The banner reports what the viewer is experiencing, never what the source is
+  // doing. A source that goes quiet behind a deep buffer is invisible to the
+  // viewer, and announcing it was the false alarm that fired on 8 of 101 samples
+  // of a provably healthy stream.
+  assert.match(js, /const starving = ahead < STALL_VISIBLE_BUFFER_SECONDS;/);
+  assert.match(js, /if \(!stalled \|\| !starving\) \{/);
+  // ...and the automatic pause must not outvote the play button, which it did on
+  // every 1s status poll while the resume condition stayed out of reach.
+  assert.match(js, /stallAutoPauseSuppressed = true;/);
+  assert.match(js, /video\.addEventListener\("play"/);
   assert.match(js, /sessionAction === "stopping" \|\| lastSessionState !== "running"/);
   assert.match(html, /id="asrUsageCost"/);
   assert.match(html, /id="translationUsageCost"/);

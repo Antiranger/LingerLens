@@ -1019,6 +1019,27 @@
   }
 
   let autoPausedForStall = false;
+  /*
+   * The automatic pause is not allowed to overrule the person watching.
+   *
+   * A status poll runs every second, and the old code re-paused the element on
+   * every poll where the source was stalled and the buffer was thin. The resume
+   * condition was "buffer >= 10s", which a source that never comes back can
+   * never satisfy, so a stall left playback stopped and the play button
+   * apparently broken: press it and the next poll paused it again. Once the
+   * viewer has asked for playback, that decision stands for the rest of the
+   * stall; it is cleared as soon as the source is healthy again.
+   */
+  let stallAutoPauseSuppressed = false;
+  // Our own resume is not the viewer asking for anything.
+  let autoResumeInFlight = false;
+  // Only log the transition; the poll runs every second.
+  let quietSourceLogged = false;
+  // Buffer, in seconds ahead of the playhead, at which a stalled source starts
+  // to be the viewer's problem rather than the source's.
+  const STALL_VISIBLE_BUFFER_SECONDS = 3;
+  // How much buffer an automatic pause waits for before it resumes on its own.
+  const STALL_RESUME_BUFFER_SECONDS = 10;
 
   function updateStallOverlay(data) {
     const banner = el("stallBanner");
@@ -1049,30 +1070,64 @@
         kind: "upstream",
         stallSeconds: stall,
       };
-    if (health.active) {
-      banner.hidden = false;
-      const message = health.kind === "packaging"
-        ? updateLabel("msg.stallPackaging", "本地媒体切片处理较慢，正在自动恢复…")
-        : updateLabel("msg.stallUpstream", "网络端未收到直播流数据，正在尝试重新连接…");
-      banner.textContent = updateLabel("msg.stalled", `${message}（已停 ${Math.round(health.stallSeconds)} 秒）`, { text: message, seconds: Math.round(health.stallSeconds) });
-      if (!video.paused && bufferAhead() < 3) {
-        autoPausedForStall = true;
-        video.pause();
-      }
-      return;
-    }
+    const stalled = health.active;
+    const ahead = bufferAhead();
+    if (!stalled) stallAutoPauseSuppressed = false;
+
     if (autoPausedForStall) {
-      if (bufferAhead() >= 10) {
+      if (!stalled && ahead >= STALL_RESUME_BUFFER_SECONDS) {
         autoPausedForStall = false;
         banner.hidden = true;
-        if (video.paused) video.play().catch(() => {});
+        if (video.paused) {
+          autoResumeInFlight = true;
+          video.play().catch(() => { autoResumeInFlight = false; });
+        }
       } else {
         banner.hidden = false;
-        banner.textContent = updateLabel("msg.recovered", "直播流已恢复，正在补充播放缓冲…");
+        banner.textContent = stalled
+          ? stallBannerText(health)
+          : updateLabel("msg.recovered", "直播流已恢复，正在补充播放缓冲…");
       }
       return;
     }
-    banner.hidden = true;
+
+    /*
+     * The banner reports what the VIEWER is experiencing, never what the source
+     * is doing.
+     *
+     * "The source has been quiet for N seconds" and "the viewer has been hurt"
+     * are different questions, and answering the first one is how a healthy
+     * stream got a stall banner: the segments of this stream are 5.005s long, so
+     * "5 seconds since the last new segment" is its normal breathing. A quiet
+     * source behind a deep buffer is not merely tolerable -- it is invisible,
+     * and announcing it is a false alarm the viewer cannot act on. The quiet
+     * source is still worth recording, so it goes to the diagnostics bar.
+     */
+    const starving = ahead < STALL_VISIBLE_BUFFER_SECONDS;
+    if (stalled !== quietSourceLogged) {
+      quietSourceLogged = stalled;
+      if (stalled) {
+        diagnosticsBar?.push("warn", "source",
+          `直播源已停 ${Math.round(health.stallSeconds)} 秒（${health.kind}），播放缓冲仍有 ${Math.round(ahead)} 秒，未打扰播放`);
+      }
+    }
+    if (!stalled || !starving) {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+    banner.textContent = stallBannerText(health);
+    if (!video.paused && !stallAutoPauseSuppressed) {
+      autoPausedForStall = true;
+      video.pause();
+    }
+  }
+
+  function stallBannerText(health) {
+    const message = health.kind === "packaging"
+      ? updateLabel("msg.stallPackaging", "本地处理暂时跟不上，正在等待恢复")
+      : updateLabel("msg.stallUpstream", "直播源暂时没有新数据，正在等待恢复");
+    return updateLabel("msg.stalled", `${message}（已停 ${Math.round(health.stallSeconds)} 秒）`, { text: message, seconds: Math.round(health.stallSeconds) });
   }
 
   function estimateVideoLatency() {
@@ -2307,6 +2362,16 @@
     setState("延迟播放中", "stable");
     updatePlayerControls();
     schedulePlayerControlsHide();
+  });
+  // A play the viewer started stands the automatic stall pause down. Without
+  // this the 1s status poll re-paused the element, so during a stall that never
+  // cleared the play button did nothing at all.
+  video.addEventListener("play", () => {
+    if (autoResumeInFlight) {
+      autoResumeInFlight = false;
+      return;
+    }
+    stallAutoPauseSuppressed = true;
   });
   // Reset the fatal-error budget whenever the playhead actually advances: a
   // stream that recovers and plays for a while must not be permanently

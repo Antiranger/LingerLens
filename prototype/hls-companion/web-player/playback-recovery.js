@@ -24,9 +24,12 @@
    * cues), and the number it showed the user ("已停 5 秒") was just the segment
    * length. Worst normal peak over that run: 5.7s.
    *
-   * Two seconds clears that worst case with room to spare while staying well
-   * under the 8s/30s steps the backend uses to actually restart a stalled leg,
-   * so a genuine outage is still reported before recovery begins.
+   * Two seconds clears that worst case with room to spare.
+   *
+   * Nothing downstream restarts a stalled leg. ``RecoveryPolicy`` classifies the
+   * stall (warning / reconnecting / failed) and its ``action`` field has no
+   * consumer anywhere in the repo, so these thresholds are not racing a recovery
+   * that begins at 8s -- a stalled source stays stalled until the viewer acts.
    */
   const STALL_MARGIN_SECONDS = 2;
   const MIN_DESIRED_DELAY_SECONDS = 3;
