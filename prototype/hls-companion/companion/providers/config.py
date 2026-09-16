@@ -246,7 +246,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
                     "temperature": 0.3,
                     "maxTokens": 256,
                     "timeoutSeconds": 6,
-                    "enableThinking": False,
                     "contextPairs": 10,
                     "contextSeconds": 90,
                 },
@@ -512,7 +511,6 @@ def update_model_settings(path: str | Path, settings: dict[str, Any]) -> dict[st
     options["temperature"] = max(0.0, min(float(translation_settings.get("temperature", options.get("temperature", 0.3))), 2.0))
     options["maxTokens"] = max(32, min(int(translation_settings.get("maxTokens", options.get("maxTokens", 256))), 4096))
     options["timeoutSeconds"] = max(1.0, min(float(translation_settings.get("timeoutSeconds", options.get("timeoutSeconds", 6))), 60.0))
-    options["enableThinking"] = False
     options["contextPairs"] = max(0, min(int(translation_settings.get("contextPairs", options.get("contextPairs", 10))), 20))
     _apply_secret(translation, translation_settings)
     persisted["translation"]["active"] = translation["id"]

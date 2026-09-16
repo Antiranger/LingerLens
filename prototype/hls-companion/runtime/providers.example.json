@@ -195,7 +195,6 @@
           "temperature": 0.3,
           "maxTokens": 256,
           "timeoutSeconds": 6,
-          "enableThinking": false,
           "contextPairs": 10,
           "contextSeconds": 90
         }

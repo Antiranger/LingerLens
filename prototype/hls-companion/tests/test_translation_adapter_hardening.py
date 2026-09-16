@@ -132,13 +132,16 @@ class ReasoningEffortTests(unittest.TestCase):
     """
 
     def payload(self, options: dict) -> dict:
+        return self.payload_for("https://api.deepseek.com/v1", options)
+
+    def payload_for(self, base_url: str, options: dict) -> dict:
         provider = OpenAICompatibleTranslationProvider(
             {
                 "id": "mt",
                 "label": "mt",
                 "kind": "openai-compatible",
                 "model": "m",
-                "baseUrl": "https://api.deepseek.com/v1",
+                "baseUrl": base_url,
                 "apiKey": "k",
                 "options": options,
             }
@@ -148,10 +151,18 @@ class ReasoningEffortTests(unittest.TestCase):
     def test_nothing_is_sent_by_default(self) -> None:
         self.assertNotIn("reasoning_effort", self.payload({}))
 
-    def test_prefixed_dashscope_vendors_are_not_sent_a_foreign_field(self) -> None:
-        # The DashScope host branch owns enable_thinking; reasoning_effort must not
-        # ride along to a server that was never asked to accept it.
-        self.assertNotIn("reasoning_effort", self.payload({"enableThinking": True}))
+    def test_the_two_vendor_fields_never_cross_hosts(self) -> None:
+        # DashScope owns enable_thinking (a hard rule for that host, because its
+        # Qwen3 reasoning models burn max_tokens thinking); everyone else owns
+        # reasoning_effort, and only when configured. Neither field may ride along
+        # to a server that was never asked to accept it.
+        dashscope = self.payload_for("https://dashscope.aliyuncs.com/compatible-mode/v1",
+                                     {"reasoningEffort": "none"})
+        self.assertEqual(dashscope["enable_thinking"], False)
+        self.assertNotIn("reasoning_effort", dashscope)
+
+        other = self.payload_for("https://api.deepseek.com/v1", {"reasoningEffort": "none"})
+        self.assertNotIn("enable_thinking", other)
 
     def test_a_configured_level_is_passed_through_verbatim(self) -> None:
         self.assertEqual(self.payload({"reasoningEffort": "none"})["reasoning_effort"], "none")
