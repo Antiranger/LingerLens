@@ -259,6 +259,13 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   // every 1s status poll while the resume condition stayed out of reach.
   assert.match(js, /stallAutoPauseSuppressed = true;/);
   assert.match(js, /video\.addEventListener\("play"/);
+  // A resume the viewer can wait for: the buffer is the only thing that makes
+  // playing possible, so a deep buffer must release the automatic pause even
+  // while the source is still stalled. Requiring a healthy source as well left
+  // the player holding a pause on a full 30s buffer with the picture frozen --
+  // observed live, not theorized.
+  assert.match(js, /if \(ahead >= STALL_RESUME_BUFFER_SECONDS\) \{/);
+  assert.doesNotMatch(js, /!stalled && ahead >= STALL_RESUME_BUFFER_SECONDS/);
   assert.match(js, /sessionAction === "stopping" \|\| lastSessionState !== "running"/);
   assert.match(html, /id="asrUsageCost"/);
   assert.match(html, /id="translationUsageCost"/);

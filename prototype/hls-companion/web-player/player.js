@@ -1075,7 +1075,21 @@
     if (!stalled) stallAutoPauseSuppressed = false;
 
     if (autoPausedForStall) {
-      if (!stalled && ahead >= STALL_RESUME_BUFFER_SECONDS) {
+      /*
+       * Resume as soon as the buffer can carry playback again, whether or not the
+       * source has recovered.
+       *
+       * The buffer is the only thing that makes playing possible, so it is the
+       * only thing worth waiting for. Requiring the source to be healthy too
+       * holds a pause the player does not need: the long run caught it sitting on
+       * a full 30s buffer, source stalled, picture frozen, banner counting
+       * seconds -- a stop the viewer cannot explain and cannot clear except by
+       * pressing play. (The pre-existing code had the same resume condition; it
+       * was reached only when the stall had already cleared, so the pause with a
+       * deep buffer was unreachable in practice. Checking the resume first made
+       * it reachable, and then "and the source is healthy" kept it stuck.)
+       */
+      if (ahead >= STALL_RESUME_BUFFER_SECONDS) {
         autoPausedForStall = false;
         banner.hidden = true;
         if (video.paused) {
