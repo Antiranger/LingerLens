@@ -522,9 +522,9 @@ class FakeASR(ASRProvider):
 
 
 class ScriptedTranslation(TranslationProvider):
-    def __init__(self, provider_id: str, outcomes: list[object], usage: dict | None = None):
+    def __init__(self, provider_id: str, outcomes: list[object], usage: dict | None = None, label: str | None = None):
         self.id = provider_id
-        self.label = provider_id
+        self.label = label or provider_id
         self.model = provider_id
         self.outcomes = outcomes
         self.usage = usage
@@ -541,6 +541,63 @@ class ScriptedTranslation(TranslationProvider):
         if isinstance(outcome, BaseException):
             raise outcome
         return TranslationResult(str(outcome), self.id, 1, self.usage)
+
+
+class FailureDetailTests(unittest.IsolatedAsyncioTestCase):
+    """What a translation failure is allowed to say about itself.
+
+    Live 2026-09-16: 77 minutes produced 21 failure records and not one reason,
+    because the detail line formatted each exception with a bare ``str()`` --
+    and the timeout/network family stringifies to ``''``. The same line named
+    providers by configuration id, so a session using a provider labelled
+    ``gemini-3.7-flash-low`` reported failures against ``bailian-qwen35-flash``,
+    an id the user had never configured, and read as a bug in the app.
+    """
+
+    def test_a_bare_timeout_is_named_rather_than_rendered_empty(self) -> None:
+        from companion.providers.fallback import _describe
+
+        # asyncio.TimeoutError is builtin TimeoutError on 3.11, and http.post_json
+        # re-raises it untouched, so this is the exact shape that reaches the log.
+        self.assertEqual(str(asyncio.TimeoutError()), "")
+        self.assertEqual(_describe(asyncio.TimeoutError()), "TimeoutError")
+        self.assertEqual(_describe(ConnectionError()), "ConnectionError")
+
+    def test_a_message_that_exists_is_kept(self) -> None:
+        from companion.providers.fallback import _describe
+
+        self.assertEqual(_describe(ValueError("boom")), "ValueError: boom")
+        self.assertEqual(_describe(ProviderUnavailableError("503 upstream")), "ProviderUnavailableError: 503 upstream")
+
+    def test_the_log_names_the_provider_the_way_the_user_configured_it(self) -> None:
+        from companion.providers.fallback import _name_of
+
+        provider = ScriptedTranslation("bailian-qwen35-flash", [], label="gemini-3.7-flash-low")
+        self.assertEqual(_name_of(provider), "gemini-3.7-flash-low")
+
+
+    async def test_the_failure_message_carries_every_reason_and_no_empty_slots(self) -> None:
+        first = ScriptedTranslation("preset-id", [asyncio.TimeoutError()], label="gemini-3.7-flash-low")
+        second = ScriptedTranslation("translation-1", [ProviderRefusalError("incomplete translation: finish_reason=length")])
+        chain = FallbackChain([first, second], failure_threshold=3, cooldown_seconds=60)
+        with self.assertRaises(RuntimeError) as caught:
+            await chain.translate(make_request())
+        message = str(caught.exception)
+        self.assertIn("gemini-3.7-flash-low: TimeoutError", message)
+        self.assertIn("translation-1: ProviderRefusalError: incomplete translation", message)
+        # The old formatter produced "preset-id: " with nothing after the colon.
+        self.assertNotIn(": ;", message)
+
+    async def test_a_provider_without_a_label_still_reports_its_id(self) -> None:
+        class Unlabelled(ScriptedTranslation):
+            def __init__(self) -> None:
+                super().__init__("bare-id", [asyncio.TimeoutError()])
+                del self.label
+
+        chain = FallbackChain([Unlabelled()], failure_threshold=3, cooldown_seconds=60)
+        with self.assertRaises(RuntimeError) as caught:
+            await chain.translate(make_request())
+        self.assertIn("bare-id: TimeoutError", str(caught.exception))
 
 
 class CacheWriteBillingTests(unittest.IsolatedAsyncioTestCase):

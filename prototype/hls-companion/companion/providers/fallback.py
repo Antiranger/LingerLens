@@ -29,6 +29,36 @@ class _Health:
     disabled_reason: str | None = None
 
 
+def _describe(error: BaseException) -> str:
+    """``TypeName: message``, because the timeout family stringifies to nothing.
+
+    ``http.post_json`` re-raises ``asyncio.TimeoutError`` untouched so the cue
+    deadline keeps its meaning, and ``str()`` of a bare TimeoutError -- like
+    ConnectionError and OSError -- is ``''``. Formatting with a bare ``{error}``
+    therefore logged ``"some-provider: "`` with nothing after the colon. A live
+    session recorded 21 translation failures in 77 minutes that way, without
+    recording a single reason for any of them.
+    """
+    name = type(error).__name__
+    text = str(error).strip()
+    return f"{name}: {text}" if text else name
+
+
+def _name_of(provider: object) -> str:
+    """What the user calls this provider, for logs a human has to act on.
+
+    The id is a configuration slug that can stop describing the endpoint:
+    a live session logged ``bailian-qwen35-flash`` while that provider was
+    labelled ``gemini-3.7-flash-low`` and pointed at a local gateway, which made
+    a deliberately configured provider look like one nobody had ever set up.
+    Falls back to the id when a provider carries no label.
+    """
+    label = getattr(provider, "label", None)
+    if label:
+        return str(label)
+    return str(getattr(provider, "id", "?"))
+
+
 class FallbackChain(TranslationProvider):
     """Try translation providers in order and cool repeatedly failing providers.
 
@@ -116,10 +146,10 @@ class FallbackChain(TranslationProvider):
             limit = getattr(provider.capabilities, "max_input_chars", 0) or 0
             if limit > 0 and len(request.source_text) > limit:
                 errors.append((
-                    provider.id,
+                    _name_of(provider),
                     ProviderRequestError(
                         f"cue of {len(request.source_text)} chars exceeds the "
-                        f"{limit}-char limit for {provider.id}"
+                        f"{limit}-char limit for {_name_of(provider)}"
                     ),
                 ))
                 continue
@@ -146,14 +176,14 @@ class FallbackChain(TranslationProvider):
             except (ProviderAuthError, ProviderRequestError, LanguageNotSupportedError) as exc:
                 # Deterministic config/auth/request problem: retrying this
                 # provider can only fail again this session.
-                state.disabled_reason = f"{type(exc).__name__}: {exc}"
-                errors.append((provider.id, exc))
+                state.disabled_reason = _describe(exc)
+                errors.append((_name_of(provider), exc))
                 continue
             except ProviderRateLimitError as exc:
                 # 429: fall through immediately and cool regardless of threshold.
                 state.consecutive_failures += 1
                 state.cooldown_until = self.clock() + self.cooldown_seconds
-                errors.append((provider.id, exc))
+                errors.append((_name_of(provider), exc))
                 continue
             except asyncio.CancelledError:
                 raise
@@ -164,14 +194,14 @@ class FallbackChain(TranslationProvider):
                 state.consecutive_failures += 1
                 if state.consecutive_failures >= self.failure_threshold:
                     state.cooldown_until = self.clock() + self.cooldown_seconds
-                errors.append((provider.id, exc))
+                errors.append((_name_of(provider), exc))
                 continue
             state.consecutive_failures = 0
             state.cooldown_until = 0.0
             return result
         if not attempted:
             raise RuntimeError("all translation providers are cooling down or disabled")
-        detail = "; ".join(f"{provider_id}: {error}" for provider_id, error in errors)
+        detail = "; ".join(f"{name}: {_describe(error)}" for name, error in errors)
         raise RuntimeError(f"all translation providers failed: {detail}") from errors[-1][1]
 
 
