@@ -151,18 +151,32 @@
      后端记录的时间戳可能落在已经交出去的记录之前，两者都会漏。 */
   let devLogCursor = 0;
   let devLogAlerted = false;
+  /* Two callers flush this: the poll loop every second, and showError the
+     instant a fatal error lands. Both read the cursor BEFORE awaiting the send,
+     so without this guard they select the same records and write them twice --
+     which is exactly how the 2026-09-16 log ended up with two identical
+     `hls.js fatal` lines one second apart from a single hls.js error. Duplicated
+     lines in the one artifact meant for after-the-fact diagnosis are worse than
+     a delayed line. */
+  let devLogFlushing = false;
 
   async function flushDevLog() {
+    if (devLogFlushing) return 0;
     if (!devLogClient || !diagnosticsLog || !devLogClient.get()?.enabled) return 0;
     const pending = diagnosticsLog.list()
       .filter((entry) => entry.order > devLogCursor)
       .sort((a, b) => a.order - b.order);
     if (!pending.length) return 0;
-    const written = await devLogClient.send(window.LingerLensDiagnostics.formatRecordLines(pending));
-    // 主进程每次有上限，只接受前 N 条；游标只能推进到真正落盘的那一条，
-    // 否则剩下的记录就永久丢了。
-    if (written > 0) devLogCursor = pending[Math.min(written, pending.length) - 1].order;
-    return written;
+    devLogFlushing = true;
+    try {
+      const written = await devLogClient.send(window.LingerLensDiagnostics.formatRecordLines(pending));
+      // 主进程每次有上限，只接受前 N 条；游标只能推进到真正落盘的那一条，
+      // 否则剩下的记录就永久丢了。
+      if (written > 0) devLogCursor = pending[Math.min(written, pending.length) - 1].order;
+      return written;
+    } finally {
+      devLogFlushing = false;
+    }
   }
 
   function renderDevLogState(state) {
@@ -792,7 +806,7 @@
           : data.type === Hls.ErrorTypes.MEDIA_ERROR ? "media"
           : null;
         if (errorType === null) {
-          showError(new Error(`hls.js fatal: ${data.details}`));
+          showError(new Error(`hls.js fatal: ${describeFatal(data)}`));
           return;
         }
         const decision = window.decideMseErrorRecovery({
@@ -2136,6 +2150,30 @@
     window.addEventListener("pointermove", resize);
     window.addEventListener("pointerup", end, { once: true });
     window.addEventListener("pointercancel", end, { once: true });
+  }
+
+  /*
+   * A fatal error's `details` alone is often not diagnosable -- the 2026-09-16
+   * session left `hls.js fatal: internalException` in the log and nothing else,
+   * which names the error without saying anything about it. `internalException`
+   * in particular is hls.js's catch-all for an exception thrown inside its own
+   * async machinery, so the type, the reason and the underlying error's first
+   * stack frame are what make the next occurrence actionable.
+   *
+   * Only ever called for fatal errors: non-fatal ones fire constantly on a
+   * stalling live stream and would drown the ring.
+   */
+  function describeFatal(data) {
+    const parts = [String(data?.details ?? "unknown")];
+    parts.push(`type=${data?.type ?? "?"}`);
+    if (data?.reason) parts.push(`reason=${data.reason}`);
+    const error = data?.error;
+    if (error) {
+      parts.push(`${error.name || "Error"}: ${error.message || String(error)}`);
+      const frame = String(error.stack || "").split("\n").slice(1).find((line) => line.trim());
+      if (frame) parts.push(`at ${frame.trim()}`);
+    }
+    return parts.join(" | ");
   }
 
   function showError(error) {
