@@ -8,6 +8,27 @@
   "use strict";
 
   const SOURCE_STALL_SECONDS = 5;
+  /*
+   * Margin above the longest segment, for the publisher-side stall check.
+   *
+   * `sourceStallSeconds` is "seconds since a NEW segment appeared", so on a
+   * perfectly healthy stream it ramps from 0 to about one segment and resets --
+   * the counter's normal peak IS the segment length. A threshold that does not
+   * clear that peak therefore measures segment-publication jitter rather than a
+   * stall.
+   *
+   * Measured live 2026-09-16 (1080p60): segments were 5.005s (26% of them) and
+   * 1.001s (71%), against this 5s threshold -- five milliseconds of margin. The
+   * banner fired on 8 of 101 samples of a stream that was provably healthy
+   * (privateMediaSeconds 4609s over 4606s of uptime, zero backlog, zero dropped
+   * cues), and the number it showed the user ("已停 5 秒") was just the segment
+   * length. Worst normal peak over that run: 5.7s.
+   *
+   * Two seconds clears that worst case with room to spare while staying well
+   * under the 8s/30s steps the backend uses to actually restart a stalled leg,
+   * so a genuine outage is still reported before recovery begins.
+   */
+  const STALL_MARGIN_SECONDS = 2;
   const MIN_DESIRED_DELAY_SECONDS = 3;
   const STABLE_BAND_SECONDS = 2;
   const RATE_BAND_SECONDS = 3;
@@ -75,20 +96,41 @@
   }
 
   /**
+   * Seconds without a new segment before it counts as a publisher stall.
+   *
+   * Scaled to the stream: a 1s-segment stream keeps the original 5s, a
+   * 5s-segment stream gets 8s. With no value at hand the original constant
+   * stands, so a caller that has no status yet behaves exactly as before.
+   */
+  function publisherStallThreshold(targetDuration) {
+    const longest = Math.ceil(finiteOr(targetDuration, 0));
+    if (!(longest > 0)) return SOURCE_STALL_SECONDS;
+    return Math.max(SOURCE_STALL_SECONDS, longest + STALL_MARGIN_SECONDS);
+  }
+
+  /**
    * Classify why the local live playlist stopped advancing.
    *
    * `sourceStallSeconds` is measured at the publisher (new private HLS
    * segments), while `sourceIngest[].sourceIdleSeconds` is measured at the
    * yt-dlp download legs.  The former can briefly stop while FFmpeg is still
    * receiving bytes, so it must not be presented as an upstream outage.
+   *
+   * The two are judged against DIFFERENT thresholds on purpose: the publisher
+   * emits discrete segments, so its threshold has to clear the segment length
+   * (see STALL_MARGIN_SECONDS), while the ingest legs are a continuous byte
+   * stream where a flat 5s means what it says. Measured worst ingest idle on a
+   * healthy 1080p60 stream: ~4.1s.
    */
   function classifySourceHealth({
     state,
     playlistReady = true,
     sourceStallSeconds = 0,
     sourceIngest = [],
+    targetDuration = 0,
   } = {}) {
     const publisherStall = Math.max(0, finiteOr(sourceStallSeconds, 0));
+    const publisherThreshold = publisherStallThreshold(targetDuration);
     const mediaLeg = Array.isArray(sourceIngest)
       ? sourceIngest.find((item) => item && item.role === "media")
       : null;
@@ -106,9 +148,9 @@
     // If ingest telemetry is available, it is the authority for an upstream
     // outage. A publisher-only stall is a local packaging delay.
     const upstream = mediaIdleValue === null
-      ? publisherStall > SOURCE_STALL_SECONDS
+      ? publisherStall > publisherThreshold
       : mediaIdleValue > SOURCE_STALL_SECONDS;
-    const packaging = !upstream && publisherStall > SOURCE_STALL_SECONDS;
+    const packaging = !upstream && publisherStall > publisherThreshold;
     return {
       active: upstream || packaging,
       kind: upstream ? "upstream" : packaging ? "packaging" : "none",

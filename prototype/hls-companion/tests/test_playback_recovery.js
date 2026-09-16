@@ -94,6 +94,82 @@ test("keeps a real media download outage visible", () => {
   });
 });
 
+/*
+ * Live 2026-09-16 (1080p60): segments were 5.005s and 1.001s, against a flat 5s
+ * publisher threshold -- five milliseconds of margin. The banner fired on 8 of
+ * 101 samples of a stream that was provably healthy (privateMediaSeconds 4609s
+ * over 4606s of uptime, zero backlog), showing the user the segment length
+ * itself as "已停 5 秒". `sourceStallSeconds` is "time since a NEW segment", so
+ * its normal peak IS the segment length and the threshold has to clear it.
+ */
+test("a healthy 5s-segment stream does not report a stall at its own cadence", () => {
+  const healthy = classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 5.7,          // worst normal peak measured over 500s
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 0.4 }],
+    targetDuration: 6,                // publisher's ceil(5.005)
+  });
+  assert.equal(healthy.active, false);
+  assert.equal(healthy.kind, "none");
+});
+
+test("a publisher stall beyond the segment length still reports", () => {
+  assert.deepEqual(classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 14,
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 0.4 }],
+    targetDuration: 6,
+  }), {
+    active: true,
+    kind: "packaging",
+    stallSeconds: 14,
+    publisherStallSeconds: 14,
+    mediaIdleSeconds: 0.4,
+  });
+});
+
+test("a short-segment stream keeps the original 5s threshold", () => {
+  // 1s segments must not become MORE sensitive than they were before: the
+  // scaled threshold is a floor, not a replacement.
+  const stalled = classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 6,
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 0.4 }],
+    targetDuration: 1,
+  });
+  assert.equal(stalled.active, true);
+  assert.equal(stalled.kind, "packaging");
+});
+
+test("the ingest legs keep the flat threshold, not the segment-scaled one", () => {
+  // The publisher emits discrete segments; the ingest legs are a continuous
+  // byte stream where 5s means what it says. Scaling that one too would hide a
+  // real download outage behind a long segment length.
+  const outage = classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 0.2,
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 6 }],
+    targetDuration: 6,
+  });
+  assert.equal(outage.active, true);
+  assert.equal(outage.kind, "upstream");
+});
+
+test("no targetDuration keeps the previous behaviour exactly", () => {
+  const unknown = classifySourceHealth({
+    state: "running",
+    playlistReady: true,
+    sourceStallSeconds: 8,
+    sourceIngest: [{ role: "media", sourceIdleSeconds: 0.4 }],
+  });
+  assert.equal(unknown.active, true);
+  assert.equal(unknown.kind, "packaging");
+});
+
 // Regression: the hls.js ERROR handler used to call recoverMediaError() for
 // every fatal MEDIA_ERROR and startLoad() for every NETWORK_ERROR with no
 // attempt cap and no backoff. In the bundled hls.js recoverMediaError() is a

@@ -950,6 +950,9 @@
         playlistReady: data.playlistReady,
         sourceStallSeconds: publisherStall,
         sourceIngest: data.sourceIngest,
+        // The publisher's stall threshold has to clear the segment length, or it
+        // measures publication jitter instead of a stall.
+        targetDuration: data.targetDuration,
       })
       : {
         active: Number.isFinite(publisherStall) && publisherStall > 5,
@@ -1039,6 +1042,7 @@
         playlistReady: data.playlistReady,
         sourceStallSeconds: stall,
         sourceIngest: data.sourceIngest,
+        targetDuration: data.targetDuration,
       })
       : {
         active: data.state === "running" && data.playlistReady && Number.isFinite(stall) && stall > 5,
