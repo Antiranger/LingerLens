@@ -151,13 +151,51 @@ translationContextMissingImmediatePredecessor: 10
 
 脚本会打印并写出：`checks`（D1/S1/R1 三项断言 + 资产）、`twoLegOffset`（两腿 C，raw 与取模并列）、`subtitlesEndpoint`（`cueCount`/`maxSeq`/`mediaAnchor` 与全部 stats）、`logs`、`serverStillAlive`。**每次运行都换一个端口和 TEMP runtime 目录，不会碰正在运行的应用。**
 
-### 3.5.5 这四次实测**没有**覆盖的
+### 3.5.6 第五次运行：把剩下三件也补上了（一个服务器进程、两个会话）
+
+**① 真实的 cue 字段名（上次我是猜的，读出来全是 null）**——`/api/subtitles` 的 cue 实际长这样：
+
+```json
+{"id":1,"seq":3,"tStart":1789649408.352711,"tEnd":1789649411.772711,"hold":1.2,
+ "src":"短命爆の一つとされる「龍図の滝」。","zh":"被视为短命瀑布之一的“龙图瀑布”。",
+ "state":"done","lang":"ja","timingSource":"asr","revision":3,"speaker":"1",
+ "generation":3,"chunkOrder":1,"startsMidSentence":false,"endsMidSentence":false,
+ "cutReason":"terminal_punctuation"}
+```
+
+字段是 **`src` / `zh`**（不是 `sourceText`/`translatedText`）、**`tStart` / `tEnd`**（不是 `start`/`end`）。**这就是整条字幕链路的端到端硬证据**：日语源文 + 中文译文 + 时间轴 + `state: "done"` + `timingSource: "asr"`，两个会话分别产出 **16 和 18 条**。
+
+**② `-copyts` 在真机命令行上确实存在**（§6.2 原先只是从代码读出来的）——按 OS 看到的进程树：
+
+```
+yt-dlp.exe   copyts=True  mpegts=True     ← 两条腿各一个
+yt-dlp.exe   copyts=True  mpegts=True
+ffmpeg.exe   copyts=True                  ← yt-dlp 外部下载器的 ffmpeg
+ffmpeg.exe   copyts=True
+ffmpeg.exe   copyts=False                 ← 打包 ffmpeg（吃 TCP 输入，本来不需要）
+```
+
+**③ 一个服务器进程内的 会话 A → stop → 会话 B**：
+
+| | 会话 1 | 会话 2 |
+|---|---|---|
+| `mediaSessionId` | `f9330488f34ae63add1b8e70f1d291e4` | `1280be91c9b5fab77a6e555f4283a800` |
+| 字幕条数 | 16 | 18 |
+| `anchor` | `exactOffset 5.007`，`windowOffset 7.3`，`spread 4.1` | `exactOffset 4.992`，`windowOffset 5.3`，`spread 0.2` |
+| `translationFailures` | 2 | **0** |
+| stop 之后 | `state: idle`、`mediaSessionId: null`、`sourceIngestCount: 0`、`subtitlesRunning: false` | 同左 |
+
+**这就是 A1 的 teardown 工作被真机跑了两遍**：同一个进程里字幕管线完整拆掉、再完整起来，`pendingFinals` 两次都是 0，**没有残留 ingest、没有会话重叠**。
+
+**顺带纠正我自己在 §6.2 末尾写错的一句。** 我说「腿间差每会话可变」，现在有三次会话的 `exactOffset`：**4.985、5.007、4.992**——**稳定在 ~5.0 秒**，与历史记录的 5.006 秒一致。真正可变的是**音频腿起步慢时**的情形：run 2 的 C 是 14.99 秒，因为那次音频腿晚了约 10 秒才出第一个 PTS。这**不是缺陷**：C 和该腿的 PCM 计数器是同一条腿同一次起步的产物，腿晚起步 10 秒时 C 和 pcm 一起平移 10 秒，映射 `privateMedia = pcm + C` 不变。这正是代码把原点对**锁存一次、之后拒绝移动**的原因。所以 600 秒界和 `< 2.0` 守卫针对的是**两条腿各自的首 PTS**，不是 C。
+
+### 3.5.5 这几次实测**没有**覆盖的
 
 - **仍然没有回绕**。三次带 PTS 的会话里 raw == 取模，说明没有一次跨越 26.5 小时边界。所以「可确认的回绕路径」在真机上**仍然只有合成回放的证据**。
-- **没有 Electron、没有页面**。四次都是独立后端；`player.js` 的 S1 改动只在**抽取函数 + 服务端资产字节**两层被验证过，**没有一次真实点击**。
-- **`/api/subtitles` 的 cue 字段名未证实**：我按猜测读 `start`/`end`/`sourceText`/`translatedText`，全部为 null；权威数字在 `stats` 里（`captionChunks: 27`、`maxSeq: 80`）。下一位若要断言「字幕内容正确」，得先读实际 cue 结构。
+- **没有 Electron、没有页面点击**。五次都是独立后端；`player.js` 的 S1 改动只在**抽取函数 + 服务端资产字节**两层被验证过，**没有一次真实点击**。它读的字段（`mediaSessionId`、`state`、`playlistUrl`）已经证明在真实载荷里存在且形状正确，逻辑有 10 条对**真实函数源码**的测试，但「点下去会怎样」仍然没人试过。
+- ~~**`/api/subtitles` 的 cue 字段名未证实**~~ **已证实，见 §3.5.6。**
 - **没有测 U1/U2/U3**，一次都没有；这三条仍需用户的手、眼与长时墙钟。
-- **没有超过 150 秒的会话**，所以「越跑越卡」在应用层有没有任何表现，这四次实测给不出证据。
+- **没有超过 150 秒的会话**，所以「越跑越卡」在应用层有没有任何表现，这几次实测给不出证据。
 
 ---
 
@@ -256,7 +294,9 @@ translationContextMissingImmediatePredecessor: 10
 - **`-copyts` 生效时**：两腿首 PTS 都是绝对源时间，re-base 不会发生 → 第 2 种成因不可达，`< 2.0` 守卫只在第 1 种（合法回绕后启动）上触发。
 - **`-copyts` 失效时**（有人改了 `ffmpeg_live_args`、或 yt-dlp 改了 `--downloader-args` 的解析方式——注释里恰好记录了「同名 downloader key 的重复 `--downloader-args` 是**拼接**而不是替换」这条被实测过、因此也可能随版本变化的性质）：两腿首 PTS 都是 ~1.4 → **守卫是唯一能发现这件事的东西**。
 
-所以守卫不是多余的谨慎，它是**对 `-copyts` 回归的唯一检测**。这一点让 §6.1 的取舍偏向了「保留」。**但请注意：我没有在真机上见过 1.4，这次也没有制造它**——上面那条 1.400 是仓库里记录的旧测量，我引用它，不代表我复现过。
+所以守卫不是多余的谨慎，它是**对 `-copyts` 回归的唯一检测**。这一点让 §6.1 的取舍偏向了「保留」。**而且这一点已在真机上确认过**（§3.5.6）：按 OS 看到的命令行，`yt-dlp.exe` 与它拉起的下载器 `ffmpeg.exe` **都带 `-copyts`**，打包用的那个 ffmpeg 不带（它吃 TCP 输入，本来不需要）。所以「`-copyts` 一直在生效」现在是实测事实，不是代码推断。
+
+**仍未见过的是 1.400 本身**：我没有在真机上见过 re-base，也没有去制造它（制造它等于故意破坏一个正在工作的会话）。所以「守卫能抓到 `-copyts` 回归」这一步是推理，不是实测。
 
 顺带：实测两次会话的腿间差是 **14.99 秒**和 **4.98 秒**，而仓库记录的历史值是 5.006 秒。**腿间差本身是每会话可变的、正常的**（两条腿各自从 HLS 活窗边界开始读，差几个分片），所以 600 秒界不会因此绷紧；要小心的是「腿间差大」不代表异常。
 
