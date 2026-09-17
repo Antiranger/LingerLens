@@ -1140,9 +1140,17 @@ class CompanionApplication:
         for ingest in (self.asr_audio_ingest, self.source_ingest):
             if ingest is None:
                 return ("unmeasured", "no-session")
-            if getattr(ingest, "sourceClockValid", None) is True:
+            # Ask the LEG, through the same property its /api/status projection is
+            # built from. Reading a snapshot dict here, or an attribute the ingest
+            # does not have, is how the first version of this refused every real
+            # session while its own tests passed against fakes that declared the
+            # field the real object lacked.
+            state = getattr(ingest, "source_clock_state", None)
+            if state is None:
+                return ("untrusted", "clock-validity-not-reported")
+            valid, reason = state
+            if valid:
                 continue
-            reason = getattr(ingest, "sourceClockReason", None)
             if reason in ("no-legs", "no-pts-probe"):
                 return ("unmeasured", reason)
             return ("untrusted", reason or "clock-validity-not-reported")

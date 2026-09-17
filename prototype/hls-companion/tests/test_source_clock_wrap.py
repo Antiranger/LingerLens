@@ -32,7 +32,7 @@ import companion.server as server_module
 from companion.media_anchor import MediaAnchor
 from companion.server import CompanionApplication
 from companion.source_timeline import PTS_HZ, PTS_MODULUS, MpegTsPtsProbe, signed_pts_delta
-from companion.ytdlp_ingest import YtDlpLiveIngest
+from companion.ytdlp_ingest import YtDlpLiveIngest, _TcpPump
 
 VIDEO_PID = 0x0100
 AUDIO_PID = 0x0101
@@ -302,6 +302,26 @@ class IngestAggregationTests(unittest.TestCase):
         self.assertFalse(snapshot["legThroughput"][0]["clockValid"])
         self.assertEqual(snapshot["legThroughput"][0]["clockReason"], "transport-discontinuity")
 
+    def test_the_status_field_and_the_consumer_read_one_source_of_truth(self) -> None:
+        # D: the /api/status projection and the exact-offset consumer must not be
+        # able to disagree. This drives the REAL pump and probe through the REAL
+        # property, which is the pairing that failed live.
+        pump = _TcpPump("video", pts_probe=MpegTsPtsProbe(want_audio=False))
+        self.addCleanup(pump.listener.close)
+        ingest = self.ingest([pump])
+        probe = pump._pts_probe
+
+        probe.feed(video_packet(500 * PTS_HZ))
+        self.assertEqual(ingest.source_clock_state, (True, None))
+        self.assertTrue(ingest.snapshot()["sourceClockValid"])
+        self.assertIsNone(ingest.snapshot()["sourceClockReason"])
+
+        probe.feed(video_packet(600 * PTS_HZ, discontinuity=True))
+        self.assertEqual(ingest.source_clock_state, (False, "transport-discontinuity"))
+        snapshot = ingest.snapshot()
+        self.assertFalse(snapshot["sourceClockValid"])
+        self.assertEqual(snapshot["sourceClockReason"], "transport-discontinuity")
+
     def test_one_bad_pump_makes_the_leg_untrustworthy(self) -> None:
         # D: a leg's pumps are both needed by the packaging mux, so the leg is as
         # good as its worst clock -- and the exact offset needs both legs.
@@ -394,9 +414,68 @@ class AnchorRefusalTests(unittest.TestCase):
     def leg(first, *, clock_valid=True, reason=None, pumps=1):
         return SimpleNamespace(
             source_pts_first=[first] * pumps,
-            sourceClockValid=clock_valid,
-            sourceClockReason=reason,
+            # The interface the consumer reads: a (valid, reason) pair on the real
+            # ingest. These fakes must answer the SAME question the real object
+            # answers -- the first version of this declared a sourceClockValid
+            # field the real object never had, so the suite stayed green while
+            # every live session was refused. See the real_leg tests below.
+            source_clock_state=(clock_valid, reason),
         )
+
+    def real_leg(self, want_audio: bool, ticks: int):
+        """A REAL ingest holding a REAL pump, probe and PTS recorder.
+
+        Everything the consumer touches is the shipped code: the probe parses the
+        bytes, _record_pts latches the origin, and source_clock_state answers the
+        clock question. Only the transport is skipped, so nothing here can be
+        shaped like a bug the production objects do not have.
+        """
+        pump = _TcpPump("audio" if want_audio else "video",
+                        pts_probe=MpegTsPtsProbe(want_audio=want_audio))
+        self.addCleanup(pump.listener.close)
+        ingest = object.__new__(YtDlpLiveIngest)
+        ingest.pumps = [pump]
+        ingest.source_pts = []
+        ingest.source_pts_first = []
+        record = ingest._record_pts(0)
+        record(pump._pts_probe.feed(audio_packet(ticks) if want_audio else video_packet(ticks)))
+        return ingest
+
+    def test_a_real_leg_object_answers_the_question_the_consumer_asks(self) -> None:
+        """The test that would have caught the live bug.
+
+        /api/status reported sourceClockValid true while the consumer asked the
+        OBJECT for a field that only existed in the snapshot DICT, refused the exact
+        mapping on every session, and -- because the refusal also switches the
+        sampled fallback off -- published no cues at all. Every other test in this
+        class asks a fake, and the fakes declared the field the real object lacked.
+        So this one uses the real ingest, the real pump and the real probe.
+        """
+        self.wire(self.real_leg(True, 505 * PTS_HZ), self.real_leg(False, 500 * PTS_HZ))
+        self.assertEqual(self.companion._leg_clock_state(), ("trusted", None))
+        self.assertAlmostEqual(self.companion._source_clock_offset(), 5.0, places=6)
+        self.assertTrue(self.companion._sampled_fallback_allowed())
+
+    def test_a_real_leg_whose_probe_gave_up_is_refused(self) -> None:
+        video = self.real_leg(False, 500 * PTS_HZ)
+        video.pumps[0]._pts_probe.feed(video_packet(600 * PTS_HZ, discontinuity=True))
+        self.wire(self.real_leg(True, 505 * PTS_HZ), video)
+        self.assertEqual(
+            self.companion._leg_clock_state(),
+            ("untrusted", "transport-discontinuity"),
+        )
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertFalse(self.companion._sampled_fallback_allowed())
+
+    def test_an_unstarted_real_leg_is_unmeasured_not_broken(self) -> None:
+        # G: a leg with no pumps yet has no clock to have broken.
+        idle_leg = object.__new__(YtDlpLiveIngest)
+        idle_leg.pumps = []
+        idle_leg.source_pts = []
+        idle_leg.source_pts_first = []
+        self.wire(self.real_leg(True, 505 * PTS_HZ), idle_leg)
+        self.assertEqual(self.companion._leg_clock_state(), ("unmeasured", "no-legs"))
+        self.assertTrue(self.companion._sampled_fallback_allowed())
 
     def bare_anchor(self) -> MediaAnchor:
         return MediaAnchor(clock=lambda: self.now)

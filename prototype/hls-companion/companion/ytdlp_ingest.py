@@ -526,6 +526,28 @@ class YtDlpLiveIngest:
         # would adopt legs into a job this Stop already terminated.
         self._tree = ProcessTreeJob()
 
+    @property
+    def source_clock_state(self) -> tuple[bool, str | None]:
+        """(usable, reason it is not) for THIS LEG's own PTS clock.
+
+        ONE source of truth, read by both the /api/status projection in snapshot()
+        and by the exact-offset consumer in server.py. That is not tidiness: the
+        first version of this shipped the value inside the snapshot DICT only, so
+        a reader of /api/status saw a valid clock while the consumer asked the
+        OBJECT for an attribute that did not exist, refused the exact mapping on
+        every real session, switched the sampled fallback off with it, and
+        published no cues at all. Its unit tests passed throughout, because their
+        fakes declared the field the real object lacked. A live run found it in
+        one line of log. Two ways of asking one question is how that happens.
+
+        A leg that has not started has no pumps yet: "no-legs", which the consumer
+        reads as "not measured" rather than "broken".
+        """
+        clocks = [pump.pts_clock for pump in self.pumps]
+        valid = bool(clocks) and all(ok for ok, _ in clocks)
+        reason = next((why for ok, why in clocks if not ok), "no-legs" if not clocks else None)
+        return (valid, reason)
+
     def snapshot(self) -> dict[str, Any]:
         running = any(process.poll() is None for process in self.processes)
         now = time.monotonic()
@@ -536,6 +558,7 @@ class YtDlpLiveIngest:
         # not rescued by its neighbour: "one leg is fine" is not "the pair shares
         # a clock", and the exact offset is a difference between the two.
         clocks = [pump.pts_clock for pump in self.pumps]
+        clock_valid, clock_reason = self.source_clock_state
         for index, pump in enumerate(self.pumps):
             rate: float | None = None
             if previous_marks and index < len(previous_marks[1]):
@@ -567,13 +590,10 @@ class YtDlpLiveIngest:
             "running": running,
             "sourceIdleSeconds": self._source_idle_seconds() if running else None,
             "sourceError": self.error,
-            "sourceClockValid": bool(clocks) and all(valid for valid, _ in clocks),
+            "sourceClockValid": clock_valid,
             # The FIRST leg that gave up, with its own reason: which leg broke is
             # the diagnostic, and the aggregate must not average that away.
-            "sourceClockReason": next(
-                (reason for valid, reason in clocks if not valid),
-                "no-legs" if not clocks else None,
-            ),
+            "sourceClockReason": clock_reason,
             "legThroughput": legs,
             # Last yt-dlp stderr lines (URLs already redacted) so a silently
             # falling-behind download is diagnosable from /api/status without

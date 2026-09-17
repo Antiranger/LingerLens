@@ -55,10 +55,14 @@ class MpegTsPtsProbe:
         self.want_audio = want_audio
         self._buffer = bytearray()
         self._media_pid: int | None = None
-        self._last_pts: float | None = None
         # O(1) clock state: the last trustworthy raw tick, how many full periods
         # have been crossed, and whether this clock may be used at all. No
         # per-packet history is kept; the diagnostic ring elsewhere is bounded.
+        #
+        # There is deliberately no "last returned value" here any more. R1 replaced
+        # the float comparison that used it with one on raw ticks, and the field
+        # survived for a while as state that was written and never read -- the kind
+        # of leftover that makes the next reader think something consumes it.
         self._previous_raw: int | None = None
         self._wrap_ticks = 0
         self.clock_valid = True
@@ -154,9 +158,7 @@ class MpegTsPtsProbe:
                 self._invalidate("ambiguous-reverse-wrap-or-reset")
                 return None
         self._previous_raw = raw
-        value = (raw + self._wrap_ticks) / PTS_HZ
-        self._last_pts = value
-        return value
+        return (raw + self._wrap_ticks) / PTS_HZ
 
     def _invalidate(self, reason: str) -> None:
         """Mark this leg's clock untrustworthy, recording the FIRST reason only."""

@@ -95,21 +95,22 @@ class SourceClockOffsetTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def leg(self, first: float | None, pumps: int = 1, *, clock_valid: bool = True, reason: str | None = None):
-        # A leg now has to vouch for its own clock as well as report an origin.
-        # The default here is the production one; the tests that care about a
-        # broken clock pass clock_valid=False explicitly.
+        # A leg now has to vouch for its own clock as well as report an origin, and
+        # it answers that as a (valid, reason) pair -- the same question the real
+        # ingest answers. The first version of this declared a sourceClockValid
+        # FIELD that the real object never had, so the suite passed while every live
+        # session's exact mapping was refused. test_source_clock_wrap.py now also
+        # drives the real object for exactly that reason.
         return SimpleNamespace(
             source_pts_first=[first] * pumps,
-            sourceClockValid=clock_valid,
-            sourceClockReason=reason,
+            source_clock_state=(clock_valid, reason),
         )
 
     def legs(self, *firsts: float | None, clock_valid: bool = True, reason: str | None = None):
         """One leg with one entry per pump, for the tests that need two origins."""
         return SimpleNamespace(
             source_pts_first=list(firsts),
-            sourceClockValid=clock_valid,
-            sourceClockReason=reason,
+            source_clock_state=(clock_valid, reason),
         )
 
     def wire(self, audio, video) -> None:
