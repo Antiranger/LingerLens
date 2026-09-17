@@ -1361,7 +1361,12 @@
   const providerDefaults = {
     "dashscope-qwen-realtime": { model: "qwen3-asr-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000 } },
     "dashscope-task-asr": { model: "fun-asr-realtime-2026-02-28", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference", options: { sampleRate: 16000, heartbeat: true } },
-    "openai-audio-transcriptions": { model: "", baseUrl: "https://api.openai.com/v1", options: { language: "ja", windowSeconds: 3, requestTimeoutSeconds: 20 } },
+    // No `language` here. The adapter builds its request from the global
+    // SourceLanguagePolicy (asr_openai_transcriptions.py:59), so a catalog key
+    // was a control that changed nothing -- and seeding it into every new profile
+    // kept writing a dead key for the user to find later. A catalog that still
+    // carries one loads, round-trips and is ignored, as before.
+    "openai-audio-transcriptions": { model: "", baseUrl: "https://api.openai.com/v1", options: { windowSeconds: 3, requestTimeoutSeconds: 20 } },
     "deepgram-streaming": { model: "nova-3", baseUrl: "wss://api.deepgram.com/v1/listen", options: { interimResults: true, smartFormat: true, endpointingMs: 100, vadEvents: true, utteranceEndMs: 1000, keepAliveSeconds: 8 } },
     "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700 } },
     "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
@@ -1520,7 +1525,6 @@
     const options = provider.options || {};
     const L = (key, fallback) => updateLabel(key, fallback);
     if (provider.kind === "openai-audio-transcriptions") return `
-      <label><span>${L("opt.language", "语言")}</span><input data-option="language" value="${escapeHtml(options.language || "ja")}"></label>
       <label><span>${L("opt.windowSeconds", "分窗秒数")}</span><input data-option="windowSeconds" type="number" min="0.5" step="0.5" value="${Number(options.windowSeconds || 3)}"></label>
       <label><span>${L("opt.requestTimeoutSeconds", "请求超时（秒）")}</span><input data-option="requestTimeoutSeconds" type="number" min="1" step="1" value="${Number(options.requestTimeoutSeconds || 20)}"></label>`;
     if (provider.kind === "soniox-realtime") return `

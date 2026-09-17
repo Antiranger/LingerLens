@@ -21,7 +21,6 @@
           "maxSentenceSilence": 400,
           "multiThresholdModeEnabled": true,
           "heartbeat": true,
-          "hotwordsEnabled": false,
           "contextEnabled": false,
           "startTimeoutSeconds": 10
         }

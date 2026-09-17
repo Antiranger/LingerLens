@@ -29,7 +29,6 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
             # when a live host speaks without pausing.
             "multiThresholdModeEnabled": True,
             "heartbeat": True,
-            "hotwordsEnabled": False,
             "contextEnabled": False,
             "startTimeoutSeconds": 10,
         },

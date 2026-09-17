@@ -6,6 +6,8 @@
 
 唯一的“有编辑框、无消费者”是 `language`：转写实际读取全局 SourceLanguagePolicy。唯一的“内置模板写入、无消费者”是 `hotwordsEnabled`：实际热词能力检查 `vocabulary`/`vocabularyId`。
 
+**（C3 更新，2026-09-17）** 这两个入口已**删除**，不是被实现：`language` 的编辑框与 `providerDefaults` 里的种子值、`hotwordsEnabled` 在内置模板与示例 JSON 里的行，都不再产生。旧 catalog 中已有的同名键**原样加载、保存、忽略**——兼容的含义是「可读取、可 round-trip」，不是「每个历史无效键永久保留一个编辑框」。`hotwordsEnabled` 没有被改写成 `vocabulary`/`vocabularyId`：一个布尔推不出词表或云端资源 ID，任何自动替换都是替用户发明语义。真正支持热词的适配器与它们收到的 `vocabulary` 不受影响。
+
 | 选项 | 读取位置 | Python 模板赋值 | 编辑器字段 |
 |---|---|---|---|
 | `appId` | asr_tencent_asr.py:152, asr_tencent_asr.py:217 | config.py:193 | player.js:1423 |
@@ -37,14 +39,14 @@
 | `filterBackgroundAudio` | asr_elevenlabs_scribe_realtime.py:197 | 无（可由 JSON/catalog 设置） | 无 |
 | `filterEmptyResult` | asr_tencent_asr.py:204, asr_tencent_asr.py:205 | 无（可由 JSON/catalog 设置） | 无 |
 | `heartbeat` | asr_dashscope_task.py:172, asr_dashscope_task.py:173 | config.py:31, config.py:67 | player.js:1429 |
-| `hotwordsEnabled` | **无** | config.py:32 | 无 |
+| `hotwordsEnabled` | **无** | ~~config.py:32~~ 已删除（C3） | 无 |
 | `includeLanguageDetection` | asr_elevenlabs_scribe_realtime.py:117, asr_elevenlabs_scribe_realtime.py:190 | config.py:167 | player.js:1416 |
 | `includeTimestamps` | asr_elevenlabs_scribe_realtime.py:188 | 无（可由 JSON/catalog 设置） | player.js:1415 |
 | `interimResults` | asr_deepgram_streaming.py:171 | config.py:99 | 无 |
 | `keepAliveSeconds` | asr_assemblyai_streaming.py:157, asr_deepgram_streaming.py:162, asr_soniox_realtime.py:152 | config.py:108, config.py:125 | 无 |
 | `keyterms` | asr_elevenlabs_scribe_realtime.py:192, asr_elevenlabs_scribe_realtime.py:193 | 无（可由 JSON/catalog 设置） | 无 |
 | `keytermsPrompt` | asr_assemblyai_streaming.py:200, asr_assemblyai_streaming.py:201 | 无（可由 JSON/catalog 设置） | 无 |
-| `language` | **无** | 无（可由 JSON/catalog 设置） | player.js:1393 |
+| `language` | **无** | 无（可由 JSON/catalog 设置） | ~~player.js:1393~~ 已删除（C3） |
 | `languageHintsStrict` | asr_soniox_realtime.py:171, asr_soniox_realtime.py:174 | 无（可由 JSON/catalog 设置） | 无 |
 | `languages` | asr_dashscope_task.py:83 | config.py:25, config.py:63, config.py:81 | 无 |
 | `maxDelaySeconds` | asr_speechmatics_realtime.py:142, asr_speechmatics_realtime.py:143 | config.py:179 | player.js:1421 |
