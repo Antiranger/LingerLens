@@ -10,7 +10,9 @@
 
 ## 1. 一句话现状
 
-分支 `wip/subtitle-anchor-correction`（`origin/main` = `fda1319` 之后再 46 个提交，HEAD = `435fddb`）已完成 v2 计划全部十个工作包，每项一个（S1 两个）独立可回退提交，全部已推送、工作树干净、`npm run ci` 退出 0。**没有任何一项被声称已验收，除它自己的测试之外。**
+分支 `wip/subtitle-anchor-correction`（`origin/main` = `fda1319` 之后再 47 个提交，HEAD = `ad04dee`）已完成 v2 计划全部十个工作包，每项一个（S1 两个）独立可回退提交，全部已推送、工作树干净、`npm run ci` 退出 0。
+
+**随后做了四次真实运行实测（§3.5），并且第一次就抓到一个会让 R1 在每个会话上失效的接线缺陷，已修复并验证。** 也就是说：**在实测之前，「R1 已完成」这个结论是错的**——它的单元测试全绿，而生产路径从未走到过它。**没有任何一项被声称已验收，除它自己的测试与这四次实测之外。**
 
 ## 2. 提交 → 工作包对照
 
@@ -24,6 +26,7 @@
 | `bcbcb2a` | E1-R | 恢复策略改收布尔 `upstreamStalled`，调用者同提交迁移，无兼容别名 |
 | `8773f7e` | A3 | quiet-source 文案不再预测；自动暂停单独记录一次动作 |
 | `85420f2` | R1 | 33 位 PTS 回绕展开 + 解析 `discontinuity_indicator` + 不可信时钟停发精确字幕 |
+| `ad04dee` | R1 修复 | 实机实测发现消费者问的是**对象属性**而 R1 只写了**快照字典**，于是每个会话都被拒绝、字幕一条不发；改为单一 `source_clock_state` 属性，两端同读（§3.5.1） |
 | `cb552e0` | C3 | 删除两个无消费者的选项入口（`options.language`、`hotwordsEnabled`） |
 | `3a30ada` | D1 | 删除整个 `sourceRecovery` 投影与 `RecoveryPolicy` 接线 |
 | `31e7c08` | L1 | 离线时长退化分析器（在隔离工作树完成，cherry-pick 进来） |
@@ -55,9 +58,114 @@ npm test                            # 31 pass（注意：npm test 默认只匹�
 
 red/green 用一个临时目录 + `git show <sha>:<path>` 复现，**没有切换工作树、没有动产品树**；R1 的 red 证据脚本在工作区 `.scratch/r1-red-evidence.py`（gitignored，你读不到）。临时目录已删除。
 
+## 3.5 实机实测结果（四次真实运行，全部数据）
+
+**为什么做**：本分支此前**全部证据都是测试进程内的**。逻辑够用，接线不够用——见下面第一条，它背后站着 687 个通过的测试。
+
+**方法**：`prototype/hls-companion/scripts/live-backend-smoke.py`（本轮新增、已入库）。它起一个**真的** companion 服务器（真 HTTP、真 `yt-dlp`、真 `ffmpeg`、真 ASR），对它打 `/api/status`、`/api/start`、`/api/subtitles`、`/api/logs`、`/api/stop`，只记录投影后的字段（不含签名 URL、不含凭据）。请求体与 `player.js:735-748` 逐字一致——**这一点是第一次运行教会的**：服务器用 `body["subtitles"]["enabled"]` 作为字幕总开关，只发 `{"url": ...}` 会跑出一个「一切正常但没有字幕管线」的会话，于是 R1 的路径根本没被碰到。
+
+**安全属性**（都是刻意设计的，复现时请保留）：整个脚本有硬墙钟上限；runtime 目录在 TEMP，**从不碰用户的真实配置/媒体目录**；只按 PID 与已登记的子孙进程结束，**从不按进程名杀**；`auth-snapshot.json` 只在导入 cookie 时写，本脚本从不导入。
+
+### 3.5.1 最重要的结果：R1 上线时是**坏的**，实测抓到并已修（`ad04dee`）
+
+第一次带字幕的真实会话，日志里只有一行就把问题说完了：
+
+```
+[warn/media] 源时钟不可用于精确对齐，字幕改用保守路径：source-clock-invalid:clock-validity-not-reported
+```
+
+**原因**：R1 把 `sourceClockValid` / `sourceClockReason` 只放进了 `snapshot()` 返回的**字典**里，而 `server.py` 的消费者问的是**对象**上的 `getattr(ingest, "sourceClockValid", None)`——对象从来没有这个属性。于是 `_leg_clock_state` 对**每一个会话**都回答「untrusted」。
+
+**后果比「保守」严重得多**：拒绝同时会把 `sampled_fallback_allowed` 关掉，所以不是退回采样窗，而是**完全不再发布对齐字幕**：
+
+| | 修前（run 2） | 修后（run 3） |
+|---|---|---|
+| 时钟拒绝日志行数 | **1** | **0** |
+| `mediaAnchor` | 无（`ready: false`） | `{ready: true, samples: 17, offset: 4.985, exactOffset: 4.985, windowOffset: 0.4, spread: 0.25, drift: 0.1}` |
+| 发布字幕条数 | **0**（会话已跑 80 秒、ASR 已转写 65 秒） | **27**（`maxSeq: 80`） |
+| `pendingFinals` / `finalDiscarded` / `unmappedObservations` | — | **0 / 0 / 0** |
+
+**为什么 687 个测试没抓到**：所有测消费者的用例都用**假腿**，而假腿写成 `SimpleNamespace(sourceClockValid=True)`——它们声明的正是真实对象缺少的那个字段。假腿只能和它照抄的接口一样正确，而它抄的是 bug。
+
+**修法**：`YtdlpLiveIngest` 增加 `source_clock_state` 属性，**`/api/status` 的投影与消费者都读它**，只有一处计算，所以「读到的」和「据以行动的」不可能再分叉。
+
+**能抓住它的两个测试**（已加，且已验证在旧码上红）：
+- `test_a_real_leg_object_answers_the_question_the_consumer_asks`：真实 ingest + 真实 `_TcpPump` + 真实 `MpegTsPtsProbe` + 真实 `_record_pts`，喂真实 TS 包。在 `85420f2` 上失败信息是 `('untrusted', 'clock-validity-not-reported') != ('trusted', None)`——**与线上失败逐字相同**。
+- `test_the_status_field_and_the_consumer_read_one_source_of_truth`：把「投影字段与属性必须同步」本身钉住。
+
+red/green：临时目录 + `git show 85420f2:<path>`，30 条中**旧码 8 条红**（6 failures + 2 errors），新码 30/30 绿。
+
+### 3.5.2 各次运行的原始数字
+
+| | run 1 | run 2（修前） | run 3（修后） | run 4（脚本自检） |
+|---|---|---|---|---|
+| 请求体 | 只有 `url` | 完整 | 完整 | 完整但 `--no-subtitles` |
+| `D1_sourceRecovery_absent` | **true** | **true** | **true** | **true** |
+| `S1_mediaSessionId`（idle → 会话中） | null → `1ef0cbb4…` | null → `ef8d6877…` | null → `8c3f5224…` | null → `b1d5c8e2…` |
+| 时钟拒绝行 | — | **1** | **0** | **0** |
+| `sourcePtsFirst`（asr-audio / media video） | 无 ASR 腿 | `686.388656` / `671.4` | `26.384667` / `21.4` | `null` / `421.4` |
+| 两腿 C（raw） | — | **14.988656 s** | **4.984667 s** | — |
+| 两腿 C（tick 取模） | — | 14.988656 s（相等 → 无回绕） | 4.984667 s（相等） | — |
+| `clockValid`（两腿、每个 pump） | — | true / null | true / true | true |
+| 字幕条数 | 0（未请求） | **0** | **27** | 0（未请求） |
+| 进程残留 | 0 | 0 | 0 | 0 |
+
+**交叉验证**：run 3 里我从两腿首 PTS 自己算的 C 是 `26.384667 − 21.4 = 4.984667 s`，而 anchor 独立报出 `exactOffset: 4.985`——**同一毫秒级数字的两次独立计算**，一次来自我的取模算术、一次来自产品自己的路径。
+
+**顺带确认了决策文档的一个断言**：同一会话里采样窗中位数是 `windowOffset: 0.4`，而真值是 `4.985`——**采样窗偏了 4.6 秒**，与文档记录的「偏 4.44 秒」同量级。所以「精确路径必须真的生效」不是整洁问题。
+
+**四次运行的 PTS 基线**：671.4、21.4、421.4（三次带媒体腿的会话）。**同一个流、同一天，基线差了一个数量级**。它显然不是墙上时钟（否则每次都会很大且递增），更像是该流自己编码器的运行时长——但**我没有确认**。这件事直接影响 §6.1 的风险判断：只有当基线落在 2 秒附近时，那个守卫才会误伤，而基线本身在 21~671 之间游走，**离 2 秒并不远**。
+
+### 3.5.3 顺带量到的其它真实数字（run 3，150 秒会话）
+
+```
+timelineSource: private-hls      captionSource: audio-leg      asrProviderId: asr-1 (Soniox)
+translationProviderId: bailian-qwen35-flash (gemini-3.7-flash-low)   translationWorkersAlive: 4/4
+pcmOffset: 144.5   asrSeconds: 144.5   captionChunks: 27   translationAttempts: 27
+chunkSpanP50/P95/max: 2.1 / 6.18 / 6.84      chunkCutReasons: {terminal_punctuation: 26, clause_boundary: 1}
+sourceReadyLagP50/P95: 7.26 / 12.46          totalReadyDelayP50/P95: 8.375 / 15.109
+terminalOutcomeLagP50/P95: 9.09 / 15.006     readyLagP50/P95: 9.09 / 15.006
+asrAdapterDelayP50/P95: 6.328 / 12.875       translationProviderDelayP50/P95: 1.547 / 2.75
+asrReconnects: 0   degradeLevel: 0   latencyUnknown: 0   translationBacklog: 0   translationDropped: 0
+translationDeadlineExpired: 0    translationFailures: 2    translationProviderFailures: 2
+lastTranslationError: "TimeoutError"    lastError: "TimeoutError"    avgTranslationLatencyMs: 1898.5
+sourceOnlyCues: 2   overlongCues: 1   pendingEvidenceOverSoftSpan: 12   spanOverSoftTarget: 2
+translationContextMissingImmediatePredecessor: 10
+```
+
+**三条值得下一位执行者注意的**：
+
+1. **`translationFailures: 2 / translationAttempts: 27`，且 `translationProviderFailures: 2`、`translationDeadlineExpired: 0`、`lastTranslationError: "TimeoutError"`。** 这是 M1 那个「75 条失败」现象在**受控短会话里的复现**：失败是**provider 层的超时**，不是期限到期、不是 B2-R 的资格跳过（跳过一次都没有）。provider 延迟 p95 是 **2.75 秒**，而预算是 6 秒。这意味着 M1 的归因问题仍然开放，但**现在有一个可重复的短实验**可以去查它，不必再依赖四份旧日志。
+2. **延迟的主项是 ASR，不是翻译**：`asrAdapterDelayP50 6.328` 对 `translationProviderDelayP50 1.547`。目标的 `targetDelaySeconds` 是 15，实测 `totalReadyDelayP95 15.109` —— **p95 刚好压线**。
+3. **费用无法从 status 读出**：`asrEstimatedCostCny: null`（reason「ASR pricing unavailable」）、翻译定价「incomplete for provider bailian-qwen35-flash」。能读出的是用量：本例 ASR 144.5 秒、翻译 24–27 次调用 / 18,104 tokens，**全部走 `bailian-qwen35-flash`，回退 provider 一次都没被触发**。要估价必须另配价目表。
+
+**服务端资源也顺手验证了**：`/player.js` 200（132,794 字节，含 S1 的 `claim !== uiGeneration`）、`/playback-recovery.js` 200（11,633 字节，含 D1 的注记）。两个文件是**从服务器真取回来的**，不是磁盘上的。
+
+### 3.5.4 复现方式
+
+```bash
+# 生产 venv；带字幕会有真实 ASR/翻译调用，--no-subtitles 则只验证播放
+.venv-desktop/Scripts/python.exe prototype/hls-companion/scripts/live-backend-smoke.py \
+    --stream https://www.youtube.com/@ANNnewsCH/live --watch 150 --out evidence.json
+```
+
+脚本会打印并写出：`checks`（D1/S1/R1 三项断言 + 资产）、`twoLegOffset`（两腿 C，raw 与取模并列）、`subtitlesEndpoint`（`cueCount`/`maxSeq`/`mediaAnchor` 与全部 stats）、`logs`、`serverStillAlive`。**每次运行都换一个端口和 TEMP runtime 目录，不会碰正在运行的应用。**
+
+### 3.5.5 这四次实测**没有**覆盖的
+
+- **仍然没有回绕**。三次带 PTS 的会话里 raw == 取模，说明没有一次跨越 26.5 小时边界。所以「可确认的回绕路径」在真机上**仍然只有合成回放的证据**。
+- **没有 Electron、没有页面**。四次都是独立后端；`player.js` 的 S1 改动只在**抽取函数 + 服务端资产字节**两层被验证过，**没有一次真实点击**。
+- **`/api/subtitles` 的 cue 字段名未证实**：我按猜测读 `start`/`end`/`sourceText`/`translatedText`，全部为 null；权威数字在 `stats` 里（`captionChunks: 27`、`maxSeq: 80`）。下一位若要断言「字幕内容正确」，得先读实际 cue 结构。
+- **没有测 U1/U2/U3**，一次都没有；这三条仍需用户的手、眼与长时墙钟。
+- **没有超过 150 秒的会话**，所以「越跑越卡」在应用层有没有任何表现，这四次实测给不出证据。
+
+---
+
 ## 4. 还没做的，分五类（**这是本文档最主要的部分**）
 
 ### 4.1 等用户授权或材料（执行者做不了，也不该自己决定）
+
+**已解除一项**：真机后端实测已获授权并做完（§3.5，四次运行，脚本已入库）。它抓到了一个 687 个单元测试漏掉的接线缺陷。剩下三项：
 
 1. **L1 真实 120 分钟同会话长跑**：未授权、未跑。因此 **U3「越跑越卡」保持未验收**——不能从「清理了十条缺陷」推导它已解决。
 2. **R1 的歧义类输入**：见 §6.1，行为已按批准实现，但**问题本身未解决**，需要真机材料。
@@ -83,11 +191,7 @@ red/green 用一个临时目录 + `git show <sha>:<path>` 复现，**没有切�
 
 ### 4.5 **执行者自己留下的缺陷**（最该先修的一类）
 
-1. **`source_timeline.py` 的 `_last_pts` 变成了只写不读的状态。** R1 用基于 raw tick 的规则取代了旧的 `value < self._last_pts` 比较，于是第 58 行声明、第 158 行赋值，**没有任何读取者**。
-   ```bash
-   git grep -n "_last_pts" -- "*.py"     # 只有 source_timeline.py:58 与 :158
-   ```
-   修法是一行（删掉声明与赋值）。**我没有在宣布完成后自行改它**，因为用户要求「每次改动之前都要 Git 回复一下」（可回退），也要求机制类改动先讨论；但这条是纯清理，任何下一位执行者可以顺手删。
+1. ~~**`source_timeline.py` 的 `_last_pts` 变成了只写不读的状态。**~~ **已修（`ad04dee`）。** R1 用基于 raw tick 的规则取代了旧的 `value < self._last_pts` 比较，于是第 58 行声明、第 158 行赋值，没有任何读取者。经用户同意后一并删除，并在原位留了一条注释说明为什么不再需要「上一个返回值」。
 2. **A1 覆盖计划 D/G 九行中的 8 行。** 未覆盖的一行是「provider 关闭时产生的 tail final 不得从完整字幕路径上被丢掉」——drain 本身有测试（`test_a_tail_final_emitted_at_close_is_still_consumed`），start 失败路径另有覆盖，但这一行本身没有。我**不知道怎么诚实地补**（见 §6.3）。
 3. **S1 的 `stop()` 有一个相对旧行为的收窄**：屏障先判 `pendingStop`、后判 idle 采样，所以停止请求在途时 idle 也不解锁。这是 v2 §W4 规定的顺序，我照做并用单独测试钉住了，但它确实是收窄，值得复核。
 4. **B2-R 的 `R ≤ 0` 偏离**：原决策文档 §3.2 的写法我做了偏离，后来由 B2-R 的「每次尝试检查总期限」取代。已在执行记录 §3 登记。
@@ -96,12 +200,15 @@ red/green 用一个临时目录 + `git show <sha>:<path>` 复现，**没有切�
 
 用户明确问了这一点，所以写清楚，**不要假设下一位执行者能跑所有东西**。
 
-**能（技术上可行，但需要用户点头，因为会起真实进程 / 真实网络 / 可能产生费用）**：
+**能做、而且已经做过了（§3.5）**：
 
-- 单独启动 companion Python 后端（不需 GUI），用真实 HTTP 打 `/api/status`、`/api/start`、`/api/stop`。这能给出**真的**载荷级证据：D1 真的不再有 `sourceRecovery`、S1 的 `mediaSessionId` 真的在换、R1 的 `sourceIngest[].clockValid` 真的出现、A1 在真实解码器失败下真的排空 stderr、B2-R 面对真实 localhost 网关的期限行为。**这一类实测我一次都没做过**（所有证据都是进程内测试），是最便宜、最该先补的一块。
-- 用真实 `yt-dlp` + `ffmpeg` 拉一条 24/7 流（本次会话已验证可用：`@ANNnewsCH/live`、`@tbsnewsdig/live`、`@ntv_news/live`），观察两腿真实 `sourcePtsFirst`、`sourceIdleSeconds`、`clockValid`。**这直接回答 §6.1 与 §6.2 的两个未知**。
-- 跑 Electron 并按要求驱动 player 页面（`npm run desktop:dev:log -- --remote-debugging-port=9222`，日志落 `.scratch/dev-logs/`），做计划要求的**一次** Start→Stop→Start。风险：这会启动 GUI 应用，而这台机器历过整机冻结（U2），所以**必须用户在场同意**。
-- 离线跑 L1 分析器（已做，47 个测试）。
+- 单独启动 companion Python 后端（不需 GUI），用真实 HTTP 打 `/api/status`、`/api/start`、`/api/subtitles`、`/api/logs`、`/api/stop`，并对真实 24/7 流跑真实会话。**四次运行，脚本已入库：`prototype/hls-companion/scripts/live-backend-smoke.py`。** 它一次就抓到一个 687 个单元测试漏掉的接线缺陷（§3.5.1），所以**下一位执行者在声称任何接线完成之前都应该先跑它**。
+- 用真实 `yt-dlp` + `ffmpeg` 拉真实 24/7 流（本次用到 `@ANNnewsCH/live`），观察两腿真实 `sourcePtsFirst`、`sourceIdleSeconds`、`clockValid`、`mediaAnchor`。**已得到真数字**（§3.5.2、§3.5.3）。**仍未得到回绕**：三次带 PTS 的会话 raw == 取模。
+
+**还没做、但技术上可行（需要用户点头，因为会起真实进程 / 真实网络 / 产生费用）**：
+
+- 跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。应用**此刻就在运行**（`electron.exe . --remote-debugging-port=9222`，CDP 可用，Node v24 自带 WebSocket 客户端），所以我随时可以做；但它会在用户屏幕上真的开始播放，且必须用户在场同意。这是 S1 页面侧唯一还没被真实点击验证的部分。
+- 更长的会话（>150 秒）以观察退化、或让它跨过 26.5 小时边界。
 
 **不能**：
 
@@ -114,7 +221,7 @@ red/green 用一个临时目录 + `git show <sha>:<path>` 复现，**没有切�
 
 ## 6. 执行者真正搞不懂的（按风险排序）
 
-### 6.1 R1 的「首原点 < 2 秒」拒绝，可能对**合法**情形过狠（最高风险）
+### 6.1 R1 的「首原点 < 2 秒」拒绝：风险已量化，但没有消除（最高风险）
 
 回绕本身是确定的数学：33 位 PTS @ 90 kHz，周期 **95,443.717688 秒 = 26.512144 小时**。歧义不在回绕，而在**一条腿的第一个 PTS 落在 0～2 秒**这种开局，它有三种长得一样的成因：
 
@@ -124,11 +231,34 @@ red/green 用一个临时目录 + `git show <sha>:<path>` 复现，**没有切�
 
 1 与 2 都是「0～2 秒」，**单看两腿首次数值无法区分**；而区分决定 `C = A0 − V0` 是对的还是**自信地错**（两条 re-base 原点相减得 ~0）。按用户批准的第 6 项，我把整类**明示为不可确认**（原因串 `origin-rebase-or-wrap-ambiguous`），不取模硬凑、也不退回采样映射。
 
-**我不确定的地方**：如果第 2 种在本产品里根本不可能发生（`-copyts` 一直在生效，两腿首 PTS 实测是绝对源时间 27886.406 / 27881.4），那么这个 `< 2.0` 守卫就只在第 1 种——**完全合法**的情形——上触发，代价是**那条会话整段不再发布对齐字幕**（`exact_offset` 一直 None、`ready` 一直 False、`offset` 一直 None，直到下一次新会话）。这个代价是不是可接受，我没有把握；计划接受了它，但计划的理由建立在「2 是真实可能」之上。**我无法从仓库里确认 2 是否可达**，因为没有任何记录显示一条腿曾被 re-base（也没有反向记录）。这需要一次真实运行去观察两腿首 PTS 的分布。
+**实测把风险量化了三件事**（§3.5.2）：
 
-### 6.2 这个产品里一条腿到底会不会被 re-base（同一个问题的另一半）
+- 三次带媒体腿的真实会话，首 PTS 分别是 **671.4、21.4、421.4**——**同一个流、同一天，差一个数量级**。它显然不是墙上时钟，最像该流自己编码器的运行时长，**但我没有确认**。
+- 因此「2 秒」离真实值**并不远**：最近的一次只有 **21.4 秒**，是阈值的 ~10 倍。如果某天基线落在 2 秒附近（流刚开播、或刚跨过回绕），守卫就会触发，而代价是**那条会话整段不再发布对齐字幕**。
+- 同时，实测也确认了守卫**在正常会话上不会误触发**（两腿都 ≥ 2.0，全部 `clockValid: true`、`clockReason: null`，`exactOffset` 正常算出 4.985）。
 
-`server.py` 的注释说 `-copyts` 让两腿保持源时间戳、「而不是让每条腿的 mpegts 复用器 re-base 到自己的 1.4 秒原点」；`ytdlp_ingest.py` 的 `start()` 注释又说「本地 ffmpeg 复用器把每条腿的输出 re-base 到自己的 1.4 秒原点」。**这两句话是互相矛盾的读法**，我没有解开。它直接决定 6.1 的风险有多大。
+**所以剩下的问题不是「守卫对不对」，而是「代价可不可以接受」**：它只在合法情形上误伤时才有代价，而那种情形**概率低但代价是那一次会话完全没有字幕**。计划接受了这个取舍，理由建立在「第 2 种是真实可能的」之上——见 §6.2，那条理由**现在是站得住的**。要不要重新权衡，是用户的产品决定（§7 第 4 项）。
+
+### 6.2 一条腿到底会不会被 re-base —— **已从代码回答：会，但只在 `-copyts` 失效时**
+
+这个我原先解不开的自相矛盾，现在有答案了。`ytdlp_ingest.command()` 里：
+
+```python
+"--downloader-args", "ffmpeg_i:-copyts",
+```
+
+是**无条件**写进命令的（`ffmpeg_live_args` 总是被拼进返回值），而且它上面那段注释记录了一次**真机测量**（2026-09-16，TBS NEWS DIG / ANNnewsCH 两条流）：
+
+> the mpegts muxer's default output offset is what rewrites it: **1.400 without this flag, ~27000 with it**, rising with wall clock, **on both the video-only and the audio-only leg**
+
+所以结论是：
+
+- **`-copyts` 生效时**：两腿首 PTS 都是绝对源时间，re-base 不会发生 → 第 2 种成因不可达，`< 2.0` 守卫只在第 1 种（合法回绕后启动）上触发。
+- **`-copyts` 失效时**（有人改了 `ffmpeg_live_args`、或 yt-dlp 改了 `--downloader-args` 的解析方式——注释里恰好记录了「同名 downloader key 的重复 `--downloader-args` 是**拼接**而不是替换」这条被实测过、因此也可能随版本变化的性质）：两腿首 PTS 都是 ~1.4 → **守卫是唯一能发现这件事的东西**。
+
+所以守卫不是多余的谨慎，它是**对 `-copyts` 回归的唯一检测**。这一点让 §6.1 的取舍偏向了「保留」。**但请注意：我没有在真机上见过 1.4，这次也没有制造它**——上面那条 1.400 是仓库里记录的旧测量，我引用它，不代表我复现过。
+
+顺带：实测两次会话的腿间差是 **14.99 秒**和 **4.98 秒**，而仓库记录的历史值是 5.006 秒。**腿间差本身是每会话可变的、正常的**（两条腿各自从 HLS 活窗边界开始读，差几个分片），所以 600 秒界不会因此绷紧；要小心的是「腿间差大」不代表异常。
 
 ### 6.3 A1 那一行未覆盖的测试，我不知道怎么诚实地补
 
@@ -156,13 +286,13 @@ red/green 用一个临时目录 + `git show <sha>:<path>` 复现，**没有切�
 
 ## 7. 需要用户拍板的决定（供下一位执行者组织提问）
 
-1. **是否授权一次短的真机后端运行**（起 companion、打真实 HTTP、可选拉一条真实 24/7 流）。这是最便宜也最缺的一类证据，能同时回答 6.1、6.2、4.1.3 的一部分。需要先说清：会起真实进程、真实网络、ASR 主走本机 gateway 但**回退是真实付费 API**、以及长跑需要先接 kill switch。
-2. **是否授权 L1 真实 120 分钟长跑**（费用 + 机器时间 + 需要先接 kill switch）。不授权则 U3 永远保持未验收。
+1. ~~**是否授权一次短的真机后端运行**~~ **已做（§3.5），并且抓到了一个会让 R1 在每个会话上失效的缺陷。** 建议改成：**是否授权在 Electron 里做那一次真实 Start→Stop→Start**（S1 页面侧唯一还没被真实点击验证的部分；应用此刻正在运行、CDP 可用，但会在屏幕上真的开始播放，需要用户在场）。
+2. **是否授权 L1 真实 120 分钟长跑**（费用 + 机器时间 + 需要先接 kill switch）。不授权则 U3 永远保持未验收。实测已知：带字幕的一次 150 秒会话消耗 ASR 144.5 秒、翻译 24 次调用 / 18,104 tokens，**价目不可得**（`asrEstimatedCostCny: null`），所以费用必须先估。
 3. **是否让执行者接 L1 的 kill switch**（只接线、不跑长测）。
-4. **R1 的 `< 2.0` 守卫要不要重新权衡**：接受「合法回绕后启动 = 整段无字幕」，还是要求另找可验证的源时间依据（那就需要材料，见下）。
-5. **R1 歧义材料**：两腿同一会话的首/末 PTS、边界前后的真实 PES PTS 与 discontinuity 标记、会话/阶段时间、必要时短 TS 片段与生成参数；**缺可信前史就明确说缺**。合成回放给不出这个——合成的序列正是已经假设了答案的序列。
-6. **是否清理 §4.5 那几条自己留下的东西**（`_last_pts`、A1 那一行、`stop()` 的收窄复核）。
-7. **是否要 PR / 合并到 `main`**：现在成果都在 `wip/subtitle-anchor-correction`，46 个提交领先 `origin/main`（`fda1319`），尚未开 PR。
+4. **R1 的 `< 2.0` 守卫要不要重新权衡**：现在有了两边的证据（§6.1 代价、§6.2 它是 `-copyts` 回归的唯一检测）。要么接受「合法回绕后启动 = 整段无字幕」，要么要求换一种可验证的源时间依据（那就需要材料，见下）。
+5. **R1 歧义材料**：两腿同一会话的首/末 PTS、边界前后的真实 PES PTS 与 discontinuity 标记、会话/阶段时间、必要时短 TS 片段与生成参数；**缺可信前史就明确说缺**。合成回放给不出这个——合成的序列正是已经假设了答案的序列。（实测已经提供了「同一会话两腿首 PTS」这一项的一半材料：14.99 s 与 4.98 s 两次，但**没有一次跨过边界**。）
+6. **是否清理剩下这几条自己留下的东西**：`_last_pts` 已删；仍待处理的是 A1 那一行未覆盖的测试（§6.3）、S1 `stop()` 的先 `pendingStop` 后 idle 这一处相对旧行为的收窄（§4.5.3）。
+7. **是否要 PR / 合并到 `main`**：现在成果都在 `wip/subtitle-anchor-correction`，48 个提交领先 `origin/main`（`fda1319`），尚未开 PR。
 
 ## 8. 环境与硬规则
 
@@ -198,9 +328,11 @@ Windows；32 逻辑核；RTX 5070 Ti 16 GB；MPO **启用**；约 93.6 GB 内存
 
 ## 10. 下一次会话最省事的三个开场
 
-1. **先做一次真机后端实测**（须用户授权）：它最便宜，且能一次性回答 6.1、6.2，并为 §4.1.3 铺路。不要从长跑开始。
-2. **先把 §4.5 的三条自己留下的东西清掉**（`_last_pts` 一行、`stop()` 收窄复核、A1 那一行的处理方式），并把 §4.4 的无人认领项逐条决定「做／不做＋理由＋归属」——这是 v2 计划 §0 那三条交接规则要求的动作。
+1. **先跑一次真机 smoke，再看别的**：`prototype/hls-companion/scripts/live-backend-smoke.py`（§3.5.4）。它便宜、有界、自我清理，而且已经证明能抓到单元测试抓不到的接线缺陷。**任何「接线已完成」的声明都应该先过它。** 特别注意 `checks.R1_clockRefusals` 必须是 0——上一轮它是 1，而那时 687 个测试全绿。
+2. **把 §4.4 的无人认领项逐条决定「做／不做＋理由＋归属」**，并处理 §4.5 剩下的两条（A1 那一行、`stop()` 的收窄复核）——这是 v2 计划 §0 那三条交接规则要求的动作。
 3. **如果用户要 U3 有结论**，那么顺序必须是：接 kill switch → 校准仪器 → 冻结代码 → 跑 120 分钟 → 用 `scripts/analyze-duration-degradation.py` 出结论（它只有离线分析能力，**不跑测量**）。
+
+**如果用户想要的是「字幕质量」而不是「性能」**，最短路径已经现成：`live-backend-smoke.py --watch 300 --out …`，然后读 `subtitlesEndpoint.stats` 里的 `readyLagP50/P95`、`totalReadyDelayP50/P95`、`chunkSpanP50/P95`、`translationProviderDelayP50/P95`、`translationFailures`。run 3 已经给出了基线数字（§3.5.3），其中**最有价值的一条是 p95 总延迟 15.109 秒对目标 15 秒——刚好压线**，而瓶颈是 ASR（p50 6.3 秒）不是翻译（p50 1.5 秒）。
 
 ---
 
