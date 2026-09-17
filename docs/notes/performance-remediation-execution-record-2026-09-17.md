@@ -35,10 +35,10 @@
 |---|---|---|
 | **U1 鼠标不跟手／界面卡** | **未触碰** | 本轮六个提交没有一个碰到 `desktop/main.cjs`、GPU 开关或渲染路径。U1 仍是所有改动的不可回退基线。UI 侧的改动（S1 / E1-R / A3 / C3）只改判定与文案，不改每帧代价；**不据此声称 U1 有新证据**。 |
 | **U2 跨屏操作后整机冻结** | **未触碰** | 未做跨屏实验，未碰 MPO／注册表／显示适配器。停在「未结案，根因未定」。 |
-| **U3 越跑越卡** | **仍未验收** | L1 的**离线分析器**已在上一轮入库（`31e7c08`），但**真实 120 分钟同会话测量没有授权、没有跑**。本轮六个提交都不构成对 U3 的证据。按规则 2 明写：**不做**（未获授权）＋**理由**（需要一次长时真机运行与其独立 kill switch）＋**归属**（L1，v2 §W10）。 |
+| **U3 越跑越卡** | **仍未验收** | L1 的**离线分析器**已在上一轮入库（`31e7c08`）。**§2.16 那一轮把真机测量真正跑了**——但用户把 120 分钟改成 **20 分钟**（仪器演练），分析器按预注册规则返回**「证据不足」**（20 分钟只有 4 个窗、预热后剩 2 个，门槛是 22 窗里 20 个合格）。所以 **U3 依然没有任何合格证据**，谁都不该拿那 20 分钟当结论。 |
 | （本轮新增的抱怨） | 无 | 本轮没有新的用户现象需要追加新行。 |
 
-**另外两件不属于 U1/U2/U3、但计划要求、本轮仍未做**：L1 的 kill switch 接线（`watchdog.py` 目前没有任何东西会为 `lag-measure.py` 启动它，而 `lag-measure.py` 本身没有硬墙钟上限也没有输出上限），以及 S1 的一次真实 Electron Start→Stop→Start。两件都在 §2.15 里写了理由，不当作已完成。
+**另外两件不属于 U1/U2/U3、但计划要求、上一轮仍未做的事，在 §2.16 里都有了下文**：L1 的 kill switch **已完成接线**（`.scratch/l1-longrun.py` 会先 `--dry-run` 审计杀名单、再作为独立进程 arm `watchdog.py`，硬超时 = 采样开始 + 1260 秒，实测全程未触发）；S1 的真实 Electron Start→Stop→Start **仍未验证**——§3.5.6 那次点击是在**应用自带的 02:00 构建**上做的，而那个构建里**没有 S1 的任何代码**（handoff §3.5.18），所以该结论已撤回。
 
 **施工顺序与计划的差异，以及依据。** v2 §5.3 给的是「**默认**施工顺序」，并且同一张表第 7 行写明 R1 被阻塞时「转 C3、已批准 D1 或 L1 工具」。本轮实际顺序是 S1 → E1-R → A3 → **C3 → D1** → **R1**：R1 是这批里最大的一项（四个文件、一个 probe 状态机、一套真实 TS/PES 回放），放在最后是为了给它一整轮上下文，而不是因为它在等什么。这与 §5.3 的阻塞替代规则一致，不是跳过了批准门槛——七项批准早已一次性给全。
 
@@ -193,6 +193,41 @@
 
 ---
 
+### 2.16 第三轮：L1 工具链与一次真实的 20 分钟长跑（`1598efe` → `2901616`）
+
+用户授权并随后把计划的 120 分钟改成 20 分钟。这一轮的产出是**工具链、一次可复现的实测、以及一条撤回**，不是 U3 结论。
+
+**L1-a 校准（先做，因为计划不许先空跑）。** 60 秒轻采样 + 60 秒完整采样的差分**做了三次都不成立**：第一次 `+0.15` 核、第二次 `+0.454` 核（而且我把 `psutil.cpu_percent()` 的百分数当成了核数，这个数字本身不可能——机器只有 32 个逻辑核）。逐条看原始记录才发现真正的原因：**同一个 arm 内部 CPU 从 118% 掉到 5%，而帧数一直在涨、窗口一直可见**，是内容/码率在变；launcher 另做的独立序列确认应用进程树在 **0.005～1.3 核之间以约 60 秒周期振荡**，所以**任何 60 秒的 arm 都落在随机相位上，这个差分不可能收敛**。改用三种不会被内容波动欺骗的量法：采样器**自己进程**的 CPU = **0.0 核中位 / 0.0 核峰值**（391 个采样）；轻/完整两臂的**帧推进速度差 +0.32%**（帧间隔门槛通过）；页面侧注入的代价被这两行夹住，未单独分离。另做一次有依据的削减：`memory_full_info()`（私有字节，是我加的、原 M0 没有的）改为每分钟一次，RSS 仍每采样一次。
+
+**L1-b 实测。** `https://www.youtube.com/@ANNnewsCH/live`，页面自选最高清晰度（**1920×1080 @ 30fps**，7.2 Mbps），窗口全程可见（`hidden: 0/240`）。原始记录 `output/soak/lag/lag-samples-20260917-232219-l1-20min.jsonl`，**240 条 / 685,938 字节**（上限 256 MiB 未触碰），`samplerExit 0`，`elapsedSeconds 1211`。kill switch 的 **dry-run 审计先于 arm**：`wouldKill: [{pid: 325008, python.exe}]`（正好是采样器本体）、`guarded` 含它自己的全部祖先（杀不到我的 shell，也拒绝杀自己）；**全程未触发**，采样器正常退出后由 launcher 收掉；结束时点页面停止按钮收会话，**0 个 yt-dlp/ffmpeg 残留**。判定输出 `state: "证据不足是本次的结论"`、`quality_gate_passed: false`、16 个指标全部 `insufficient`——**这是设计好的结局，因为 20 分钟的结构就不够 22 个窗**。
+
+**L1-c 字段映射（计划明确要求「先给出文件与一条样本记录，再填映射表」）。** 逐项核对 240 条真实记录后的结果：
+
+| L1-c 要求的量 | 记录中的实际位置 | 本次是否得到 |
+|---|---|---|
+| 代码 SHA | `lag-<stamp>.identity.json: codeSha` | ✓ `1598efe6…` |
+| 采样间隔 | `.identity.json: sampleEverySeconds` = 5.0 | ✓ |
+| 进程身份（role/pid/createdAt） | `.identity.json: processes[]` | ✓ 5 个进程 |
+| 会话身份 | `m0.mediaSessionId` | **✗ 240 条全 `null`**——那个后端根本不发这个字段（handoff §3.5.18），同一载荷的 `uptimeSeconds` 有值，所以不是抓取失败 |
+| 每角色 CPU | 记录 `cpuByRole` / `cpuTotal` | ✓ |
+| 每角色内存（RSS） | `memByRole[role].rssMB` | ✓ 每采样 |
+| 每角色内存（私有） | `memByRole[role].privateMB` | ✓ 每分钟（20/240，1200÷60） |
+| rAF 间隔分布 | `renderer.gapP50/gapP95/gapMax/over100ms/over500ms` | ✓ |
+| rVFC | `renderer.rvfc{count,gapMaxMs,over100,over500,mediaTime,presentedFrames,expectedDisplayTime,supported,attached}` | ✓ |
+| 长任务 | `renderer.longTasks/longTaskMs/longTaskMaxMs` | ✓ |
+| JS 堆 / DOM | `renderer.heapMB` / `renderer.domNodes` | ✓ |
+| 丢帧 / 总帧 | `renderer.dropped` / `renderer.totalVideoFrames` | ✓ |
+| 可见性 | `renderer.hidden` / `renderer.visibilityEvents` | ✓ |
+| **回调空缺** | `renderer.lastCallbackAgeMs{raf,rvfc}` | **✗ 240 条全缺**——不是没写，是**没装上**：`INJECT` 开头 `if (window.__lagMon) return 'already'` 早退，页面自 17:19 起一直挂着旧版 M0 注入（handoff §3.5.20-1） |
+| 源摄取每腿 | `m0.sourceIngest[]{role,running,sourceIdleSeconds,sourceClockValid,sourceClockReason,legs[]{label,forwardedBytes,sourcePtsFirst,sourcePtsLast,sourcePtsSamples,clockValid}}` | ✓ 240/240 |
+| 播放/显示延迟 | `m0.hiddenMediaSeconds / videoContentSeconds / sourceDelaySeconds / uptimeSeconds` | ✓ |
+| 翻译/字幕计数 | `m0.translationAttempts/…Failures/…DeadlineExpired/…Dropped/sourceOnlyCues/latencySamples/latencySampleAgeSeconds/…` | ✓ |
+| **上游分块计数** | `captionChunks` / `asrSeconds` / `pendingFinals` / `pendingEvidenceOverSoftSpan` / `chunkSpanP95` | **✗ 未投影**（荷载里有，`SAMPLE_JS` 没投；handoff §3.5.20-2） |
+
+所以 **L1-c 仍未完全满足**，缺的正是上表加粗的三行。
+
+**这一轮还定住了用户现场看到的两件事**（handoff §3.5.17）：一次 **84 秒无字幕**的成因**不是翻译慢**——`translationAttempts` 与 `latencySamples` 连续 17 个采样一动不动、`latencySampleAgeSeconds` 涨到 83.9 秒，同期 11 条 cue 走的是**不调用 provider** 的那条路（§3.5.9 定位过）；**「字幕显示余量」是一个会冻结的滚动 p95、公式里没有新鲜度项**，所以恢复之后仍显示陈旧的负值。以及一条**撤回**：应用跑的是 **02:00 的打包快照**，比 S1 早 17.5 小时，`mediaSessionId` / `claim !== uiGeneration` 一行都不在里面，因此上一轮「真实页面点击证伪了 S1」是**循环论证**，已撤回；§3.5.7 / §3.5.11 那些应用侧数字描述的是**那个构建**，不是本分支。
+
 ## 3. 设计来源表
 
 **这张表是本次请求的核心：请按"来源"决定复核力度。**
@@ -256,6 +291,6 @@
 - 工作树**干净**，未推送提交 **0**（`origin/wip/subtitle-anchor-correction` = `85420f2`）。
 - 测试：Python **683** 全过（**55** 文件，159.3 s）；JS **172** 全过；`npm test` 31 全过；`npm run ci` 退出 0。
 - v2 计划的十个工作包**全部落地**：D0、A2-T、A1、B2-R、S1、E1-R、A3、R1、C3、D1。**R1 只覆盖可确认的回绕路径**，全天对齐与时钟歧义仍不作保证（见 §2.15）。
-- L1 的离线分析器已入库；**真实长测未授权、未跑**，U3 保持未验收。
+- L1 的离线分析器已入库；**真机长跑在 §2.16 里跑了 20 分钟**（用户把 120 分钟改短），分析器返回**「证据不足」**，所以 **U3 保持未验收**——20 分钟是仪器演练，不是结论。
 - 还原点：tag `stop-session-snapshot-before-remediation`（`61fac68`），与当时的 9 个文件零差异。
 - **没有残留进程**（一次清理记录见 §4）。
