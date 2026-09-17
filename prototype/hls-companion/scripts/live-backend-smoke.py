@@ -69,6 +69,10 @@ def parse_args() -> argparse.Namespace:
                              "so this is how to reproduce deadline drops under load")
     parser.add_argument("--chat-translate", action="store_true",
                         help="with --chat, also translate chat messages")
+    parser.add_argument("--target-delay", type=float, default=15.0,
+                        help="the requested targetDelaySeconds; the caption budget is "
+                             "min(provider timeout, this minus the cue's age), so this "
+                             "is the experiment for whether raising it buys slack")
     parser.add_argument("--language", default="ja", help="source language tag for the subtitle request")
     parser.add_argument("--target", default="zh-Hans")
     parser.add_argument("--python", default=sys.executable, help="interpreter for the companion server")
@@ -208,7 +212,7 @@ def main() -> int:
     body = {
         "url": args.stream,
         "qualityId": "auto",
-        "targetDelaySeconds": 15,
+        "targetDelaySeconds": args.target_delay,
         # player.js:744-747. The real UI always sends this block, and with chat
         # translation on it shares the translation workers with the subtitle path --
         # which is a coupling the un-chatted runs never exercise.

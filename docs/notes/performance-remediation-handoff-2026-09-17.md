@@ -137,7 +137,7 @@ translationContextMissingImmediatePredecessor: 10
 
 1. **`translationFailures: 2 / translationAttempts: 27`，且 `translationProviderFailures: 2`、`translationDeadlineExpired: 0`、`lastTranslationError: "TimeoutError"`。** 这是 M1 那个「75 条失败」现象在**受控短会话里的复现**：失败是**provider 层的超时**，不是期限到期、不是 B2-R 的资格跳过（跳过一次都没有）。provider 延迟 p95 是 **2.75 秒**，而预算是 6 秒。这意味着 M1 的归因问题仍然开放，但**现在有一个可重复的短实验**可以去查它，不必再依赖四份旧日志。
 2. **延迟的主项是 ASR，不是翻译**：`asrAdapterDelayP50 6.328` 对 `translationProviderDelayP50 1.547`。目标的 `targetDelaySeconds` 是 15，实测 `totalReadyDelayP95 15.109` —— **p95 刚好压线**。
-3. **费用无法从 status 读出**：`asrEstimatedCostCny: null`（reason「ASR pricing unavailable」）、翻译定价「incomplete for provider bailian-qwen35-flash」。能读出的是用量：本例 ASR 144.5 秒、翻译 24–27 次调用 / 18,104 tokens，**全部走 `bailian-qwen35-flash`，回退 provider 一次都没被触发**——**但注意：这只对我这几次运行成立。用户应用自己的运行里回退被触发了、而且也失败了，见 §3.5.8。** 要估价必须另配价目表。
+3. **费用无法从 status 读出**：`asrEstimatedCostCny: null`（reason「ASR pricing unavailable」）、翻译定价「incomplete for provider bailian-qwen35-flash」。能读出的是用量：本例 ASR 144.5 秒、翻译 24–27 次调用 / 18,104 tokens，**全部走 `bailian-qwen35-flash`，回退 provider 一次都没被触发**——**但注意：这只对我这几次运行成立。用户应用自己的运行里回退被触发了、而且也失败了，见 §3.5.7。** 要估价必须另配价目表。
 
 **服务端资源也顺手验证了**：`/player.js` 200（132,794 字节，含 S1 的 `claim !== uiGeneration`）、`/playback-recovery.js` 200（11,633 字节，含 D1 的注记）。两个文件是**从服务器真取回来的**，不是磁盘上的。
 
@@ -151,7 +151,7 @@ translationContextMissingImmediatePredecessor: 10
 
 脚本会打印并写出：`checks`（D1/S1/R1 三项断言 + 资产）、`twoLegOffset`（两腿 C，raw 与取模并列）、`subtitlesEndpoint`（`cueCount`/`maxSeq`/`mediaAnchor` 与全部 stats）、`logs`、`serverStillAlive`。**每次运行都换一个端口和 TEMP runtime 目录，不会碰正在运行的应用。**
 
-### 3.5.6 第五次运行：把剩下三件也补上了（一个服务器进程、两个会话）
+### 3.5.5 第五次运行：把剩下三件也补上了（一个服务器进程、两个会话）
 
 **① 真实的 cue 字段名（上次我是猜的，读出来全是 null）**——`/api/subtitles` 的 cue 实际长这样：
 
@@ -189,7 +189,7 @@ ffmpeg.exe   copyts=False                 ← 打包 ffmpeg（吃 TCP 输入，�
 
 **顺带纠正我自己在 §6.2 末尾写错的一句。** 我说「腿间差每会话可变」，现在有三次会话的 `exactOffset`：**4.985、5.007、4.992**——**稳定在 ~5.0 秒**，与历史记录的 5.006 秒一致。真正可变的是**音频腿起步慢时**的情形：run 2 的 C 是 14.99 秒，因为那次音频腿晚了约 10 秒才出第一个 PTS。这**不是缺陷**：C 和该腿的 PCM 计数器是同一条腿同一次起步的产物，腿晚起步 10 秒时 C 和 pcm 一起平移 10 秒，映射 `privateMedia = pcm + C` 不变。这正是代码把原点对**锁存一次、之后拒绝移动**的原因。所以 600 秒界和 `< 2.0` 守卫针对的是**两条腿各自的首 PTS**，不是 C。
 
-### 3.5.7 第六次：真实页面点击（计划要求的 Start→Stop→Start，已在正在运行的应用里做完）
+### 3.5.6 第六次：真实页面点击（计划要求的 Start→Stop→Start，已在正在运行的应用里做完）
 
 用 CDP 驱动**用户正在运行的开发版应用**（`lingerlens://app/`，Electron 44.2.0 / Chrome 152，`--remote-debugging-port=9222`）。页面本体就是播放器（有 `#video`、`#url`、`#probe`、`#start`、`#stop`，**没有任何 iframe/webview**），所以这是 `player.js` 的真实运行环境。全部通过**点它自己的按钮**完成，未改任何设置；开始播放前把 `#video` 静音，所以没有出声（ASR 走服务端自己的音频腿，静音不影响它）。
 
@@ -207,7 +207,7 @@ ffmpeg.exe   copyts=False                 ← 打包 ffmpeg（吃 TCP 输入，�
 1. **停止之后 `#start` 是 disabled 的，必须重新解析才能再开**——这是页面**本来就有**的流程（它自己的提示就写着「已停止。可以重新解析，或粘贴另一场直播的链接。」）。我第一次跑这个测试时直接点了这个 disabled 按钮，于是第二轮什么都没发生；**那是我的脚本错，不是页面的错**，已在脚本里改成「每一轮都先重新解析」。
 2. 第二轮里 `uptime` 有一次从 `53.2 秒` 跳到 `8.2 秒` 再回 `59.2 秒`，同时 `hiddenDelay` 从 3.0 变回 5.0。**单次采样，我没有解释它**（可能是页面重新 attach 或自适应延迟调整）。记在这里，免得被当成没发生过。
 
-### 3.5.8 页面实测顺带撞上的：翻译失败是**两个 provider 都超时**
+### 3.5.7 页面实测顺带撞上的：翻译失败是**两个 provider 都超时**
 
 跑完页面测试后，应用自己的诊断栏从 **5 条变成 17 条**（我这两场会话贡献了 12 条），内容是：
 
@@ -220,7 +220,7 @@ gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline
 
 这与 B2-R 的实现直接相关：那条消息里同时出现了「provider 失败」与「deadline has expired」两种语义，而 B2-R 特意区分「没被调用」与「调用失败」正是为了让这两种情况在日志里可分辨。**目前我无法从这条 UI 摘要判断 `deepseek` 是真的被调用后超时，还是期限已到而未被调用**——要分辨它，得去看该应用那次运行的 `/api/logs`（我够不到应用后端的随机端口与 session token）。**这是给下一位的一件具体、便宜的事。**
 
-### 3.5.9 `-copyts` 的 A/B：re-base 被**测到**了，守卫也被**测到**了
+### 3.5.8 `-copyts` 的 A/B：re-base 被**测到**了，守卫也被**测到**了
 
 §6.2 原来只能引用代码注释里那条旧测量。现在它是本机实测，方法是**把 companion 包整体复制到临时目录**，只改那一对 argv（`"--downloader-args", "ffmpeg_i:-copyts"`），仓库与正在运行的应用**都没碰**。两次运行同一条流、同样 40 秒、同一台机器。
 
@@ -246,7 +246,7 @@ gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline
 | `-copyts` 正常 | 算出可信 C | 不触发 | 正常发字幕 |
 | `-copyts` 失效（回归） | 会算成 ≈0（**错约 10.4 秒**） | **触发、拒绝** | 该会话 0 条字幕 |
 
-### 3.5.10 M1：**不是 provider 超时**，是显示预算先耗光；而聊天翻译是发条
+### 3.5.9 M1：**不是 provider 超时**，是显示预算先耗光；而聊天翻译是发条
 
 用**用户自己的配置**（`%APPDATA%\lingerlens\runtime\providers.json`，读前读后 sha256 一致，`1619D5B9…53C2`）跑独立后端，两次各约 180 秒，唯一差别是**有没有开聊天翻译**：
 
@@ -275,9 +275,48 @@ gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline
 
 **可选修法方向**（提高目标延迟、压低单 chunk 延迟、或让聊天翻译不与字幕抢同一预算）**属于产品决定，不是执行者该自选的**。它同时否掉了上一版 handoff 里的一个问题提法：**「deepseek 是被调用后超时还是没被调用」不是判断依据**——`fallback.py:269` 的格式（由 B2-R 建立并被它自己的测试钉住）已经把「没被调用」写成 `not called (why)`，所以消息里出现 `deepseek: TimeoutError: ...` **就证明它被调用了**。B2-R 在这里是**承重的**：没有它，这条消息根本无法区分这两种情况。
 
+### 3.5.10 预算锚在哪：找到了，而且**修法验证过了**
+
+`translation_budget.py:59` 的 `allocate()` 是那条链的最后一环：
+
+```python
+deadline = now + self.provider_timeout_seconds          # 6 秒
+if playback_delay_seconds is not None and audio_end_wall is not None:
+    target_delay = float(self.playback_delay_seconds())
+    age = max(0.0, self.wall_clock() - audio_end_wall)   # 该 cue 的音频结束到现在
+    playback_window = max(0.0, target_delay - age)
+    deadline = min(deadline, now + playback_window)
+```
+
+而生产上那个回调是 **`server.py:1057`：`playback_delay_seconds=lambda: self.target_delay_seconds`**——**配置的那个目标延迟，不是自适应的 hiddenDelay**。所以：
+
+> **每条字幕的预算 = min(6 秒, 目标延迟 − 该 cue 的 age)**
+
+**应用实测 `budgetMargin ≈ −2.5 秒` 于是可以反解**：age ≈ 17.5 秒，即**字幕在音频结束后约 17.5 秒才进入翻译队列，而窗口只有 15 秒——进队时就已经过期了**。这与 `readyLagP95 = 14.972` 对 `targetDelaySeconds = 15` 是同一件事的两种说法：**上游（ASR→分块）的延迟吃掉了整个显示窗口**，翻译只剩下接近零的预算，于是 1～2 秒的 provider 往返就能把窗口跨过去 → 调用途中被 `translation deadline has expired` 打断 → 链上第二个 provider 同样被打断 → 聚合成「all translation providers failed」。
+
+**于是「把目标延迟调大」是不是有效修法，可以直接做 A/B**（两次都开聊天+聊天翻译、都用用户的配置，唯一差别是 `--target-delay`）：
+
+| | 目标 **15 秒** | 目标 **25 秒** |
+|---|---|---|
+| `translationFailures` / `providerFailures` | 1 / 1 | **0 / 0** |
+| `translationDeadlineExpired` / `translationDropped` | 1 / 1 | **0 / 0** |
+| `finalDiscarded` / `sourceOnlyCues` | 2 / 2 | **0 / 0** |
+| `lastTranslationError` | `TimeoutError` | 空 |
+| 错误日志行 | 有 | **无** |
+| `readyLag` P50 / P95 | 8.509 / 14.972 | 7.661 / **12.523** |
+| 字幕条数 | 42 | 43 |
+
+**同样负载下，把目标延迟从 15 提到 25，这一场里所有翻译丢失都消失了。**
+
+**必须说清证据强度**：这是**每档一场、各 180 秒**，15 秒那档的失败率本来就低（41 次尝试里 1 次）。所以这是**方向性证据，不是测出来的比率**——25 秒档「零失败」不能证明失败率是零。它之所以可信，是因为机制独立成立（预算 = min(6, 目标−age)，而 age 的 p95 已经顶满 15）。
+
+**这条把 M1 从「有现象」推到了「有机制 + 有验证过的修法方向」**，但**采取哪种修法仍然是用户的产品决定**：调大目标延迟（代价是字幕更晚）、压低上游 ASR/分块延迟（`asrAdapterDelayP50` 5.8～6.3 秒是主项）、或让聊天翻译不与字幕抢同一预算。三条路我都没有擅自选。
+
+复现：`live-backend-smoke.py --providers <应用配置> --chat --chat-translate --target-delay 25`（默认读仓库 dev 配置，要复现用户的现象必须换成应用那份）。
+
 ### 3.5.11 应用自己的数字：预算余量长期为负（M1 的结构性原因）
 
-上面 §3.5.10 是我在**独立后端**上用**用户的配置**复现的。为了看**用户应用自己**的数字（它的后端随机端口 + session token，够不到 `/api/logs`，而 dev 日志这次没开），我用 CDP 驱动应用跑了一场真实会话，只读它自己的检查器字段，**没有改任何设置**：
+上面 §3.5.9 是我在**独立后端**上用**用户的配置**复现的。为了看**用户应用自己**的数字（它的后端随机端口 + session token，够不到 `/api/logs`，而 dev 日志这次没开），我用 CDP 驱动应用跑了一场真实会话，只读它自己的检查器字段，**没有改任何设置**：
 
 ```
 目标延迟输入框: 15        实际 hiddenDelay: 5.0 秒 -> 3.0 秒（自适应）
@@ -292,13 +331,13 @@ diagCount: 17 -> 20（这场会话新增 3 条，且 chatTranslate = false）
 
 **两条副产物，都值得记**：
 - **配置的 15 秒与实际的 3～5 秒不是一回事**：`targetDelay` 输入框是 15，而实际 `hiddenDelay` 是自适应降到 5.0/3.0 秒的。所以「把目标延迟调大」是不是有效修法，**取决于那个自适应值是怎么算出来的**——这一点我没有查。
-- `schedulerDrops: 0 丢 / 0 迟到`：这一场**没有**发生队列丢弃，所以这 3 条诊断走的是 §3.5.10 的第 2 条路径（调用中被期限打断），与 §3.5.10 末尾从消息格式推出的结论一致。两条独立证据指向同一条路径。
+- `schedulerDrops: 0 丢 / 0 迟到`：这一场**没有**发生队列丢弃，所以这 3 条诊断走的是 §3.5.9 的第 2 条路径（调用中被期限打断），与 §3.5.9 末尾从消息格式推出的结论一致。两条独立证据指向同一条路径。
 
-### 3.5.5 这几次实测**没有**覆盖的
+### 3.5.12 这几次实测**没有**覆盖的
 
 - **仍然没有回绕**。三次带 PTS 的会话里 raw == 取模，说明没有一次跨越 26.5 小时边界。所以「可确认的回绕路径」在真机上**仍然只有合成回放的证据**。
-- ~~**没有 Electron、没有页面点击**~~ **已做，见 §3.5.7**：在正在运行的应用里真实点了 解析→开始→停止→解析→开始→停止，两场都真的播起来（缓冲涨到 77.4 / 59.2 秒、`readyState 4`、720p30），两场都干净停止，零 console 错误。**仍然没有覆盖的**：多标签页/多窗口并发抢占同一会话（计划 §W4 讨论过的那种），以及跨显示器/全屏等真实交互。
-- ~~**`/api/subtitles` 的 cue 字段名未证实**~~ **已证实，见 §3.5.6。**
+- ~~**没有 Electron、没有页面点击**~~ **已做，见 §3.5.6**：在正在运行的应用里真实点了 解析→开始→停止→解析→开始→停止，两场都真的播起来（缓冲涨到 77.4 / 59.2 秒、`readyState 4`、720p30），两场都干净停止，零 console 错误。**仍然没有覆盖的**：多标签页/多窗口并发抢占同一会话（计划 §W4 讨论过的那种），以及跨显示器/全屏等真实交互。
+- ~~**`/api/subtitles` 的 cue 字段名未证实**~~ **已证实，见 §3.5.5。**
 - **没有测 U1/U2/U3**，一次都没有；这三条仍需用户的手、眼与长时墙钟。
 - **没有超过 150 秒的会话**，所以「越跑越卡」在应用层有没有任何表现，这几次实测给不出证据。
 
@@ -350,8 +389,8 @@ diagCount: 17 -> 20（这场会话新增 3 条，且 chatTranslate = false）
 
 **还没做、但技术上可行（需要用户点头，因为会起真实进程 / 真实网络 / 产生费用）**：
 
-- ~~跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。~~ **已做，见 §3.5.7**，脚本与后端那个并列入库：`prototype/hls-companion/scripts/live-page-smoke.js`（Node 22+ 自带 WebSocket，通过 CDP 驱动**已在运行**的应用，按「解析→开始→停止」两轮跑；只点页面自己的按钮，只额外把 `#video` 静音以免出声）。
-- **应用后端的日志环怎么读**：应用的后端用随机端口 + 每次启动的 session token，页面自己也不发那个头（应该是主进程注入的），而页面上下文里的 fetch 不进 resource timing，所以**从前端侧够不到 `/api/logs`**。要判断 §3.5.8 里 `deepseek` 是「被调用后超时」还是「期限已到未被调用」，两条可行路线：**(a)** 打开应用自带的「记录日志到文件」再复现一次；**(b)** 用用户自己的 providers 配置在独立后端上复现（我的 `live-backend-smoke.py` 默认读仓库里那份 dev 配置，与应用的配置不是同一份，这大概就是为什么我的运行里回退一次都没被触发）。**(b) 更便宜，而且不碰应用。**
+- ~~跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。~~ **已做，见 §3.5.6**，脚本与后端那个并列入库：`prototype/hls-companion/scripts/live-page-smoke.js`（Node 22+ 自带 WebSocket，通过 CDP 驱动**已在运行**的应用，按「解析→开始→停止」两轮跑；只点页面自己的按钮，只额外把 `#video` 静音以免出声）。
+- **应用后端的日志环怎么读**：应用的后端用随机端口 + 每次启动的 session token，页面自己也不发那个头（应该是主进程注入的），而页面上下文里的 fetch 不进 resource timing，所以**从前端侧够不到 `/api/logs`**。**这一条已经解决，而且不需要读日志**：`fallback.py:269` 把「没被调用」写成 `not called (why)`，而应用那条消息里两个 provider 都带着 `TimeoutError`，所以**两个都被调用了**；用应用配置在独立后端上复现（§3.5.9、§3.5.10）进一步确认了机制是预算而非 provider。若仍要看应用自己的日志，两条路线：**(a)** 打开应用自带的「记录日志到文件」再复现一次；**(b)** 用用户自己的 providers 配置在独立后端上复现（我的 `live-backend-smoke.py` 默认读仓库里那份 dev 配置，与应用的配置不是同一份，这大概就是为什么我的运行里回退一次都没被触发）。**(b) 更便宜、不碰应用，§3.5.9 已按此做过。**
 - 更长的会话（>150 秒）以观察退化、或让它跨过 26.5 小时边界。
 - **多标签页/多窗口并发抢占同一会话**：这是 S1 唯一还没被真实覆盖的场景。技术上可以做（在应用里或我自己的服务器页面上开第二个标签页，驱动它对同一会话发 start/stop），但它比上面那些更容易把状态搅乱，**需要用户明确同意**。
 
@@ -401,7 +440,7 @@ diagCount: 17 -> 20（这场会话新增 3 条，且 chatTranslate = false）
 - **`-copyts` 生效时**：两腿首 PTS 都是绝对源时间，re-base 不会发生 → 第 2 种成因不可达，`< 2.0` 守卫只在第 1 种（合法回绕后启动）上触发。
 - **`-copyts` 失效时**（有人改了 `ffmpeg_live_args`、或 yt-dlp 改了 `--downloader-args` 的解析方式——注释里恰好记录了「同名 downloader key 的重复 `--downloader-args` 是**拼接**而不是替换」这条被实测过、因此也可能随版本变化的性质）：两腿首 PTS 都是 ~1.4 → **守卫是唯一能发现这件事的东西**。
 
-所以守卫不是多余的谨慎，它是**对 `-copyts` 回归的唯一检测**。这一点让 §6.1 的取舍偏向了「保留」。**而且这一点已在真机上确认过**（§3.5.6）：按 OS 看到的命令行，`yt-dlp.exe` 与它拉起的下载器 `ffmpeg.exe` **都带 `-copyts`**，打包用的那个 ffmpeg 不带（它吃 TCP 输入，本来不需要）。所以「`-copyts` 一直在生效」现在是实测事实，不是代码推断。
+所以守卫不是多余的谨慎，它是**对 `-copyts` 回归的唯一检测**。这一点让 §6.1 的取舍偏向了「保留」。**而且这一点已在真机上确认过**（§3.5.5）：按 OS 看到的命令行，`yt-dlp.exe` 与它拉起的下载器 `ffmpeg.exe` **都带 `-copyts`**，打包用的那个 ffmpeg 不带（它吃 TCP 输入，本来不需要）。所以「`-copyts` 一直在生效」现在是实测事实，不是代码推断。
 
 **仍未见过的是 1.400 本身**：我没有在真机上见过 re-base，也没有去制造它（制造它等于故意破坏一个正在工作的会话）。所以「守卫能抓到 `-copyts` 回归」这一步是推理，不是实测。
 
