@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, default=None, help="evidence JSON (default: a temp file)")
     parser.add_argument("--no-subtitles", action="store_true",
                         help="omit the subtitles block: no ASR leg, no provider spend")
+    parser.add_argument("--chat", action="store_true",
+                        help="send liveMessages enabled, as the real UI does; chat "
+                             "translation shares the translation workers with subtitles, "
+                             "so this is how to reproduce deadline drops under load")
+    parser.add_argument("--chat-translate", action="store_true",
+                        help="with --chat, also translate chat messages")
     parser.add_argument("--language", default="ja", help="source language tag for the subtitle request")
     parser.add_argument("--target", default="zh-Hans")
     parser.add_argument("--python", default=sys.executable, help="interpreter for the companion server")
@@ -203,7 +209,10 @@ def main() -> int:
         "url": args.stream,
         "qualityId": "auto",
         "targetDelaySeconds": 15,
-        "liveMessages": {"enabled": False},
+        # player.js:744-747. The real UI always sends this block, and with chat
+        # translation on it shares the translation workers with the subtitle path --
+        # which is a coupling the un-chatted runs never exercise.
+        "liveMessages": {"enabled": bool(args.chat), "translate": bool(args.chat_translate)},
     }
     if not args.no_subtitles:
         # player.js:735-748, verbatim in shape.

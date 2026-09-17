@@ -220,6 +220,59 @@ gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline
 
 这与 B2-R 的实现直接相关：那条消息里同时出现了「provider 失败」与「deadline has expired」两种语义，而 B2-R 特意区分「没被调用」与「调用失败」正是为了让这两种情况在日志里可分辨。**目前我无法从这条 UI 摘要判断 `deepseek` 是真的被调用后超时，还是期限已到而未被调用**——要分辨它，得去看该应用那次运行的 `/api/logs`（我够不到应用后端的随机端口与 session token）。**这是给下一位的一件具体、便宜的事。**
 
+### 3.5.9 `-copyts` 的 A/B：re-base 被**测到**了，守卫也被**测到**了
+
+§6.2 原来只能引用代码注释里那条旧测量。现在它是本机实测，方法是**把 companion 包整体复制到临时目录**，只改那一对 argv（`"--downloader-args", "ffmpeg_i:-copyts"`），仓库与正在运行的应用**都没碰**。两次运行同一条流、同样 40 秒、同一台机器。
+
+| | `media/video` 首 PTS | 说明 |
+|---|---|---|
+| 对照（原样） | **2131.4** | 绝对源时间 |
+| 处理（去掉那一对 argv） | **1.417689** | **mpegts 复用器的默认输出原点** |
+
+注释里写的 1.400，**实测复现为 1.417689**。§6.2 从「代码这么说」变成「这里测到」。
+
+**再跑一次带字幕的处理组，看守卫会不会抓到、代价是什么**：两腿各自 re-base 到 `video 1.409533` / `asr-audio 1.4`，**两个探针都 `clockValid: true`**（时钟没坏，是**原点被改写**），日志打出
+
+```
+[warn/media] 源时钟不可用于精确对齐，字幕改用保守路径：origin-rebase-or-wrap-ambiguous
+```
+
+结果是 `mediaAnchor {ready: false, offset: null, exactOffset: null, windowOffset: 10.4, spread: 0.3, drift: 0.0}`、**`cueCount: 0`**——但 `subtitlesRunning: true`、`asrSeconds 74.6`、`captionChunks 12`，也就是**管线照跑、字幕一条不发**。
+
+**这次实测给出了此前缺失的那个数字**：如果不拦，精确路径会算出 `A0 − V0 = 1.4 − 1.409533 ≈ −0.0095 秒`（≈0），而**独立**的采样窗说 **10.4 秒**（spread 0.3，很紧）。所以守卫挡掉的不是「一个更差的估计」，而是**偏差约 10.4 秒的错位**。§6.1 的取舍因此第一次有了两边的数字：
+
+| 情形 | 精确路径 | 守卫 | 结果 |
+|---|---|---|---|
+| `-copyts` 正常 | 算出可信 C | 不触发 | 正常发字幕 |
+| `-copyts` 失效（回归） | 会算成 ≈0（**错约 10.4 秒**） | **触发、拒绝** | 该会话 0 条字幕 |
+
+### 3.5.10 M1：**不是 provider 超时**，是显示预算先耗光；而聊天翻译是发条
+
+用**用户自己的配置**（`%APPDATA%\lingerlens\runtime\providers.json`，读前读后 sha256 一致，`1619D5B9…53C2`）跑独立后端，两次各约 180 秒，唯一差别是**有没有开聊天翻译**：
+
+| | 不开聊天 | 开聊天 + 聊天翻译 |
+|---|---|---|
+| provider 链 | `fallback:bailian-qwen35-flash,translation-1` | 同左 |
+| 调用数 / tokens | 26（20+6）/ 17,327 | **40（35+5）/ 27,191** |
+| `translationFailures` / `providerFailures` | 0 / 0 | **1 / 1** |
+| `translationDeadlineExpired` / `translationDropped` | 1 / 1 | 1 / 1 |
+| `finalDiscarded` / `sourceOnlyCues` | 0 / 1 | **2 / 2** |
+| `lastTranslationError` | 空 | **`TimeoutError`** |
+| 日志 | — | **`[error/translation] translation failed, showing source text only: TimeoutError`** |
+| 字幕条数 | 27 | 42 |
+
+**那行日志与应用诊断栏里的那条逐字相同**，所以用户应用里那 17 条诊断，就是这一族。
+
+**但「TimeoutError」这个名字会骗人**，机制在代码里：
+
+- `subtitle_pipeline.py:220`：`class TranslationDeadlineExpired(asyncio.TimeoutError)`——**预算耗尽是 `asyncio.TimeoutError` 的子类**，所以它一路冒上来时名字就叫 `TimeoutError`。
+- `subtitle_pipeline.py:1543-1550`：进翻译队列之前先要预算，`budget.remaining(...) <= 0` 就**直接丢**，`translation_deadline_expired += 1`，**根本不调用任何 provider**。而它上面那句注释恰好预言了这次的误读：这么做是为了「不让陈旧的启动积压变成一串**误导性的 provider 超时错误**」。
+- 实测的 provider 延迟是 **P50 1.094 / P95 2.094 秒**（开聊天）对 **6 秒**预算——**provider 一点都不慢**，跑光的是**这条字幕自己的显示预算**。
+
+**为什么会跑光**：`readyLagP95 = 14.972` 而 `targetDelaySeconds = 15`——**p95 正好压在目标延迟上，余量约等于零**。任何额外负载（聊天翻译让调用数 +54%）都会把个别 chunk 推过线，于是它的译文被丢、只显示原文（`sourceOnlyCues`）。
+
+**这就是 M1 的机制**，而且它给出了可选的修法方向（提高目标延迟、压低单 chunk 延迟、或让聊天翻译不与字幕抢同一预算），**但这属于产品决定，不是执行者该自选的**。同时它把「判断 deepseek 是被调用后超时还是没被调用」这个问题**改了性质**：按上面的代码，那不是判断依据——`translationDeadlineExpired` 与 `translationProviderFailures` 才是，而实测里前者可以在**零 provider 调用**的情况下自增。
+
 ### 3.5.5 这几次实测**没有**覆盖的
 
 - **仍然没有回绕**。三次带 PTS 的会话里 raw == 取模，说明没有一次跨越 26.5 小时边界。所以「可确认的回绕路径」在真机上**仍然只有合成回放的证据**。
