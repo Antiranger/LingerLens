@@ -61,7 +61,6 @@ try:
         validate_page_url,
     )
     from .media_anchor import MediaAnchor  # type: ignore[import-not-found]
-    from .recovery_policy import RecoveryPolicy  # type: ignore[import-not-found]
 except ImportError:  # Direct script execution.
     from companion import logbook  # type: ignore[import-not-found]
     from control_ipc import ControlServer  # type: ignore[import-not-found]
@@ -98,7 +97,6 @@ except ImportError:  # Direct script execution.
         validate_page_url,
     )
     from companion.media_anchor import MediaAnchor  # type: ignore[import-not-found]
-    from companion.recovery_policy import RecoveryPolicy  # type: ignore[import-not-found]
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_PLAYER = ROOT / "web-player"
@@ -208,7 +206,6 @@ class CompanionApplication:
         self.message_generation = 0
         self.auth_lease: SessionAuthLease | None = None
         self.private_hls_token: str | None = None
-        self.recovery_policy = RecoveryPolicy()
 
     def routes(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
@@ -330,24 +327,14 @@ class CompanionApplication:
         if self.asr_audio_ingest is not None:
             ingest_list.append(dict(self.asr_audio_ingest.snapshot(), role="asr-audio"))
         status["sourceIngest"] = ingest_list
-        if ingest_snapshot:
-            decision = self.recovery_policy.decide(
-                stall_seconds=ingest_snapshot.get("sourceIdleSeconds"),
-                process_running=bool(ingest_snapshot.get("running")),
-                source_error=ingest_snapshot.get("sourceError"),
-                # The publisher's own segment length, so this classification runs
-                # on the same ruler as the stall banner instead of on constants
-                # that predate the byte clock.
-                target_duration=status.get("targetDuration"),
-            )
-            status["sourceRecovery"] = {
-                "state": decision.state,
-                "action": decision.action,
-                "reason": decision.reason,
-                "stallSeconds": ingest_snapshot.get("sourceIdleSeconds"),
-            }
-        else:
-            status["sourceRecovery"] = {"state": "idle", "action": "none", "reason": "no-session", "stallSeconds": None}
+        # No `sourceRecovery` block. It published a state and an action
+        # ("reconnecting", "reconnect-and-report") that nothing in this repo or in
+        # the browser extension ever read -- a recovery promise no code kept, next
+        # to real fields a reader could act on. It is deleted rather than wired up:
+        # acting on it would mean automatically restarting a download leg, and a
+        # leg restart resets `source_pts_first`, which drops the exact subtitle
+        # anchor to a path measured 4.44s wrong. Everything a reader does use stays
+        # here: sourceIngest, sourceDelaySeconds, videoContentSeconds, state/error.
         subtitle_status = self._subtitle_status()
         message_status = self._messages_status()
         status["subtitles"] = subtitle_status

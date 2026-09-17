@@ -26,10 +26,10 @@
    *
    * Two seconds clears that worst case with room to spare.
    *
-   * Nothing downstream restarts a stalled leg. ``RecoveryPolicy`` classifies the
-   * stall (warning / reconnecting / failed) and its ``action`` field has no
-   * consumer anywhere in the repo, so these thresholds are not racing a recovery
-   * that begins at 8s -- a stalled source stays stalled until the viewer acts.
+   * Nothing downstream restarts a stalled leg. Those thresholds are not racing a
+   * recovery that begins at 8s -- a stalled source stays stalled until the viewer
+   * acts. (A server-side `RecoveryPolicy` used to publish a state and an action
+   * for this; nothing read either, and D1 deleted the whole projection.)
    */
   const STALL_MARGIN_SECONDS = 2;
   const MIN_DESIRED_DELAY_SECONDS = 3;
