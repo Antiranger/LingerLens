@@ -137,7 +137,7 @@ translationContextMissingImmediatePredecessor: 10
 
 1. **`translationFailures: 2 / translationAttempts: 27`，且 `translationProviderFailures: 2`、`translationDeadlineExpired: 0`、`lastTranslationError: "TimeoutError"`。** 这是 M1 那个「75 条失败」现象在**受控短会话里的复现**：失败是**provider 层的超时**，不是期限到期、不是 B2-R 的资格跳过（跳过一次都没有）。provider 延迟 p95 是 **2.75 秒**，而预算是 6 秒。这意味着 M1 的归因问题仍然开放，但**现在有一个可重复的短实验**可以去查它，不必再依赖四份旧日志。
 2. **延迟的主项是 ASR，不是翻译**：`asrAdapterDelayP50 6.328` 对 `translationProviderDelayP50 1.547`。目标的 `targetDelaySeconds` 是 15，实测 `totalReadyDelayP95 15.109` —— **p95 刚好压线**。
-3. **费用无法从 status 读出**：`asrEstimatedCostCny: null`（reason「ASR pricing unavailable」）、翻译定价「incomplete for provider bailian-qwen35-flash」。能读出的是用量：本例 ASR 144.5 秒、翻译 24–27 次调用 / 18,104 tokens，**全部走 `bailian-qwen35-flash`，回退 provider 一次都没被触发**。要估价必须另配价目表。
+3. **费用无法从 status 读出**：`asrEstimatedCostCny: null`（reason「ASR pricing unavailable」）、翻译定价「incomplete for provider bailian-qwen35-flash」。能读出的是用量：本例 ASR 144.5 秒、翻译 24–27 次调用 / 18,104 tokens，**全部走 `bailian-qwen35-flash`，回退 provider 一次都没被触发**——**但注意：这只对我这几次运行成立。用户应用自己的运行里回退被触发了、而且也失败了，见 §3.5.8。** 要估价必须另配价目表。
 
 **服务端资源也顺手验证了**：`/player.js` 200（132,794 字节，含 S1 的 `claim !== uiGeneration`）、`/playback-recovery.js` 200（11,633 字节，含 D1 的注记）。两个文件是**从服务器真取回来的**，不是磁盘上的。
 
@@ -189,10 +189,41 @@ ffmpeg.exe   copyts=False                 ← 打包 ffmpeg（吃 TCP 输入，�
 
 **顺带纠正我自己在 §6.2 末尾写错的一句。** 我说「腿间差每会话可变」，现在有三次会话的 `exactOffset`：**4.985、5.007、4.992**——**稳定在 ~5.0 秒**，与历史记录的 5.006 秒一致。真正可变的是**音频腿起步慢时**的情形：run 2 的 C 是 14.99 秒，因为那次音频腿晚了约 10 秒才出第一个 PTS。这**不是缺陷**：C 和该腿的 PCM 计数器是同一条腿同一次起步的产物，腿晚起步 10 秒时 C 和 pcm 一起平移 10 秒，映射 `privateMedia = pcm + C` 不变。这正是代码把原点对**锁存一次、之后拒绝移动**的原因。所以 600 秒界和 `< 2.0` 守卫针对的是**两条腿各自的首 PTS**，不是 C。
 
+### 3.5.7 第六次：真实页面点击（计划要求的 Start→Stop→Start，已在正在运行的应用里做完）
+
+用 CDP 驱动**用户正在运行的开发版应用**（`lingerlens://app/`，Electron 44.2.0 / Chrome 152，`--remote-debugging-port=9222`）。页面本体就是播放器（有 `#video`、`#url`、`#probe`、`#start`、`#stop`，**没有任何 iframe/webview**），所以这是 `player.js` 的真实运行环境。全部通过**点它自己的按钮**完成，未改任何设置；开始播放前把 `#video` 静音，所以没有出声（ASR 走服务端自己的音频腿，静音不影响它）。
+
+| | 第一轮 | 第二轮 |
+|---|---|---|
+| 解析 → 可开始 | true | true |
+| 点击 开始播放 后 | **延迟播放中**，`hiddenDelay 5.0 秒`，缓冲 15.4 → **77.4 秒**，`1280×720 @ 30fps`，`readyState 4`，`paused false` | **延迟播放中**，`hiddenDelay 3.0 秒`，缓冲 14.2 → **59.2 秒**，`1280×720 @ 30fps`，`readyState 4`，`paused false` |
+| 点击 停止 后 | **已停止**，`startDisabled true`、`stopDisabled true` | 同左 |
+
+**零 console 错误、零页面异常、零日志条目。**
+
+**这就把 S1 的存在理由直接证伪了（在好的方向上）**：停止之后页面**能够**完整回到可工作状态并**再开一场**、真的播起来。S1 要防的那个失效模式——停止的栅栏再也放不下来——**在真实点击下没有出现**。
+
+**两个观察，如实记录，不算缺陷**：
+1. **停止之后 `#start` 是 disabled 的，必须重新解析才能再开**——这是页面**本来就有**的流程（它自己的提示就写着「已停止。可以重新解析，或粘贴另一场直播的链接。」）。我第一次跑这个测试时直接点了这个 disabled 按钮，于是第二轮什么都没发生；**那是我的脚本错，不是页面的错**，已在脚本里改成「每一轮都先重新解析」。
+2. 第二轮里 `uptime` 有一次从 `53.2 秒` 跳到 `8.2 秒` 再回 `59.2 秒`，同时 `hiddenDelay` 从 3.0 变回 5.0。**单次采样，我没有解释它**（可能是页面重新 attach 或自适应延迟调整）。记在这里，免得被当成没发生过。
+
+### 3.5.8 页面实测顺带撞上的：翻译失败是**两个 provider 都超时**
+
+跑完页面测试后，应用自己的诊断栏从 **5 条变成 17 条**（我这两场会话贡献了 12 条），内容是：
+
+```
+translation failed, showing source text only: RuntimeError: all translation providers failed:
+gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline has expired
+```
+
+**这条比我在后端会话里量到的东西更重**：那里我只看到主 provider（`bailian-qwen35-flash`）超时 2/27，而且**回退一次都没被触发**；而用户应用自己的运行里，**回退 `deepseek`（真实付费 API）被调用了，并且也 `TimeoutError`**。所以 M1 的失败不是「一个 provider 慢」，而是**两个 provider 都超时、整体期限到期**。
+
+这与 B2-R 的实现直接相关：那条消息里同时出现了「provider 失败」与「deadline has expired」两种语义，而 B2-R 特意区分「没被调用」与「调用失败」正是为了让这两种情况在日志里可分辨。**目前我无法从这条 UI 摘要判断 `deepseek` 是真的被调用后超时，还是期限已到而未被调用**——要分辨它，得去看该应用那次运行的 `/api/logs`（我够不到应用后端的随机端口与 session token）。**这是给下一位的一件具体、便宜的事。**
+
 ### 3.5.5 这几次实测**没有**覆盖的
 
 - **仍然没有回绕**。三次带 PTS 的会话里 raw == 取模，说明没有一次跨越 26.5 小时边界。所以「可确认的回绕路径」在真机上**仍然只有合成回放的证据**。
-- **没有 Electron、没有页面点击**。五次都是独立后端；`player.js` 的 S1 改动只在**抽取函数 + 服务端资产字节**两层被验证过，**没有一次真实点击**。它读的字段（`mediaSessionId`、`state`、`playlistUrl`）已经证明在真实载荷里存在且形状正确，逻辑有 10 条对**真实函数源码**的测试，但「点下去会怎样」仍然没人试过。
+- ~~**没有 Electron、没有页面点击**~~ **已做，见 §3.5.7**：在正在运行的应用里真实点了 解析→开始→停止→解析→开始→停止，两场都真的播起来（缓冲涨到 77.4 / 59.2 秒、`readyState 4`、720p30），两场都干净停止，零 console 错误。**仍然没有覆盖的**：多标签页/多窗口并发抢占同一会话（计划 §W4 讨论过的那种），以及跨显示器/全屏等真实交互。
 - ~~**`/api/subtitles` 的 cue 字段名未证实**~~ **已证实，见 §3.5.6。**
 - **没有测 U1/U2/U3**，一次都没有；这三条仍需用户的手、眼与长时墙钟。
 - **没有超过 150 秒的会话**，所以「越跑越卡」在应用层有没有任何表现，这几次实测给不出证据。
@@ -245,8 +276,9 @@ ffmpeg.exe   copyts=False                 ← 打包 ffmpeg（吃 TCP 输入，�
 
 **还没做、但技术上可行（需要用户点头，因为会起真实进程 / 真实网络 / 产生费用）**：
 
-- 跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。应用**此刻就在运行**（`electron.exe . --remote-debugging-port=9222`，CDP 可用，Node v24 自带 WebSocket 客户端），所以我随时可以做；但它会在用户屏幕上真的开始播放，且必须用户在场同意。这是 S1 页面侧唯一还没被真实点击验证的部分。
+- ~~跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。~~ **已做，见 §3.5.7**（用 CDP 驱动正在运行的应用，两轮 Start→Stop，两场都真的播起来、都干净停止、零 console 错误；脚本 `scratch` 级，未入库，因为它是针对本机应用的一次性工具）。
 - 更长的会话（>150 秒）以观察退化、或让它跨过 26.5 小时边界。
+- **多标签页/多窗口并发抢占同一会话**：这是 S1 唯一还没被真实覆盖的场景。技术上可以做（在应用里或我自己的服务器页面上开第二个标签页，驱动它对同一会话发 start/stop），但它比上面那些更容易把状态搅乱，**需要用户明确同意**。
 
 **不能**：
 
