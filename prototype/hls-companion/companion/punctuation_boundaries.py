@@ -59,7 +59,17 @@ def _ja_vetoes(text, edges):
         following = words[after]
         # Standalone でも after a finite predicate begins a new clause.
         discourse_demo = prefix[-1] in TERMINALS and text[edge:].lstrip().startswith('でも') and any(f in last.feature.cForm for f in ('終止形','命令形','意志推量形'))
-        if not discourse_demo and following.feature.pos1 in {'助詞','助動詞','接尾辞'} and (prefix[-1] in WEAK or (last.surface in {'て','で','の'} and last.feature.pos1 == '助詞')):
+        if not discourse_demo and following.feature.pos1 in {'助詞','助動詞','接尾辞'} and (
+            prefix[-1] in WEAK
+            or (last.surface in {'て','で','の'} and last.feature.pos1 == '助詞')
+            # A terminal after a NOUN is not a sentence end either: the Provider places
+            # 。 mid-phrase and 焦点。+は今後 was observed live, so the cue was cut in
+            # the middle of a phrase whose particle followed. Gated on 名詞 so that a
+            # real sentence ending in それ。 (代名詞), なるほどな。 (終助詞) or
+            # 終わりました。 (助動詞) still cuts -- those are the cases
+            # test_discourse_starters_do_not_block_previous_sentence protects.
+            or last.feature.pos1 == '名詞'
+        ):
             vetoes[i] = 'ja_attached_right'; continue
         if prefix[-1] not in WEAK: continue
         if last.feature.pos1 == '形容詞' and '連用形' in last.feature.cForm:

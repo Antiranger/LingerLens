@@ -356,6 +356,22 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertIsNone(timed_out.chunks[0].ends_mid_sentence)
         self.assertEqual(chunker.telemetry().chunk_cut_reasons, (("hard_deadline", 1),))
 
+    def test_terminal_after_a_noun_waits_for_its_particle(self) -> None:
+        # Observed live: the Provider placed 。 mid-phrase, the cue was cut between the
+        # noun and its particle, and the screen showed "…焦点。" followed by "は今後…".
+        # The attached-right veto now covers terminals when the word before the mark is
+        # a noun, so this stays one cue.
+        chunker = CaptionChunker()
+        chunker.open_item("u1", 0.0)
+        decision = chunker.observe(stable(
+            token("焦点。", 0.0, 1.0, language="ja"),
+            token("は今後どこまで利上げが進むかです。", 1.0, 3.5, language="ja"),
+        ))
+        self.assertEqual([chunk.cut_reason for chunk in decision.chunks], ["terminal_punctuation"])
+        self.assertEqual(len(decision.chunks), 1)
+        self.assertIn("焦点。", decision.chunks[0].text)
+        self.assertIn("は今後", decision.chunks[0].text)
+
     def test_hard_deadline_restarts_when_the_lane_emits_so_no_stub_is_shown(self) -> None:
         # The user saw one- and two-character subtitles on screen. A boundary cut can
         # leave the opening characters of the NEXT clause in the lane, and a deadline
