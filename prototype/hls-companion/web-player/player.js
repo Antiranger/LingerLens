@@ -590,23 +590,32 @@
   async function request(path, body) {
     const timeout = path === "/api/probe" ? 20000 : 30000;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
+    let timer;
     let response;
+    let text;
     try {
-      response = await Promise.race([
-        fetch(path, {
-      method: body ? "POST" : "GET",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      cache: "no-store",
-        signal: controller.signal,
+      const result = await Promise.race([
+        (async () => {
+          const response = await fetch(path, {
+            method: body ? "POST" : "GET",
+            headers: body ? { "Content-Type": "application/json" } : undefined,
+            body: body ? JSON.stringify(body) : undefined,
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          return { response, text: await response.text() };
+        })(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error(path === "/api/probe"
+              ? "读取直播信息超时（20 秒）。请确认代理软件正在运行，或检查直播是否需要登录 Cookie。"
+              : "本地后台响应超时，请重试。"));
+          }, timeout);
         }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error(
-          path === "/api/probe"
-            ? "读取直播信息超时（20 秒）。请确认代理软件正在运行，或检查直播是否需要登录 Cookie。"
-            : "本地后台响应超时，请重试。"
-        )), timeout)),
       ]);
+      response = result.response;
+      text = result.text;
     } catch (error) {
       if (error?.name === "AbortError") {
         throw new Error(path === "/api/probe"
@@ -617,7 +626,6 @@
     } finally {
       clearTimeout(timer);
     }
-    const text = await response.text();
     let payload = {};
     try { payload = text ? JSON.parse(text) : {}; } catch { payload = { error: text }; }
     const contentType = response.headers.get("content-type") || "";
