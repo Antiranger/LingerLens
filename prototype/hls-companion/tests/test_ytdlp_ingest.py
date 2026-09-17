@@ -4,6 +4,7 @@ import importlib.util
 import io
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -16,6 +17,9 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+sys.path.insert(0, str(ROOT))
+from companion.win_job import ProcessTreeJob  # noqa: E402
 
 
 class _RunningProcess:
@@ -410,6 +414,78 @@ class YtDlpLiveIngestTests(unittest.TestCase):
         ingest._cleanup_auth()
         ingest._cleanup_auth()
         self.assertEqual(calls, ["closed"])
+
+
+def _tree_probe_source() -> str:
+    """A parent that spawns a child inheriting its stdout, then idles.
+
+    This is the shape yt-dlp has on live HLS: the process we hold is not the
+    one holding the media pipe. TerminateProcess on the parent leaves the child
+    alive with a copy of the pipe open, so every reader blocked on it has to
+    time out instead of seeing EOF.
+    """
+    return (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
+        "sys.stdout.write('media-forever\\n'); sys.stdout.flush()\n"
+        "time.sleep(600)\n"
+    )
+
+
+class ProcessTreeOwnershipTests(unittest.TestCase):
+    """Stop must end the download tree, not just the process it spawned.
+
+    Measured live 2026-09-17 before this: /api/stop took 9.79s, of which 6.0s
+    was two 3s log-thread joins and 0.4s two pump joins, all waiting for EOF on
+    pipes that a surviving ffmpeg grandchild still held. After owning the tree:
+    0.02s.
+    """
+
+    def _spawn_probe(self):
+        job = ProcessTreeJob()
+        process = job.spawn(
+            [sys.executable, "-c", _tree_probe_source()],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=False,
+        )
+        self.addCleanup(job.terminate)
+        self.addCleanup(process.stdout.close)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if process.stdout.readline().strip():
+                break
+        self.assertIsNone(process.poll(), "probe parent should still be running")
+        return job, process
+
+    @unittest.skipUnless(os.name == "nt", "job objects are a Windows facility")
+    def test_terminating_the_job_kills_the_grandchild_and_frees_the_pipe(self) -> None:
+        job, process = self._spawn_probe()
+        self.assertTrue(job.owns_tree)
+        started = time.perf_counter()
+        job.terminate()
+        elapsed = time.perf_counter() - started
+        self.assertLess(elapsed, 1.5, f"tree teardown took {elapsed:.2f}s")
+        # EOF, not a timeout: this is what the pump and log readers wait on.
+        reader_started = time.perf_counter()
+        self.assertEqual(process.stdout.read1(65536), b"")
+        self.assertLess(time.perf_counter() - reader_started, 0.5)
+
+    def test_ingest_owns_its_legs_so_stop_can_end_the_whole_tree(self) -> None:
+        ingest = MODULE.YtDlpLiveIngest(
+            "https://www.youtube.com/watch?v=test", "96", [], yt_dlp=sys.executable
+        )
+        self.assertTrue(ingest._tree.owns_tree or os.name != "nt")
+        process = ingest._spawn([sys.executable, "-c", "import time; time.sleep(600)"])
+        self.assertIn(process, ingest._tree._children)
+        ingest.processes = [process]
+        started = time.perf_counter()
+        ingest.stop()
+        elapsed = time.perf_counter() - started
+        self.assertLess(elapsed, 2.0, f"ingest.stop took {elapsed:.2f}s")
+        self.assertIsNotNone(process.poll(), "the leg must be gone after stop")
+        # A spent job must not adopt the next session's legs.
+        self.assertIsNot(ingest._tree, None)
+        self.assertEqual(ingest._tree._children, [])
 
 
 if __name__ == "__main__":

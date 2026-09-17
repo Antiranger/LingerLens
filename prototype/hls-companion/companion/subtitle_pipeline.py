@@ -53,6 +53,17 @@ PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
 # viewer's playhead and can never be shown.
 _PENDING_FINALS_MAX = 256
 _PENDING_FINAL_GRACE_SECONDS = 10.0
+# Teardown budget. Stop is a user action: it may spend this long letting the
+# provider finish the sentence it already received, and not one millisecond
+# more, whatever a socket or a provider does with a close.
+#
+# This must stay ABOVE the close window an ASR Adapter owns itself: each one
+# sends its official stop frame and then drains tail finals for its own
+# `closeDrainTimeoutSeconds` (default 2s) before releasing. Cutting that short
+# does not save the time -- it discards the drain, and the caller then waits out
+# its own window anyway. Measured 2026-09-17 with Soniox: a 2s cap here turned a
+# 2.4s Stop into 5.5s, because the cancelled close consumed both budgets.
+_STOP_ASR_CLOSE_SECONDS = 5.0
 
 
 def _usage_integer(value: Any) -> int | None:
@@ -564,10 +575,18 @@ class SubtitlePipeline:
         self._running = False
         stream = self._stream
         if stream is not None:
-            with contextlib.suppress(Exception):
-                await stream.flush()
-            with contextlib.suppress(Exception):
-                await stream.aclose()
+            # Bounded only as a backstop: the Adapter's own close already waits
+            # for its tail finals within a window it owns, and flush/aclose are
+            # one handshake. A single deadline covers the pair so a socket that
+            # accepts nothing cannot extend Stop by two budgets in a row.
+            deadline = time.monotonic() + _STOP_ASR_CLOSE_SECONDS
+            for step in ("flush", "aclose"):
+                call = getattr(stream, step, None)
+                if call is None:
+                    continue
+                remaining = max(0.1, deadline - time.monotonic())
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(call(), timeout=remaining)
             # Several realtime protocols flush their last final tokens only
             # after the close/finalize control (Soniox empty frame, AssemblyAI
             # Terminate, Volcengine negative packet). Give the existing ASR
@@ -578,7 +597,7 @@ class SubtitlePipeline:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(
                         asyncio.gather(*asr_tasks, return_exceptions=True),
-                        timeout=2.5,
+                        timeout=_STOP_ASR_CLOSE_SECONDS,
                     )
             if self._stream is stream:
                 self._stream = None

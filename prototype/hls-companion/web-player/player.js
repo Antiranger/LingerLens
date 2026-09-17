@@ -12,6 +12,16 @@
   let controlsBusy = false;
   let sessionAction = null;
   let lastSessionState = "idle";
+  // In-flight /api/stop. Stop itself no longer waits on it (the local teardown
+  // is what the click means), but a new Start must not race the previous
+  // session's cleanup on the server.
+  let pendingStop = null;
+  // Set by Stop, cleared only by an explicit Start. While it is set the status
+  // poll must not act on server truth: during backend teardown the server still
+  // reports state=running with a playlist URL, and re-attaching it here would
+  // restart the very playback the user just stopped (observed live: the picture
+  // came back for the ~2s the teardown took).
+  let stopRequested = false;
   let statusPoller = null;
   let subtitlePoller = null;
   let diagnosticsPoller = null;
@@ -684,6 +694,9 @@
     setState("启动合流", "waiting");
     destroyPlayer();
     try {
+      // A previous Stop may still be tearing the old session down on the
+      // server. Wait for that claim to settle before starting a new one.
+      if (pendingStop !== null) await pendingStop;
       if (el("subtitlesEnabled").checked) {
         const problem = validateLanguageSettingsClient();
         if (problem) throw new Error(problem);
@@ -704,6 +717,8 @@
         },
       };
       const data = await request("/api/start", body);
+      // Only a session this page actually claimed clears the local stop.
+      stopRequested = false;
       lastSessionState = data.status?.state || "running";
       localStorage.setItem("lingerlens.targetDelaySeconds", String(body.targetDelaySeconds));
       el("stop").disabled = false;
@@ -743,20 +758,27 @@
     setState("已停止", "idle");
   }
 
-  async function stop() {
-    setSessionAction("stopping");
-    setMediaLoading(true, "正在停止并清理本地会话…");
-    setBusy(true);
-    setState("正在停止", "waiting");
-    try {
-      await request("/api/stop", {});
-      resetStoppedUi();
-    } catch (error) {
-      setMediaLoading(false);
-      showError(error);
-    } finally {
-      setSessionAction(null);
-      setBusy(false);
+  /* 停止必须是「点击即生效」的本地动作，而不是一次往返。
+     以前 stop() 先 setSessionAction("stopping") 再 await /api/stop，画面、
+     缓冲和状态徽标全都等后端清理结束才动。用户看到的就是「停止键要按十几
+     秒」。现在点击立刻拆本地播放器（hls.destroy + video.load 断开缓冲、
+     状态回到已停止），后端清理在后台继续跑，只把「这一次清理还没结束」记在
+     pendingStop 里；下一次 start() 会等它落定，避免新会话被上一次的清理撞上
+     （服务端 /api/start 自己也会先完整停止旧会话，这里是第二道保险）。
+     后端若失败也不回滚界面：直播已经不再播放，弹错只会让用户以为停止失败，
+     所以只进诊断栏。 */
+  function stop() {
+    const alreadyStopped = lastSessionState === "idle" && !hls && !video.src;
+    stopRequested = true;
+    resetStoppedUi();
+    if (alreadyStopped && pendingStop === null) return;
+    if (pendingStop === null) {
+      pendingStop = request("/api/stop", {})
+        .catch((error) => {
+          // 本地已经停止；这里只留诊断痕迹，不打扰用户。
+          diagnosticsBar?.push("warn", "ui", `停止清理未确认：${error.message || error}`);
+        })
+        .finally(() => { pendingStop = null; });
     }
   }
 
@@ -878,6 +900,17 @@
       // instead of relying on this page's start() call having run.
       lastSessionState = data.state;
       renderSessionControls();
+      // A locally requested Stop outranks server truth until the user starts a
+      // new session: teardown still reports running, and acting on that here
+      // re-attaches the playlist the viewer just dismissed. The stopped UI is
+      // already complete, so there is nothing left for this poll to update.
+      if (stopRequested) {
+        if (data.state === "idle") {
+          lastSessionState = "idle";
+          renderSessionControls();
+        }
+        return;
+      }
       if (data.playlistUrl) attach(data.playlistUrl);
       if (data.state === "error" && sessionAction !== "stopping") {
         // The error branch throws, so the shared updateStallOverlay() call near

@@ -38,6 +38,11 @@ except ImportError:  # direct test/module loading
     from companion.logbook import record as log_record  # type: ignore[no-redef]
     from companion.logbook import redact_urls  # type: ignore[no-redef]
 
+try:
+    from .win_job import ProcessTreeJob
+except ImportError:  # direct test/module loading
+    from companion.win_job import ProcessTreeJob  # type: ignore[no-redef]
+
 ROOT = Path(__file__).resolve().parents[1]
 VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
 
@@ -144,14 +149,24 @@ class _TcpPump:
                 except OSError:
                     pass
 
-    def stop(self) -> None:
+    def shutdown(self) -> None:
+        """Stop accepting new streams immediately, without waiting for the thread.
+
+        Split out of ``stop`` so a caller that is about to kill the process tree
+        can refuse new connections *first* and only then spend time joining. A
+        pump blocked in ``accept()`` with a 0.5s listener timeout would otherwise
+        add that timeout to every Stop.
+        """
         self._stop.set()
         try:
             self.listener.close()
         except OSError:
             pass
+
+    def stop(self, timeout: float = 3.0) -> None:
+        self.shutdown()
         if self._thread:
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=timeout)
 
 
 class YtDlpLiveIngest:
@@ -187,6 +202,20 @@ class YtDlpLiveIngest:
         self._auth_cleaned = False
         self._legs_past_extraction: set[int] = set()
         self.processes: list[subprocess.Popen[bytes]] = []
+        # Live HLS is downloaded by yt-dlp's *external ffmpeg*, so the process
+        # we hold is the ffmpeg's parent, not the owner of the media pipe.
+        # TerminateProcess on the parent leaves that grandchild running with an
+        # inherited copy of our stdout/stderr handles open, and every reader
+        # blocked on those pipes then has to burn its full timeout at Stop
+        # (measured 2026-09-17: 9.8s Stop, of which 6.0s was two 3s log-thread
+        # joins and 0.4s two pump joins). A job object moves tree ownership to
+        # the kernel, so closing the job ends parent and grandchildren at once.
+        # Failing to create one must not cost acquisition: Stop keeps its
+        # bounded waits, they simply have to cover an orphan again.
+        try:
+            self._tree = ProcessTreeJob()
+        except OSError:
+            self._tree = ProcessTreeJob(unsupported=True)
         self.pumps: list[_TcpPump] = []
         self._log_threads: list[threading.Thread] = []
         self.started_at: float | None = None
@@ -316,6 +345,31 @@ class YtDlpLiveIngest:
         """Local TCP endpoints (video leg first) for the packaging ffmpeg."""
         return [pump.url for pump in self.pumps]
 
+    def _spawn(self, command: list[str]) -> subprocess.Popen[bytes]:
+        """Start one download leg owned by this ingest's process-tree job.
+
+        A leg must never be spawned outside the job: an unowned child is exactly
+        the grandchild that used to survive Stop and hold the pipes open. If the
+        OS refuses the assignment the child cannot be reaped as a tree, so it is
+        killed immediately and the failure is reported rather than left to
+        become a 10s Stop.
+        """
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+        )
+        if self._tree.owns_tree and not self._tree.adopt(process):
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except Exception:
+                pass
+            raise RuntimeError("yt-dlp leg could not be owned by a process-tree job")
+        return process
+
     def start(self) -> None:
         if any(process.poll() is None for process in self.processes):
             raise RuntimeError("yt-dlp live ingest is already running")
@@ -352,13 +406,7 @@ class YtDlpLiveIngest:
             for index, label in enumerate(("video", "audio")[: len(self.selectors)])
         ]
         for index, (selector, pump) in enumerate(zip(self.selectors, self.pumps)):
-            process = subprocess.Popen(
-                self.command(selector),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=False,
-            )
+            process = self._spawn(self.command(selector))
             self.processes.append(process)
             log_thread = threading.Thread(
                 target=self._read_log,
@@ -402,25 +450,44 @@ class YtDlpLiveIngest:
         return record
 
     def stop(self) -> None:
+        """End acquisition, then let the readers notice instead of timing out.
+
+        A download leg is a *tree*: yt-dlp plus the ffmpeg it spawns for live
+        HLS. Waits are nonetheless bounded below, because a fake process in a
+        test must not be able to hang Stop -- but they are no longer sized to
+        absorb a surviving grandchild, which is what the job object removes.
+        """
         self._stop_requested = True
+
+        # 1. Stop accepting, before the media goes away: a pump blocked in
+        #    accept() would otherwise sit out its whole timeout.
+        for pump in self.pumps:
+            pump.shutdown()
+
+        # 2. One kernel call ends every process in the job, including the
+        #    grandchildren that own the stdout/stderr pipes. This is what makes
+        #    the readers below return EOF instead of waiting out a timeout.
+        self._tree.terminate()
+
         for process in self.processes:
             if process.poll() is None:
-                process.terminate()
-        for process in self.processes:
-            try:
-                process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
 
         # Let process exit/EOF release the stdout and stderr readers before
         # closing their BufferedReader objects. The previous order closed the
         # streams first while the pump/log threads were inside read(), producing
         # the observed ValueError/PyMemoryView_FromBuffer shutdown exceptions.
         for pump in self.pumps:
-            pump.stop()
+            pump.stop(timeout=1.0)
         for thread in self._log_threads:
-            thread.join(timeout=3)
+            thread.join(timeout=1.0)
 
         for process in self.processes:
             for stream in (process.stdout, process.stderr):
@@ -434,13 +501,16 @@ class YtDlpLiveIngest:
         # streams above is the final unblock; the readers now recognize it as a
         # claimed shutdown instead of leaking an exception from daemon threads.
         for pump in self.pumps:
-            pump.stop()
+            pump.stop(timeout=1.0)
         for thread in self._log_threads:
-            thread.join(timeout=1)
+            thread.join(timeout=0.5)
         self.processes = []
         self.pumps = []
         self._log_threads = []
         self._cleanup_auth()
+        # The job is spent: a later start() must own a fresh one, otherwise it
+        # would adopt legs into a job this Stop already terminated.
+        self._tree = ProcessTreeJob()
 
     def snapshot(self) -> dict[str, Any]:
         running = any(process.poll() is None for process in self.processes)

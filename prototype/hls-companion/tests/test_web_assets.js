@@ -313,6 +313,23 @@ test("session controls expose progress and preserve cleanup after media errors",
   assert.doesNotMatch(js, /document\.addEventListener\("click"[^]*video\.play/);
   assert.doesNotMatch(js, /idle"\s*&&\s*data\.pageUrl/);
   assert.match(js, /resetStoppedUi/);
+  // Stop is a local action. The handler must reset the UI and only *then* fire
+  // /api/stop, so no `await request("/api/stop")` may precede resetStoppedUi --
+  // when it did, the button, the spinner and the frozen picture all waited out
+  // the backend's whole teardown (measured 9.8s before the download legs got
+  // proper process-tree ownership).
+  const stopHandler = js.slice(js.indexOf("function stop()"), js.indexOf("function attach(url)"));
+  assert.match(stopHandler, /resetStoppedUi\(\);/);
+  assert.doesNotMatch(stopHandler, /await request\("\/api\/stop"/);
+  assert.match(stopHandler, /pendingStop = request\("\/api\/stop", \{\}\)/);
+  // ...and the next Start waits for that cleanup before claiming the session.
+  assert.match(js, /if \(pendingStop !== null\) await pendingStop;/);
+  // While that cleanup runs the server still reports running with a playlist
+  // URL. Acting on it re-attaches the stream the viewer just dismissed, so a
+  // local Stop has to outrank server truth until a Start clears it.
+  assert.match(js, /stopRequested = true;/);
+  assert.match(js, /if \(stopRequested\) \{/);
+  assert.match(js, /stopRequested = false;/);
 });
 
 test("hls.js is bundled locally and no CDN is referenced", () => {

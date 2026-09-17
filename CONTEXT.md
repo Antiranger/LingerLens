@@ -91,3 +91,8 @@ _Avoid_: Adapter, Provider, danmaku API
 **Follow Mode**:
 A timeline-list state that keeps the item corresponding to Playback Wall Time visible until the viewer manually scrolls away; the viewer explicitly returns to resume following.
 _Avoid_: Auto-scroll when the paused state matters
+
+**Session Teardown**:
+The end of one live session: acquisition legs, packaging process, subtitle pipeline, Live Message workers, stores and the session auth lease are all released before the next session may claim them. Stop is a local player action first — the viewer's picture ends on the click, and the Companion's teardown completes behind it. A download leg is a process *tree* (yt-dlp plus the ffmpeg it spawns for live HLS) and must be ended as one, because a surviving grandchild keeps the media pipes open and turns every reader's wait into a timeout.
+_Avoid_: Treating Stop as a request the UI waits for, killing only the process the app spawned
+

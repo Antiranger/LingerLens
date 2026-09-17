@@ -465,12 +465,20 @@ async def run() -> None:
             return {
                 busy: stop.getAttribute('aria-busy'),
                 label: stop.querySelector('.button-label').textContent,
-                loadingText: document.getElementById('mediaLoadingText').textContent,
+                loadingHidden: document.getElementById('mediaLoading').hidden,
+                message: document.getElementById('message').textContent,
+                sessionActive: document.querySelector('.player-stage').classList.contains('session-active'),
             };
         }""")
-        assert stop_feedback["busy"] == "true", stop_feedback
-        assert stop_feedback["label"] == "正在停止", stop_feedback
-        assert "正在停止" in stop_feedback["loadingText"], stop_feedback
+        # Clicking Stop is a local action now: the click handler itself must have
+        # already torn the session down, while /api/stop (deliberately 1s slow
+        # here) is still in flight. It used to await that round trip, so the
+        # button read "正在停止" and the spinner stayed up for its whole duration.
+        assert stop_feedback["busy"] is None, stop_feedback
+        assert stop_feedback["label"] == "停止", stop_feedback
+        assert stop_feedback["loadingHidden"] is True, stop_feedback
+        assert stop_feedback["message"] == "已停止当前直播。", stop_feedback
+        assert stop_feedback["sessionActive"] is False, stop_feedback
         await page.wait_for_function("!document.getElementById('stop').hasAttribute('aria-busy')")
         assert await page.locator("#stop").is_disabled()
         assert not errors_seen, errors_seen

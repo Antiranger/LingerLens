@@ -687,17 +687,8 @@ class CompanionApplication:
             # A new start owns a new generation. Fully dismantle the previous
             # sidecars, media process, stores and auth consumers before assigning
             # the next session lease.
-            await self._stop_messages()
-            await self._stop_subtitles()
-            self.session.request_stop()
-            if self.source_ingest:
-                await asyncio.to_thread(self.source_ingest.stop)
-                self.source_ingest = None
-            await asyncio.to_thread(self.session.stop)
+            await self._teardown_session()
             self.private_hls_token = None
-            if self.auth_lease:
-                self.auth_lease.force_close()
-                self.auth_lease = None
 
             auth_lease = SessionAuthLease(auth)
             self.auth_lease = auth_lease
@@ -874,13 +865,7 @@ class CompanionApplication:
                     self.message_last_error = f"{type(msg_error).__name__}: {msg_error}"
                     logbook.record("error", "chat", f"live messages unavailable: {self.message_last_error}")
         except Exception:
-            await self._stop_messages()
-            await self._stop_subtitles()
-            self.session.request_stop()
-            if self.source_ingest:
-                await asyncio.to_thread(self.source_ingest.stop)
-                self.source_ingest = None
-            await asyncio.to_thread(self.session.stop)
+            await self._teardown_session()
             if auth_lease is not None:
                 auth_lease.force_close()
                 if self.auth_lease is auth_lease:
@@ -932,17 +917,18 @@ class CompanionApplication:
         return info
 
     async def handle_stop(self, _: web.Request) -> web.Response:
-        await self._stop_messages()
-        await self._stop_subtitles()
-        self.session.request_stop()
-        if self.source_ingest:
-            await asyncio.to_thread(self.source_ingest.stop)
-            self.source_ingest = None
-        await asyncio.to_thread(self.session.stop)
-        if self.auth_lease:
-            self.auth_lease.force_close()
-            self.auth_lease = None
+        """End the session in one round trip, with the legs torn down in parallel.
+
+        See ``_teardown_session``: the ordering constraint that matters lives
+        there, and the legs it starts together are disjoint from one another.
+        """
+        await self._teardown_session()
         return web.json_response({"ok": True, "status": self.session.status()})
+
+    async def _stop_source_ingest(self) -> None:
+        ingest, self.source_ingest = self.source_ingest, None
+        if ingest is not None:
+            await asyncio.to_thread(ingest.stop)
 
     async def _prepare_subtitles(self, info: dict[str, Any], request: dict[str, Any]) -> SubtitlePipeline:
         """Validate subtitle settings and build a pipeline without starting audio."""
@@ -1562,20 +1548,32 @@ class CompanionApplication:
         }
 
     async def cleanup(self, _: web.Application) -> None:
-        await self._stop_messages()
-        await self._stop_subtitles()
-        self.session.request_stop()
-        if self.source_ingest:
-            await asyncio.to_thread(self.source_ingest.stop)
-            self.source_ingest = None
-        await asyncio.to_thread(self.session.stop)
-        if self.auth_lease:
-            self.auth_lease.force_close()
-            self.auth_lease = None
+        await self._teardown_session()
         if self.control is not None:
             await asyncio.to_thread(self.control.stop)
         with self.auth_lock:
             self.auth_snapshots.clear()
+
+    async def _teardown_session(self) -> None:
+        """Dismantle every sidecar, media child and auth consumer of the session.
+
+        Shared by Stop, Start-replacing-a-session, the failed-Start rollback and
+        application shutdown so the four paths cannot drift apart. The one order
+        that matters is kept: ``request_stop`` is claimed before any download
+        leg closes, otherwise their EOF makes the packaging FFmpeg look like a
+        live failure to a concurrent status poll.
+        """
+        self.session.request_stop()
+        # Independent legs: sequential teardown only ever added their waits up.
+        await asyncio.gather(
+            self._stop_messages(),
+            self._stop_subtitles(),
+            self._stop_source_ingest(),
+        )
+        await asyncio.to_thread(self.session.stop)
+        lease, self.auth_lease = self.auth_lease, None
+        if lease is not None:
+            lease.force_close()
 
 
 def _request_target(request: web.Request) -> str:
