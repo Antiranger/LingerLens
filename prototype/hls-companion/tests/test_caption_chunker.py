@@ -356,6 +356,32 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertIsNone(timed_out.chunks[0].ends_mid_sentence)
         self.assertEqual(chunker.telemetry().chunk_cut_reasons, (("hard_deadline", 1),))
 
+    def test_hard_deadline_restarts_when_the_lane_emits_so_no_stub_is_shown(self) -> None:
+        # The user saw one- and two-character subtitles on screen. A boundary cut can
+        # leave the opening characters of the NEXT clause in the lane, and a deadline
+        # armed once per lane fired on that leftover stub. The deadline bounds how long
+        # the currently pending text has waited, so emitting anything restarts it.
+        chunker = CaptionChunker()
+        chunker.open_item("u1", 0.0)
+        first = chunker.observe(stable(
+            token("終わりました。", 0.0, 1.5, language="ja"),
+            token("つぎ", 1.5, 2.0, language="ja"),
+        ), now=0.0)
+        self.assertEqual([chunk.text for chunk in first.chunks], ["終わりました。"])
+        self.assertEqual([chunk.cut_reason for chunk in first.chunks], ["terminal_punctuation"])
+
+        # The lane's original deadline was 7.0. It must not fire on the two-character
+        # remainder, because that remainder's own clock had not started yet.
+        self.assertEqual(chunker.expire(7.1).chunks, ())
+
+        # New text starts the pending clock, and the deadline follows it.
+        chunker.observe(stable(token("つづき", 2.0, 3.0, language="ja")), now=10.0)
+        self.assertAlmostEqual(chunker.next_deadline, 17.0, places=3)
+        self.assertEqual(chunker.expire(16.9).chunks, ())
+        late = chunker.expire(17.1)
+        self.assertEqual([chunk.text for chunk in late.chunks], ["つぎつづき"])
+        self.assertEqual(late.chunks[0].cut_reason, "hard_deadline")
+
     def test_hard_deadline_never_turns_an_empty_lane_into_a_cue(self) -> None:
         # Confirmed text only. A lane that accumulated nothing is dropped, not
         # published as an empty subtitle.

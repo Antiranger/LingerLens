@@ -608,6 +608,12 @@ class CaptionChunker:
     def _emit(self, state: _CaptionState, index: int, reason: CaptionCutReason) -> CaptionChunk:
         selected = state.units[:index + 1]
         del state.units[:index + 1]
+        # The hard deadline bounds how long the text STILL PENDING has waited, so it
+        # restarts here. Arming it once per lane instead made a boundary cut leave a
+        # one- or two-character stub behind, which then fired at the original
+        # deadline as its own tiny subtitle. The append path re-arms this as soon as
+        # new text arrives; a lane left empty simply has no deadline.
+        state.hard_deadline = None
         begin, end = _chunk_times(selected, state)
         state.begin_pcm = next(
             (unit.begin for unit in state.units if unit.begin is not None),
