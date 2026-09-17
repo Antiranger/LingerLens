@@ -18,6 +18,12 @@ import companion.server as server_module
 from companion.server import CompanionApplication, errors
 from companion.core import BrowserCookieSnapshot, LiveSession
 from companion.providers.base import SourceLanguagePolicy, TranslationCapabilities, TranslationLanguageCapabilities
+from companion.source_timeline import PTS_HZ, PTS_MODULUS
+
+# One whole turn of the 33-bit source clock: 2**33 ticks at 90kHz, about
+# 26.512144 hours. A wrap landing between the two legs' first packets is what
+# makes their raw origins look 26.5 hours apart.
+WRAP_SECONDS = PTS_MODULUS / PTS_HZ
 
 
 class AsrAudioLegSelectorTests(unittest.TestCase):
@@ -57,8 +63,15 @@ class SourceClockOffsetTests(unittest.TestCase):
 
     The dangerous case is a leg that never had an absolute clock: the mpegts
     muxer's default output origin is 1.4s, and subtracting two such origins
-    yields ~0 -- confidently wrong, not merely imprecise. Every such case must
-    return None so the anchor keeps its sampled window.
+    yields ~0 -- confidently wrong, not merely imprecise.
+
+    R1 split the None cases in two, and the split is the point. "Not measured
+    yet" returns None and leaves the sampled window in charge, which is what the
+    anchor always did. "Measured, and the clock is not trustworthy" returns None
+    AND switches the sampled window off, because that window is the mapping the
+    exact offset replaced -- publishing it after deciding the clock is unusable
+    would present a suspect position as a measured one. The 33-bit wrap is no
+    longer in the first group at all: it is unwrapped, not refused.
     """
 
     REBASED = 1.4
@@ -81,8 +94,23 @@ class SourceClockOffsetTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def leg(self, first: float | None, pumps: int = 1):
-        return SimpleNamespace(source_pts_first=[first] * pumps)
+    def leg(self, first: float | None, pumps: int = 1, *, clock_valid: bool = True, reason: str | None = None):
+        # A leg now has to vouch for its own clock as well as report an origin.
+        # The default here is the production one; the tests that care about a
+        # broken clock pass clock_valid=False explicitly.
+        return SimpleNamespace(
+            source_pts_first=[first] * pumps,
+            sourceClockValid=clock_valid,
+            sourceClockReason=reason,
+        )
+
+    def legs(self, *firsts: float | None, clock_valid: bool = True, reason: str | None = None):
+        """One leg with one entry per pump, for the tests that need two origins."""
+        return SimpleNamespace(
+            source_pts_first=list(firsts),
+            sourceClockValid=clock_valid,
+            sourceClockReason=reason,
+        )
 
     def wire(self, audio, video) -> None:
         self.companion.asr_audio_ingest = audio
@@ -99,7 +127,7 @@ class SourceClockOffsetTests(unittest.TestCase):
     def test_reads_the_media_legs_video_pump_not_its_audio_pump(self) -> None:
         # Pump 0 is the video leg; pump 1 accompanies it in the packaging mux.
         # Reading the wrong pump would shift C by the mux's internal A/V skew.
-        video = SimpleNamespace(source_pts_first=[self.ABSOLUTE_VIDEO, self.ABSOLUTE_VIDEO + 3.0])
+        video = self.legs(self.ABSOLUTE_VIDEO, self.ABSOLUTE_VIDEO + 3.0)
         self.wire(self.leg(self.ABSOLUTE_AUDIO), video)
         self.assertAlmostEqual(
             self.companion._source_clock_offset() or 0,
@@ -122,8 +150,8 @@ class SourceClockOffsetTests(unittest.TestCase):
         # ANNnewsCH stream, tracking wall clock across two launches 50s apart.
         # Gating on magnitude silently disabled the exact offset for every
         # young stream.
-        audio = SimpleNamespace(source_pts_first=[266.479])
-        video = SimpleNamespace(source_pts_first=[261.473, 261.5])
+        audio = self.legs(266.479)
+        video = self.legs(261.473, 261.5)
         self.wire(audio, video)
         self.assertAlmostEqual(
             self.companion._source_clock_offset() or 0, 5.006, places=3
@@ -134,7 +162,7 @@ class SourceClockOffsetTests(unittest.TestCase):
         self.assertIsNone(self.companion._source_clock_offset())
         self.wire(self.leg(None), self.leg(self.ABSOLUTE_VIDEO, pumps=2))
         self.assertIsNone(self.companion._source_clock_offset())
-        self.wire(self.leg(self.ABSOLUTE_AUDIO), SimpleNamespace(source_pts_first=[]))
+        self.wire(self.leg(self.ABSOLUTE_AUDIO), self.legs())
         self.assertIsNone(self.companion._source_clock_offset())
 
     def test_a_leg_that_rebases_mid_session_is_refused(self) -> None:
@@ -148,14 +176,104 @@ class SourceClockOffsetTests(unittest.TestCase):
         audio.source_pts_first = [self.ABSOLUTE_AUDIO + 30.0]
         self.assertIsNone(self.companion._source_clock_offset())
 
-    def test_an_implausible_leg_skew_is_refused(self) -> None:
-        # The source clock is 33 bits at 90kHz and wraps every 26.5 hours. A
-        # wrap landing between the two legs' first packets leaves one leg at
-        # ~95443s and the other near 0: both look absolute and the subtraction
-        # would be wrong by 26.5 hours, so the skew itself has to be checked.
-        wrapped = SimpleNamespace(source_pts_first=[95443.0])
-        self.wire(wrapped, self.leg(4.0, pumps=2))
+    def test_a_wrap_between_the_legs_is_unwrapped_not_refused(self) -> None:
+        # R1. The clock is 33 bits wide at 90kHz, so an origin of 3s and an origin
+        # of (W - 2s) are FIVE SECONDS apart, not 26.5 hours. Before R1 the raw
+        # subtraction produced the 26.5-hour figure and the skew guard refused it,
+        # which was safe but left a stream that crossed the wrap permanently on the
+        # sampled window -- the mapping measured 4.44s off.
+        self.wire(self.leg(3.0), self.leg(WRAP_SECONDS - 2.0, pumps=2))
+        offset = self.companion._source_clock_offset()
+        self.assertIsNotNone(offset)
+        self.assertAlmostEqual(offset, 5.0, places=6)
+        # Exact to the tick, not merely close: the protocol resolution is 1/90000s.
+        self.assertLessEqual(abs(offset - 5.0), 1 / PTS_HZ)
+
+    def test_the_wrap_is_unwrapped_in_the_other_direction_too(self) -> None:
+        self.wire(self.leg(WRAP_SECONDS - 2.0), self.leg(3.0, pumps=2))
+        offset = self.companion._source_clock_offset()
+        self.assertIsNotNone(offset)
+        self.assertAlmostEqual(offset, -5.0, places=6)
+
+    def test_a_skew_that_survives_unwrapping_is_still_refused(self) -> None:
+        # G: the 600s bound is not decoration. Two origins 26.5 hours apart in the
+        # RAW numbers are 5s apart once unwrapped, so the bound now catches a
+        # genuine mismatch rather than the wrap itself.
+        self.wire(self.leg(3.0), self.leg(4.0 + 700.0, pumps=2))
         self.assertIsNone(self.companion._source_clock_offset())
+
+    def test_an_untrusted_leg_clock_refuses_and_switches_the_fallback_off(self) -> None:
+        # D: the probe said the clock is not usable. Publishing the sampled
+        # estimate instead would present the very mapping the exact offset
+        # replaced, under a name that implies something was measured.
+        self.wire(
+            self.leg(self.ABSOLUTE_AUDIO),
+            self.leg(self.ABSOLUTE_VIDEO, pumps=2, clock_valid=False, reason="transport-discontinuity"),
+        )
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertFalse(self.companion._sampled_fallback_allowed())
+
+    def test_a_leg_that_does_not_report_its_clock_is_not_trusted(self) -> None:
+        # D: an absent statement is not a positive one. Treating a missing field as
+        # valid is how a reset gets modulo'd into a small, plausible-looking gap.
+        self.wire(
+            SimpleNamespace(source_pts_first=[self.ABSOLUTE_AUDIO]),
+            self.leg(self.ABSOLUTE_VIDEO, pumps=2),
+        )
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertFalse(self.companion._sampled_fallback_allowed())
+
+    def test_one_untrusted_leg_is_not_rescued_by_the_other(self) -> None:
+        # D: the offset is a difference between the two legs, so a pair is only as
+        # good as its weaker clock.
+        self.wire(
+            self.leg(self.ABSOLUTE_AUDIO, clock_valid=False, reason="non-wrap-clock-reset"),
+            self.leg(self.ABSOLUTE_VIDEO, pumps=2),
+        )
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertFalse(self.companion._sampled_fallback_allowed())
+
+    def test_the_rebase_window_stays_ambiguous_even_with_a_wrap_shaped_pair(self) -> None:
+        # D: a first origin inside the mpegts re-base window is what a legitimate
+        # beginning-of-clock looks like after a wrap. Taking a modulus would turn
+        # "I cannot tell" into a number that looks precise, so it stays refused.
+        self.wire(self.leg(1.4), self.leg(WRAP_SECONDS - 2.0, pumps=2))
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertFalse(self.companion._sampled_fallback_allowed())
+
+    def test_a_session_that_has_not_measured_yet_keeps_the_sampled_window(self) -> None:
+        # G: "not measured" is not "untrustworthy". The anchor behaved this way
+        # before an exact offset existed, and a session that has simply not
+        # received its first PTS must not lose its subtitles over it.
+        self.wire(None, None)
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertTrue(self.companion._sampled_fallback_allowed())
+        self.wire(self.leg(None), self.leg(self.ABSOLUTE_VIDEO, pumps=2))
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertTrue(self.companion._sampled_fallback_allowed())
+
+    def test_a_mid_session_rebase_keeps_the_sampled_window(self) -> None:
+        # G: the sampled window is the mechanism that re-converges after a re-base,
+        # so this case must NOT disable it -- refusing the stale subtraction and
+        # refusing the fallback are different decisions.
+        audio = self.leg(self.ABSOLUTE_AUDIO)
+        self.wire(audio, self.leg(self.ABSOLUTE_VIDEO, pumps=2))
+        self.assertIsNotNone(self.companion._source_clock_offset())
+        audio.source_pts_first = [self.ABSOLUTE_AUDIO + 30.0]
+        self.assertIsNone(self.companion._source_clock_offset())
+        self.assertTrue(self.companion._sampled_fallback_allowed())
+
+    def test_the_offset_is_computed_once_and_survives_a_wrap_crossing(self) -> None:
+        # G: a wrap crossing the session moves the raw origins but must not move
+        # the latched offset. The latched pair is the raw pair, and the offset is
+        # derived from it, so both readings agree to the tick.
+        audio = self.leg(self.ABSOLUTE_AUDIO)
+        video = self.leg(self.ABSOLUTE_VIDEO, pumps=2)
+        self.wire(audio, video)
+        first = self.companion._source_clock_offset()
+        self.assertIsNotNone(first)
+        self.assertAlmostEqual(self.companion._source_clock_offset(), first, places=9)
+        self.assertTrue(self.companion._sampled_fallback_allowed())
 
 
 class ProviderApiTests(AioHTTPTestCase):

@@ -253,5 +253,59 @@ class ExactOffsetTests(unittest.TestCase):
         self.assertAlmostEqual(anchor.offset or 0, 100.0, places=6)
 
 
+class SampledFallbackGateTests(unittest.TestCase):
+    """R1: "not measured yet" and "measured, and untrustworthy" are different.
+
+    The sampled window is the fallback the exact source-clock offset replaced, so
+    publishing it after deciding the clock cannot be trusted means showing a
+    position already known to be wrong by seconds. But the window is also the
+    ordinary mechanism at the start of every session, before anything has been
+    measured, and that has to keep working. Hence one gate, defaulting to allowed.
+    """
+
+    def make_anchor(self, **kwargs):
+        clock = FakeClock()
+        return MediaAnchor(clock=clock, **kwargs), clock
+
+    def test_the_default_is_allowed(self) -> None:
+        # G: every existing caller keeps its behaviour; nothing has to opt in.
+        anchor, clock = self.make_anchor()
+        self.assertTrue(anchor.sampled_fallback_allowed)
+        run_steady(anchor, clock, 5, video_base=100.0)
+        self.assertTrue(anchor.ready)
+
+    def test_the_gate_only_suppresses_the_sampled_path(self) -> None:
+        anchor, clock = self.make_anchor()
+        run_steady(anchor, clock, 5, video_base=100.0)
+        self.assertTrue(anchor.ready)
+        anchor.set_sampled_fallback_allowed(lambda: False)
+        self.assertFalse(anchor.ready, "no window, no exact offset, no position")
+        self.assertIsNone(anchor.offset)
+        # The raw median stays readable: it is the diagnostic, and hiding it would
+        # remove the evidence for why the mapping stopped.
+        self.assertIsNotNone(anchor.window_offset)
+
+    def test_an_exact_offset_still_wins_when_the_gate_is_closed(self) -> None:
+        # G: the gate is about the FALLBACK. A trustworthy exact offset is what the
+        # window was replaced with, so closing the gate cannot suppress it.
+        anchor, _ = self.make_anchor()
+        anchor.set_exact_offset(lambda: 5.0)
+        anchor.set_sampled_fallback_allowed(lambda: False)
+        self.assertTrue(anchor.ready)
+        self.assertAlmostEqual(anchor.offset or 0, 5.0, places=6)
+
+    def test_a_provider_that_raises_is_not_a_refusal(self) -> None:
+        # G: this fails OPEN, matching the anchor's other providers. A broken status
+        # provider must not silently stop every subtitle.
+        def explode() -> bool:
+            raise RuntimeError("no status")
+
+        anchor, clock = self.make_anchor()
+        anchor.set_sampled_fallback_allowed(explode)
+        self.assertTrue(anchor.sampled_fallback_allowed)
+        run_steady(anchor, clock, 5, video_base=100.0)
+        self.assertTrue(anchor.ready)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,22 +10,59 @@ from bisect import bisect_right
 from dataclasses import dataclass
 
 TS_PACKET = 188
-PTS_HZ = 90_000.0
+PTS_HZ = 90_000
 _AUDIO_TYPES = {0x03, 0x04, 0x0F, 0x11}
+
+# The PES PTS field is 33 bits at 90kHz, so the source's own clock wraps every
+# 2**33 / 90000 = 95443.717688... seconds = 26.512144 hours. A stream that runs
+# long enough crosses it, and a leg that starts on the other side of the boundary
+# from its partner reports an origin ~26.5 hours away from it. That is why these
+# numbers exist; they are properties of the container format, not of a session.
+PTS_MODULUS = 1 << 33
+# Both guard sizes are the ones the surrounding code already uses, so no new
+# threshold is introduced: 600s is what server.py already refuses as an
+# implausible leg skew, and 100s is the tolerance this probe already had for a
+# small backwards PTS (packets reordered in transit).
+WRAP_EDGE_TICKS = 600 * PTS_HZ
+REORDER_TICKS = 100 * PTS_HZ
 
 
 def _decode_pts(value: bytes) -> int:
     return ((value[0] >> 1 & 7) << 30) | (value[1] << 22) | ((value[2] >> 1) << 15) | (value[3] << 7) | (value[4] >> 1)
 
 
+def signed_pts_delta(a_ticks: int, v_ticks: int) -> int:
+    """The shortest signed distance from ``v_ticks`` to ``a_ticks``, across the wrap.
+
+    The clock is a 33-bit counter, so its values are only meaningful modulo
+    ``PTS_MODULUS``: an origin of 3s and an origin of (W - 2s) are 5 seconds
+    apart, not 26.5 hours. Subtracting the raw numbers gets that wrong by a whole
+    period, which is exactly the failure a wrap landing between two legs produces.
+    """
+    half = PTS_MODULUS // 2
+    return (a_ticks - v_ticks + half) % PTS_MODULUS - half
+
+
 class MpegTsPtsProbe:
-    """Incrementally extract one media stream's PES PTS without copying media."""
+    """Incrementally extract one media stream's PES PTS without copying media.
+
+    The probe owns the source clock for one download leg. Its job is to turn a
+    wrapping 33-bit counter into a monotonic number of seconds, and to say so
+    loudly -- once, permanently, for this session -- when it cannot.
+    """
 
     def __init__(self, *, want_audio: bool) -> None:
         self.want_audio = want_audio
         self._buffer = bytearray()
         self._media_pid: int | None = None
         self._last_pts: float | None = None
+        # O(1) clock state: the last trustworthy raw tick, how many full periods
+        # have been crossed, and whether this clock may be used at all. No
+        # per-packet history is kept; the diagnostic ring elsewhere is bounded.
+        self._previous_raw: int | None = None
+        self._wrap_ticks = 0
+        self.clock_valid = True
+        self.invalid_reason: str | None = None
 
     def feed(self, data: bytes) -> list[float]:
         self._buffer.extend(data)
@@ -49,8 +86,16 @@ class MpegTsPtsProbe:
         start = bool(packet[1] & 0x40)
         adaptation = (packet[3] >> 4) & 3
         pos = 4
+        discontinuity = False
         if adaptation in (2, 3):
-            pos += 1 + packet[pos]
+            length = packet[pos]
+            # The discontinuity_indicator is bit 7 of the adaptation field's
+            # first flag byte, which the code below steps over. It has to be read
+            # here or it is lost, and it is the only signal that separates a real
+            # clock reset from a backwards jump in the numbers.
+            if length > 0:
+                discontinuity = bool(packet[pos + 1] & 0x80)
+            pos += 1 + length
         if adaptation not in (1, 3) or pos >= TS_PACKET:
             return None
         payload = packet[pos:]
@@ -59,15 +104,66 @@ class MpegTsPtsProbe:
             is_audio = 0xC0 <= stream_id <= 0xDF
             if is_audio == self.want_audio and self._media_pid is None:
                 self._media_pid = pid
-        if pid != self._media_pid or not start or payload[:3] != b"\x00\x00\x01" or len(payload) < 14:
+        if pid != self._media_pid:
+            # Another PID's discontinuity flag describes a different stream and
+            # must not invalidate this clock.
+            return None
+        if discontinuity:
+            self._invalidate("transport-discontinuity")
+            return None
+        if not start or payload[:3] != b"\x00\x00\x01" or len(payload) < 14:
             return None
         if (payload[7] & 0xC0) != 0x80:
             return None
-        value = _decode_pts(payload[9:14]) / PTS_HZ
-        if self._last_pts is not None and value < self._last_pts and self._last_pts - value <= 100:
+        if not self.clock_valid:
+            # Nothing here may quietly re-establish trust: the same packets that
+            # looked fine before a reset still look fine after one. Only a new
+            # session, with a new probe, owns a new clock.
             return None
+        return self._unwrap(_decode_pts(payload[9:14]))
+
+    def _unwrap(self, raw: int) -> float | None:
+        previous = self._previous_raw
+        if previous is not None:
+            if raw < previous:
+                forward_wrap = (
+                    previous >= PTS_MODULUS - WRAP_EDGE_TICKS
+                    and raw <= WRAP_EDGE_TICKS
+                )
+                if forward_wrap:
+                    self._wrap_ticks += PTS_MODULUS
+                elif previous - raw <= REORDER_TICKS:
+                    # The long-standing tolerance for a small backwards PTS:
+                    # ignore the packet and do NOT push the clock backwards.
+                    return None
+                else:
+                    self._invalidate("non-wrap-clock-reset")
+                    return None
+            elif raw - previous > PTS_MODULUS // 2:
+                # A packet from the epoch before the wrap, arriving after it.
+                # Counting another period here would add 26.5 hours, and treating
+                # it as a fresh clock would move the mapping backwards; both are
+                # worse than ignoring it under the same small-reorder rule.
+                late_previous_epoch = (
+                    previous <= WRAP_EDGE_TICKS
+                    and raw >= PTS_MODULUS - WRAP_EDGE_TICKS
+                )
+                backwards = previous + PTS_MODULUS - raw
+                if late_previous_epoch and 0 <= backwards <= REORDER_TICKS:
+                    return None
+                self._invalidate("ambiguous-reverse-wrap-or-reset")
+                return None
+        self._previous_raw = raw
+        value = (raw + self._wrap_ticks) / PTS_HZ
         self._last_pts = value
         return value
+
+    def _invalidate(self, reason: str) -> None:
+        """Mark this leg's clock untrustworthy, recording the FIRST reason only."""
+        if not self.clock_valid:
+            return
+        self.clock_valid = False
+        self.invalid_reason = reason
 
 
 @dataclass(frozen=True)

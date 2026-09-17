@@ -64,6 +64,7 @@ class MediaAnchor:
         self._deviating_sign = 0
         self._correction: Callable[[], float] | None = None
         self._exact: Callable[[], float | None] | None = None
+        self._sampled_allowed: Callable[[], bool] | None = None
 
     def set_exact_offset(self, provider: Callable[[], float | None] | None) -> None:
         """Supply an offset measured on the source clock itself, when there is one.
@@ -91,6 +92,32 @@ class MediaAnchor:
             return self._exact()
         except Exception:  # a bad probe must not take the cue mapping down with it
             return None
+
+    def set_sampled_fallback_allowed(self, provider: Callable[[], bool] | None) -> None:
+        """Say whether the sampled window may still be used, when there is no exact offset.
+
+        The two ways of having no exact offset are not the same thing. "Not
+        measured yet" is the ordinary state at the start of every session, and
+        the sampled window is the right answer there -- it is what the anchor did
+        before an exact offset existed at all. "Measured, and the source clock
+        turned out to be untrustworthy" is different: the sampled window is the
+        very mapping the exact offset was brought in to replace, so falling back
+        to it publishes a position that is already known to be suspect, under a
+        name that implies it was measured.
+
+        Defaults to allowed, so every existing caller keeps its behaviour.
+        """
+        self._sampled_allowed = provider
+
+    @property
+    def sampled_fallback_allowed(self) -> bool:
+        """Whether the sampled window may be used. True unless told otherwise."""
+        if self._sampled_allowed is None:
+            return True
+        try:
+            return bool(self._sampled_allowed())
+        except Exception:  # a bad provider must not take the cue mapping down
+            return True
 
     def set_correction(self, correction: Callable[[], float] | None) -> None:
         """Supply the stage-backlog gap that the window median cannot see.
@@ -156,7 +183,11 @@ class MediaAnchor:
         # An exact source-clock offset needs no window to converge, so it makes
         # the mapping usable from the first tick instead of after
         # `min_samples` rate-gated pairs.
-        return self.exact_offset is not None or len(self._window) >= self._min_samples
+        if self.exact_offset is not None:
+            return True
+        if not self.sampled_fallback_allowed:
+            return False
+        return len(self._window) >= self._min_samples
 
     @property
     def samples(self) -> int:
@@ -179,6 +210,13 @@ class MediaAnchor:
         exact = self.exact_offset
         if exact is not None:
             return exact
+        if not self.sampled_fallback_allowed:
+            # Refusing the exact offset on the grounds that the source clock is
+            # untrustworthy is not a reason to publish the sampled estimate
+            # instead: that estimate is the thing the exact offset replaced, and
+            # it is the one known to be wrong by seconds. No position is better
+            # than a position the caller has already been told not to trust.
+            return None
         median = self.window_offset
         if median is None:
             return None

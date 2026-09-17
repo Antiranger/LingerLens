@@ -90,6 +90,20 @@ class _TcpPump:
     def url(self) -> str:
         return f"tcp://127.0.0.1:{self.port}"
 
+    @property
+    def pts_clock(self) -> tuple[bool, str | None]:
+        """This pump's view of the source clock: (usable, reason it is not).
+
+        A pump with no probe carries no PTS at all, so it cannot vouch for a
+        clock -- but that is a different statement from "the clock is broken",
+        and the caller keeps the two apart by looking at whether the leg reported
+        a measurement at all (``source_pts_first``).
+        """
+        probe = self._pts_probe
+        if probe is None:
+            return (False, "no-pts-probe")
+        return (bool(probe.clock_valid), probe.invalid_reason)
+
     def start(self, source: Any) -> None:
         self._source = source
         self._thread = threading.Thread(target=self._run, name=f"tcp-pump-{self.label}", daemon=True)
@@ -518,6 +532,10 @@ class YtDlpLiveIngest:
         legs: list[dict[str, Any]] = []
         previous_marks = self._last_leg_marks
         current_bytes = [pump.forwarded_bytes for pump in self.pumps]
+        # Per-leg, then aggregated. A leg whose own probe gave up on the clock is
+        # not rescued by its neighbour: "one leg is fine" is not "the pair shares
+        # a clock", and the exact offset is a difference between the two.
+        clocks = [pump.pts_clock for pump in self.pumps]
         for index, pump in enumerate(self.pumps):
             rate: float | None = None
             if previous_marks and index < len(previous_marks[1]):
@@ -532,6 +550,8 @@ class YtDlpLiveIngest:
                     "sourcePtsFirst": round(self.source_pts_first[index], 6) if index < len(self.source_pts_first) and self.source_pts_first[index] is not None else None,
                     "sourcePtsLast": round(self.source_pts[index][-1], 6) if index < len(self.source_pts) and self.source_pts[index] else None,
                     "sourcePtsSamples": len(self.source_pts[index]) if index < len(self.source_pts) else 0,
+                    "clockValid": clocks[index][0] if index < len(clocks) else False,
+                    "clockReason": clocks[index][1] if index < len(clocks) else "no-pump",
                 }
             )
         # Only advance the baseline when the clock ticked; a zero-elapsed
@@ -547,6 +567,13 @@ class YtDlpLiveIngest:
             "running": running,
             "sourceIdleSeconds": self._source_idle_seconds() if running else None,
             "sourceError": self.error,
+            "sourceClockValid": bool(clocks) and all(valid for valid, _ in clocks),
+            # The FIRST leg that gave up, with its own reason: which leg broke is
+            # the diagnostic, and the aggregate must not average that away.
+            "sourceClockReason": next(
+                (reason for valid, reason in clocks if not valid),
+                "no-legs" if not clocks else None,
+            ),
             "legThroughput": legs,
             # Last yt-dlp stderr lines (URLs already redacted) so a silently
             # falling-behind download is diagnosable from /api/status without

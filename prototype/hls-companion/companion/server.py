@@ -61,6 +61,7 @@ try:
         validate_page_url,
     )
     from .media_anchor import MediaAnchor  # type: ignore[import-not-found]
+    from .source_timeline import PTS_HZ, signed_pts_delta  # type: ignore[import-not-found]
 except ImportError:  # Direct script execution.
     from companion import logbook  # type: ignore[import-not-found]
     from control_ipc import ControlServer  # type: ignore[import-not-found]
@@ -97,6 +98,7 @@ except ImportError:  # Direct script execution.
         validate_page_url,
     )
     from companion.media_anchor import MediaAnchor  # type: ignore[import-not-found]
+    from companion.source_timeline import PTS_HZ, signed_pts_delta  # type: ignore[import-not-found]
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_PLAYER = ROOT / "web-player"
@@ -189,6 +191,10 @@ class CompanionApplication:
         # latched from; a later mismatch means a leg re-based and the exact
         # offset is refused for the rest of the session.
         self._source_clock_origins: tuple[float, float] | None = None
+        # R1: why this session's source clock was declared unusable, if it was.
+        # None means "not refused" -- which covers both "trustworthy" and "not
+        # measured yet", and the sampled fallback depends on that difference.
+        self._exact_mapping_refused: str | None = None
         self.providers_path = args.providers_file
         self.providers_config = load_config(self.providers_path)
         self.auth_file = Path(args.providers_file).parent / "auth-snapshot.json"
@@ -999,7 +1005,19 @@ class CompanionApplication:
             # that, so the anchor is kept only as the fallback and as the
             # diagnostic it is still good for.
             self._source_clock_origins = None
+            # A new session owns a new clock: the probes were rebuilt with the
+            # legs, so a refusal recorded against the previous one says nothing
+            # about this one. Kept in one place with the origin reset because the
+            # two must move together -- dropping the origins while keeping the
+            # refusal would leave the sampled fallback disabled for the rest of
+            # the application's life after a single discontinuity.
+            self._reset_source_clock()
             media_anchor.set_exact_offset(self._source_clock_offset)
+            # R1: an untrusted source clock must not silently become the sampled
+            # window instead. The two are different statements -- "not measured
+            # yet" keeps the old fallback, "measured and not trustworthy" does
+            # not -- and the anchor asks this provider which one it is.
+            media_anchor.set_sampled_fallback_allowed(self._sampled_fallback_allowed)
             source_pts_mapper = None
         else:
             ingest_status = lambda: self.source_ingest.snapshot() if self.source_ingest else {}  # noqa: E731
@@ -1096,6 +1114,64 @@ class CompanionApplication:
         publisher = self.session.publisher if self.session else None
         return getattr(publisher, "private_media_seconds", None)
 
+    def _reset_source_clock(self) -> None:
+        """Forget everything the previous session's PTS clock taught us.
+
+        Called once when a session's subtitle pipeline starts. Both halves belong
+        together: the latched origin pair, and the refusal recorded against a
+        clock that no longer exists.
+        """
+        self._source_clock_origins = None
+        self._exact_mapping_refused = None
+
+    def _leg_clock_state(self) -> tuple[str, str | None]:
+        """("trusted" | "unmeasured" | "untrusted", reason) for the two legs.
+
+        One trustworthy leg is not enough: the exact offset is a difference
+        between the two, so a pair is only as good as its weaker clock.
+
+        The middle state is the one that matters. A leg that has not started, has
+        no pumps, or carries no PTS probe cannot have broken a clock it never had,
+        so that is "unmeasured" and the sampled window stays in charge. A leg that
+        reports no validity AT ALL is not unmeasured -- an absent statement is not
+        a positive one, and treating it as one is how a reset gets modulo'd into
+        looking like a small, plausible distance.
+        """
+        for ingest in (self.asr_audio_ingest, self.source_ingest):
+            if ingest is None:
+                return ("unmeasured", "no-session")
+            if getattr(ingest, "sourceClockValid", None) is True:
+                continue
+            reason = getattr(ingest, "sourceClockReason", None)
+            if reason in ("no-legs", "no-pts-probe"):
+                return ("unmeasured", reason)
+            return ("untrusted", reason or "clock-validity-not-reported")
+        return ("trusted", None)
+
+    def _sampled_fallback_allowed(self) -> bool:
+        """False once this session has been shown to be untrustworthy.
+
+        Deliberately NOT "the exact offset is currently None": a session that has
+        simply not measured its first PTS yet is still free to use the sampled
+        window, which is the behaviour everything had before this existed.
+        """
+        return self._exact_mapping_refused is None
+
+    def _refuse_exact_mapping(self, reason: str) -> None:
+        """Stop publishing an exact position for the rest of the session.
+
+        Recorded once per transition, not per tick: this runs on every anchor
+        tick and the status poll runs every second.
+        """
+        if reason != self._exact_mapping_refused:
+            self._exact_mapping_refused = reason
+            logbook.record(
+                "warn",
+                "media",
+                f"源时钟不可用于精确对齐，字幕改用保守路径：{reason}",
+            )
+        return None
+
     def _source_clock_offset(self) -> float | None:
         """C = (ASR leg's source origin) - (packaging video leg's source origin).
 
@@ -1106,36 +1182,74 @@ class CompanionApplication:
         at privateMediaSeconds = T - V0 in the packaged playlist, so the mapping
         the anchor needs is exactly A0 - V0.
 
-        None means "not measurable on the source clock", never "zero":
-          * a leg that reports no PTS yet, or
-          * a leg whose first PTS is at the mpegts muxer's re-base origin, i.e.
-            it was re-based and never had an absolute clock -- subtracting two
-            such origins yields ~0, which is confidently wrong rather than
-            merely imprecise,
-          * two origins implausibly far apart, which is what a 33-bit PTS wrap
-            landing between the two legs' first packets looks like, or
-          * a leg that re-based mid-session. The origins move but `_pcm_offset`
-            does not restart with them (it is monotonic across a decoder
-            restart), so a fresh subtraction no longer describes where pcm 0
-            sits on the packaged timeline.
+        None means "not measurable on the source clock", never "zero", and the
+        two ways of being unmeasurable are kept apart because the anchor treats
+        them differently:
 
-        In every one of those cases the anchor falls back to its sampled window,
-        which re-converges on its own.
+        NOT MEASURED YET -- the sampled window stays in charge, as it always was:
+          * no session, or
+          * a leg that has not reported its first PTS yet.
+
+        REFUSED FOR THIS SESSION -- the sampled window is switched off too, so no
+        position is published rather than a position known to be suspect:
+          * a leg whose own probe gave up on the clock (a transport-stream
+            discontinuity, a reset that is not a wrap, or a reverse jump it
+            cannot attribute),
+          * a leg whose first PTS is at the mpegts muxer's re-base origin, which
+            after a wrap is exactly what a genuine beginning-of-clock looks like,
+            so it is unconfirmable rather than resolvable, or
+          * two origins further apart than the guard even after the difference is
+            taken modulo one 33-bit period.
+
+        A leg that re-based MID-session is the one case that returns None without
+        refusing: `_pcm_offset` is monotonic across a decoder restart, so the
+        fresh subtraction is meaningless, but the sampled window is precisely the
+        mechanism that re-converges after a re-base.
         """
         audio_first = self._leg_origin(self.asr_audio_ingest, 0)
         video_first = self._leg_origin(self.source_ingest, 0)
+        state, reason = self._leg_clock_state()
+        if state == "untrusted":
+            return self._refuse_exact_mapping(f"source-clock-invalid:{reason}")
+        if state == "unmeasured":
+            # No session, no legs, or nothing measured yet. Not a refusal: the
+            # sampled window stays in charge, exactly as it was before this
+            # existed.
+            return None
         if audio_first is None or video_first is None:
+            # A leg has not reported its first PTS yet. Still "not measured".
             return None
         if audio_first < MPEGTS_REBASE_ORIGIN or video_first < MPEGTS_REBASE_ORIGIN:
-            return None
-        if abs(audio_first - video_first) > SOURCE_CLOCK_MAX_LEG_SKEW:
-            return None
+            # A first origin inside the mpegts muxer's own re-base window. After
+            # a wrap the source legitimately looks like this too, and two numbers
+            # alone cannot tell the ~1.4s rebase artifact from a genuine
+            # beginning-of-clock, so this is declared unconfirmable rather than
+            # resolved by taking a modulus. Relaxing this guard would be
+            # inventing evidence.
+            return self._refuse_exact_mapping("origin-rebase-or-wrap-ambiguous")
+        # The clock is 33 bits wide, so the difference has to be taken modulo one
+        # period: an origin of 3s and an origin of (W - 2s) are five seconds
+        # apart, not 26.5 hours. Because of that, the bound below is no longer
+        # what catches a wrap -- it catches a genuine mismatch between two legs.
+        offset = signed_pts_delta(
+            round(audio_first * PTS_HZ), round(video_first * PTS_HZ)
+        ) / PTS_HZ
+        if abs(offset) > SOURCE_CLOCK_MAX_LEG_SKEW:
+            return self._refuse_exact_mapping("implausible-origin-skew")
         if self._source_clock_origins is None:
             # Latch the first pair that was valid. Later reads must match it.
             self._source_clock_origins = (audio_first, video_first)
         elif (audio_first, video_first) != self._source_clock_origins:
+            # A leg re-based mid-session. The origins move but `_pcm_offset` does
+            # not restart with them, so a fresh subtraction no longer describes
+            # where pcm 0 sits. The raw pair changing is what makes it invalid;
+            # the offset itself is computed once, from the latched pair, so a wrap
+            # crossing during the session cannot move it.
             return None
-        return self._source_clock_origins[0] - self._source_clock_origins[1]
+        return signed_pts_delta(
+            round(self._source_clock_origins[0] * PTS_HZ),
+            round(self._source_clock_origins[1] * PTS_HZ),
+        ) / PTS_HZ
 
     @staticmethod
     def _leg_origin(ingest: Any, index: int) -> float | None:
