@@ -22,6 +22,23 @@
   // restart the very playback the user just stopped (observed live: the picture
   // came back for the ~2s the teardown took).
   let stopRequested = false;
+  // Which media session the local stop is about, and which one the server last
+  // described. The barrier above may only be released by evidence that the
+  // stopped session is gone: a sample that says idle, or a DIFFERENT session
+  // that started afterwards. Without an identity the only signal is the idle
+  // sample, and a poll can legitimately never see one -- teardown can finish
+  // between two samples, or another tab can claim the next session first. That
+  // is the latch this replaces: one Start that failed and the page never
+  // attached again.
+  let observedMediaSessionId = null;
+  let stoppedMediaSessionId = null;
+  // Bumped by every local session action (Stop, Start). A status response that
+  // was already in flight when this changed describes a world the page has left,
+  // so it must not touch the UI or attach a playlist.
+  let uiGeneration = 0;
+  // One-shot: the barrier is being held only because the backend cannot say
+  // which session it is describing.
+  let stopUnconfirmedLogged = false;
   let statusPoller = null;
   let subtitlePoller = null;
   let diagnosticsPoller = null;
@@ -696,6 +713,8 @@
   }
 
   async function start() {
+    // This page owns the local session state again; anything older is stale.
+    const claim = ++uiGeneration;
     setSessionAction("starting");
     setMediaLoading(true, "正在启动直播…");
     setBusy(true);
@@ -705,6 +724,9 @@
       // A previous Stop may still be tearing the old session down on the
       // server. Wait for that claim to settle before starting a new one.
       if (pendingStop !== null) await pendingStop;
+      // A Stop that arrived while we waited owns the UI now. Starting a session
+      // on top of it would resurrect what the user just dismissed.
+      if (claim !== uiGeneration) return;
       if (el("subtitlesEnabled").checked) {
         const problem = validateLanguageSettingsClient();
         if (problem) throw new Error(problem);
@@ -725,8 +747,16 @@
         },
       };
       const data = await request("/api/start", body);
+      // A later Stop already owns the UI: this response describes a session the
+      // user has stopped, so it must not clear the barrier that Stop raised.
+      if (claim !== uiGeneration) return;
       // Only a session this page actually claimed clears the local stop.
       stopRequested = false;
+      stoppedMediaSessionId = null;
+      stopUnconfirmedLogged = false;
+      // Record which session this page is now watching, taken from the start
+      // response itself, so the very next poll has an identity to compare.
+      observedMediaSessionId = data.status?.mediaSessionId ?? observedMediaSessionId;
       lastSessionState = data.status?.state || "running";
       localStorage.setItem("lingerlens.targetDelaySeconds", String(body.targetDelaySeconds));
       el("stop").disabled = false;
@@ -737,12 +767,23 @@
       setMediaLoading(true, "正在建立直播缓冲…");
       authToken = null;
     } catch (error) {
+      // Report the failure, but do NOT drop the identity of the session the user
+      // stopped: a later, different session releases that barrier, not this
+      // page's failure to start one. This is the latch being removed -- the old
+      // code cleared the barrier only on a SUCCESSFUL start, so one failed Start
+      // meant the poll skipped attach forever.
+      if (claim !== uiGeneration) return;
       lastSessionState = "idle";
       setMediaLoading(false);
       showError(error);
     } finally {
-      setSessionAction(null);
-      setBusy(false);
+      // Only the current claim may clear these. A Stop that happened since has
+      // already restored the stopped UI and cleared busy itself, so clearing
+      // them again from a stale Start would fight the newer action.
+      if (claim === uiGeneration) {
+        setSessionAction(null);
+        setBusy(false);
+      }
     }
   }
 
@@ -777,13 +818,44 @@
      所以只进诊断栏。 */
   function stop() {
     const alreadyStopped = lastSessionState === "idle" && !hls && !video.src;
+    // A repeated click is the same intent, so only the click that actually takes
+    // ownership of the stop request bumps the generation. Bumping on every click
+    // would make the FIRST click's own confirmation arrive "stale" -- the claim
+    // it recorded would no longer match -- and the barrier would stay up forever
+    // with nothing left to release it. That is the same latch this change
+    // removes, so the counter must distinguish Stop from Start, not click from
+    // click.
+    const ownsRequest = pendingStop === null;
+    if (ownsRequest) ++uiGeneration;
+    // Remember WHICH session is being stopped, so a later poll can tell it apart
+    // from one that starts afterwards.
+    stoppedMediaSessionId = observedMediaSessionId;
     stopRequested = true;
     resetStoppedUi();
-    if (alreadyStopped && pendingStop === null) return;
-    if (pendingStop === null) {
+    // The local stop owns the controls again. Without this, a Stop that lands
+    // while a Start is still in flight leaves every control disabled forever,
+    // because the stale Start's finally block no longer runs.
+    setBusy(false);
+    if (alreadyStopped && ownsRequest) return;
+    if (ownsRequest) {
+      const claim = uiGeneration;
       pendingStop = request("/api/stop", {})
+        .then(() => {
+          // A successful response is the server confirming this stop finished,
+          // so release the barrier here as well rather than depending on ever
+          // catching an idle sample. The claim check keeps a Start that has
+          // happened since in charge of its own barrier.
+          if (claim === uiGeneration) {
+            ++uiGeneration;
+            stopRequested = false;
+            observedMediaSessionId = null;
+            stoppedMediaSessionId = null;
+            stopUnconfirmedLogged = false;
+          }
+        })
         .catch((error) => {
-          // 本地已经停止；这里只留诊断痕迹，不打扰用户。
+          // 本地已经停止；这里只留诊断痕迹，不打扰用户。A timeout is NOT the
+          // server saying it stopped, so the barrier stays up.
           diagnosticsBar?.push("warn", "ui", `停止清理未确认：${error.message || error}`);
         })
         .finally(() => { pendingStop = null; });
@@ -901,24 +973,56 @@
   }
 
   async function refreshStatus() {
+    const claim = uiGeneration;
     try {
       const data = await request("/api/status");
+      // A response already in flight when the user pressed Stop or Start
+      // describes a world this page has left. Acting on it is exactly how a
+      // stopped picture came back, and how a stale running sample reverted the
+      // stopped controls.
+      if (claim !== uiGeneration) return;
       // The stream may have been started from another tab, the extension, or a
       // diagnostic client. Restore controls from server truth on every poll
       // instead of relying on this page's start() call having run.
       lastSessionState = data.state;
       renderSessionControls();
-      // A locally requested Stop outranks server truth until the user starts a
-      // new session: teardown still reports running, and acting on that here
-      // re-attaches the playlist the viewer just dismissed. The stopped UI is
-      // already complete, so there is nothing left for this poll to update.
+      const mediaSessionId = data.mediaSessionId ?? null;
+      // A locally requested Stop outranks server truth until the server says the
+      // session it stopped is gone. "Gone" means an idle sample OR a DIFFERENT
+      // media session -- not merely a later sample, which is what teardown emits
+      // while it is still running the old one.
       if (stopRequested) {
-        if (data.state === "idle") {
-          lastSessionState = "idle";
-          renderSessionControls();
+        if (pendingStop !== null) return;
+        const confirmedIdle = data.state === "idle";
+        const differentSession = mediaSessionId !== null
+          && stoppedMediaSessionId !== null
+          && mediaSessionId !== stoppedMediaSessionId;
+        if (!confirmedIdle && !differentSession) {
+          // Comparable means the page knows both the stopped session's identity
+          // and the one the server is describing. Without both, nothing can
+          // prove a new session is new -- an unknown identity is never treated
+          // as a different one.
+          const comparable = mediaSessionId !== null && stoppedMediaSessionId !== null;
+          if (!stopUnconfirmedLogged && !comparable) {
+            // Conservative path, recorded once rather than on every poll.
+            stopUnconfirmedLogged = true;
+            diagnosticsBar?.push(
+              "warn",
+              "ui",
+              "停止状态未确认：无法比对媒体会话身份，新会话不会被自动接入。",
+            );
+          }
+          return;
         }
-        return;
+        stopRequested = false;
+        stoppedMediaSessionId = null;
+        stopUnconfirmedLogged = false;
       }
+      observedMediaSessionId = mediaSessionId;
+      // While this page is starting a session the server still describes the
+      // previous one, so attaching from it would reconnect the playlist being
+      // replaced. The first poll after start() settles attaches normally.
+      if (sessionAction === "starting") return;
       if (data.playlistUrl) attach(data.playlistUrl);
       if (data.state === "error" && sessionAction !== "stopping") {
         // The error branch throws, so the shared updateStallOverlay() call near
