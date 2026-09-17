@@ -629,6 +629,25 @@ t=50  cpuTotal=5.1    roles={gpu-process:1.6, renderer:1.6}    frames=12947  hid
 
 三者相互独立。**A 只改一个数**；**B 才是「话说个不停就不出字幕」的正解**；**C 决定用户在故障时看到什么**。执行者没有擅自改任何一条。
 
+#### B 已落地（用户拍板 7 秒）：`hard_deadline` 的兜底切断
+
+**用户决定：做 B，阈值 7 秒**，并要求「必须得是已经确定的字幕才可以切」。实现如下：
+
+- **常量** `HARD_DEADLINE_SECONDS = 7.0`（`caption_chunker.py`，紧挨 `SOFT_TARGET_SPAN = 6.0`）。两者分工明确：6.0 秒只**统计**超时（`pendingEvidenceOverSoftSpan`），7.0 秒才**动手**。
+- **`_CaptionState` 新增 `hard_deadline`**，与既有的 `deadline`（1.2 秒残尾宽限）**分开**——残尾只在 provider 已关闭条目后才装上，救不了 provider 攥着不放的句子。
+- **挂载时机**：某条字幕第一次收到文字时挂一次（`now + 7.0`），**不因后续新文字而顺延**，所以它限制的是「这条字幕开了多久」。
+- **触发路径**：走**已有的** `expire(now)` 与**已有的**到期线程（`_caption_deadline_worker`），`next_deadline` 现在同时考虑两种到期。**没有新增定时器。**
+- **原因名不是新造的**：`"hard_deadline"` 一直在 `CaptionCutReason` 里，翻译提示词的测试甚至已断言它会写进给模型的指令——**词汇表和提示词早就建好了，只是从来没有代码路径发过它**。
+- **满足用户的条件**：只有 `caption.units`（**已确认**的文字）非空才发出；空车道直接丢弃，**绝不产生空字幕或臆测文字**。`ends_mid_sentence` 保持 `None`（不知道是否切在句中），不谎称是句末。
+
+**为什么不去改 `advance_audio`**：那里有**三个测试明确锁定了「它永不发布 chunk」的契约**（其中一个的名字就是 `test_continuous_open_speech_is_not_expired_by_audio_or_elapsed_time`——**正是用户这次要反向的那条决定**）。`expire` 走墙钟、`advance_audio` 走音频前沿，改前者即可达成同样的用户可见行为，**契约一个字都不用碰**。
+
+**改了两个测试**（只改契约变了的那一半，旧决定写进注释而不是悄悄删掉）：`..._is_not_expired_by_audio`（保留「音频推进永不切断」，改为断言 7 秒后按 `hard_deadline` 发出）和 `test_nearby_continuation_cancels_residual_deadline`（保留「邻近续接仍然合并」，改为断言 8.9 秒前不冲）。**新增 3 个测试**：到期发出已确认文字、空车道不产生字幕、边界先到则不使用兜底。
+
+**验证**：`test_caption_chunker.py` 38 个通过；完整 Python 套件 **55 文件 / 690 测试全绿**（原 687 + 新增 3）。
+
+**尚未验证的**：这条改动**还没在真机上跑过**——应用跑的是 02:00 的旧构建（§3.5.18），要看到它生效必须先重新打包。下一次真机跑应重点看 `chunkCutReasons["hard_deadline"]` 的计数，以及「无字幕空档」是否消失。
+
 ## 4. 还没做的，分五类（**这是本文档最主要的部分**）
 
 ### 4.1 等用户授权或材料（执行者做不了，也不该自己决定）

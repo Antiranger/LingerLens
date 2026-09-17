@@ -22,6 +22,15 @@ from .providers.base import CaptionCutReason, CaptionObservation, RecognitionTok
 GuaranteeTier = Literal["strict", "best_effort"]
 
 SOFT_TARGET_SPAN = 6.0
+# The backstop the soft span never had. A caption whose text is confirmed but
+# which still offers no lexical boundary is emitted anyway once it has been
+# open this long. Without it a speaker who never pauses holds the caption open
+# indefinitely, and by the time a boundary finally arrives the cue is older
+# than the display budget: translation is then refused without a Provider call
+# and, because the renderer admits only finished translations, nothing at all
+# reaches the screen. Deliberately longer than SOFT_TARGET_SPAN, which only
+# counts an overshoot; this is the point at which waiting stops paying.
+HARD_DEADLINE_SECONDS = 7.0
 _CONTINUATION_GAP = 1.2
 # Arrival replay: <=0.6s recovered no cross-final continuations; 1.2s
 # recovered several, including a Japanese topic + predicate, at lower wait
@@ -141,6 +150,13 @@ class _CaptionState:
     begin_pcm: float | None = None
     last_end_pcm: float | None = None
     deadline: float | None = None
+    hard_deadline: float | None = None
+    """Wall-clock backstop armed when the lane first receives text.
+
+    Kept separate from ``deadline``: that one is the residual grace, re-armed
+    on every unit and only once the Provider has closed the item, so it can
+    never rescue an utterance the Provider is still holding open.
+    """
     last_chunk_ended_mid: bool | None = None
     emitted_chunks: int = 0
     pending_reported: bool = False
@@ -238,6 +254,10 @@ class CaptionChunker:
             caption.units.append(unit)
             caption.last_end_pcm = _maximum_time(caption.last_end_pcm, unit.end)
             caption.deadline = None
+            if caption.hard_deadline is None:
+                # Armed once per lane, so it bounds how long THIS caption may stay
+                # open rather than being pushed back by every new unit.
+                caption.hard_deadline = now + HARD_DEADLINE_SECONDS
             caption.last_touched = now
             affected.add(key)
         state.units.clear()
@@ -335,7 +355,15 @@ class CaptionChunker:
 
     @property
     def next_deadline(self) -> float | None:
-        return min((s.deadline for s in self._captions.values() if s.deadline is not None), default=None)
+        return min(
+            (
+                deadline
+                for state in self._captions.values()
+                for deadline in (state.deadline, state.hard_deadline)
+                if deadline is not None
+            ),
+            default=None,
+        )
 
     def expire(self, now: float) -> ChunkerDecision:
         """Close finalized residuals using caller-supplied monotonic time.
@@ -345,14 +373,29 @@ class CaptionChunker:
         """
         chunks = []
         for key, caption in list(self._captions.items()):
+            if caption.hard_deadline is not None and now >= caption.hard_deadline:
+                # Confirmed text only: a lane that accumulated nothing is dropped
+                # rather than turned into an empty cue.
+                if caption.units:
+                    chunks.append(self._close_caption(key, "hard_deadline"))
+                else:
+                    del self._captions[key]
+                continue
             if caption.deadline is not None and now >= caption.deadline:
                 chunks.append(self._close_caption(key))
         return ChunkerDecision(tuple(chunks))
 
-    def _close_caption(self, key: tuple[str, str | None]) -> CaptionChunk:
+    def _close_caption(
+        self,
+        key: tuple[str, str | None],
+        reason: CaptionCutReason = "utterance_endpoint",
+    ) -> CaptionChunk:
         caption = self._captions.pop(key)
-        self._residual_flushes += 1
-        return self._emit(caption, len(caption.units) - 1, "utterance_endpoint")
+        if reason == "utterance_endpoint":
+            # Residual flushes count their own path only; a hard-deadline cut is
+            # visible as chunkCutReasons["hard_deadline"], incremented in _emit.
+            self._residual_flushes += 1
+        return self._emit(caption, len(caption.units) - 1, reason)
 
     def advance_audio(self, frontier_pcm: float) -> ChunkerDecision:
         pending = False

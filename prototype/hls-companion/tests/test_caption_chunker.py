@@ -57,20 +57,35 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertIsNone(c.next_deadline)
         self.assertEqual(c.expire(deadline + 100).chunks, ())
 
-    def test_continuous_open_speech_is_not_expired_by_audio_or_elapsed_time(self):
+    def test_continuous_open_speech_is_not_expired_by_audio(self):
+        # This test was named "..._by_audio_or_elapsed_time", and the
+        # elapsed-time half was a deliberate decision the user has since
+        # reversed: continuous speech held a caption open indefinitely, so a
+        # speaker who never paused produced a cue older than the display
+        # budget, which was then refused translation and never reached the
+        # screen. What is STILL true is that advancing audio never cuts.
         c = CaptionChunker()
         c.observe(stable(token("unfinished", 0, 1, speaker="3")), now=1)
-        c.advance_audio(100)
-        self.assertEqual(c.expire(100).chunks, ())
+        self.assertEqual(c.advance_audio(100).chunks, ())
+        # now=1 armed the hard deadline at 8.0; nothing expires before it.
+        self.assertEqual(c.expire(7.9).chunks, ())
+        timed_out = c.expire(8.1)
+        self.assertEqual([x.text for x in timed_out.chunks], ["unfinished"])
+        self.assertEqual(timed_out.chunks[0].cut_reason, "hard_deadline")
+        # A continuation after the cut opens a fresh lane rather than
+        # resurrecting the one already emitted.
         out = c.observe(stable(token("continuation.", 1, 2, speaker="3")), now=100).chunks
-        self.assertEqual([x.text for x in out], ["unfinished continuation."])
+        self.assertEqual([x.text for x in out], ["continuation."])
 
     def test_nearby_continuation_cancels_residual_deadline(self):
         c = CaptionChunker()
         c.observe(CaptionObservation("utterance_final", 1, "old", stable_text="unfinished", begin_pcm=0, end_pcm=1, language="en", speaker="3"), now=2)
         c.observe(stable(token("continuing", 1.1, 2, speaker="3"), item_id="new"), now=2.01)
-        self.assertIsNone(c.next_deadline)
-        self.assertEqual(c.expire(100).chunks, ())
+        # The residual grace is still cancelled by the nearby continuation, so the
+        # two parts merge rather than being flushed apart. The lane also carries
+        # the hard deadline now (armed at 2.01 + 7s), so the assertion is on the
+        # behaviour it protects: nothing expires before that deadline.
+        self.assertEqual(c.expire(8.9).chunks, ())
         self.assertEqual([x.text for x in c.flush_utterance(None).chunks], ["unfinished continuing"])
 
     def test_late_continuation_does_not_reopen_expired_expression(self):
@@ -316,6 +331,49 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertTrue(decision.pending_evidence)
         self.assertEqual(decision.chunks, ())
         self.assertEqual(chunker.telemetry().pending_evidence_over_soft_span, 1)
+
+    def test_hard_deadline_emits_confirmed_text_when_no_boundary_ever_arrives(self) -> None:
+        # The backstop. A speaker who never pauses must not hold a caption open
+        # forever: once it has been open for the hard deadline its confirmed text is
+        # emitted anyway, under the reason name the vocabulary and the translation
+        # prompt already carried but which no code path had ever produced.
+        chunker = CaptionChunker()
+        chunker.open_item("u1", 0.0)
+        chunker.observe(stable(token("まだ終わってない", 0.0, 2.0, language="ja")))
+
+        # observe() defaults to now=0.0, so the armed deadline is the constant itself.
+        deadline = chunker.next_deadline
+        self.assertAlmostEqual(deadline, 7.0, places=3)
+
+        # Waiting is still preferred while there is time left.
+        self.assertEqual(chunker.expire(deadline - 0.1).chunks, ())
+
+        timed_out = chunker.expire(deadline + 0.1)
+        self.assertEqual([chunk.text for chunk in timed_out.chunks], ["まだ終わってない"])
+        self.assertEqual(timed_out.chunks[0].cut_reason, "hard_deadline")
+        # A fallback is not a sentence end, and saying otherwise would be a claim the
+        # cut cannot support.
+        self.assertIsNone(timed_out.chunks[0].ends_mid_sentence)
+        self.assertEqual(chunker.telemetry().chunk_cut_reasons, (("hard_deadline", 1),))
+
+    def test_hard_deadline_never_turns_an_empty_lane_into_a_cue(self) -> None:
+        # Confirmed text only. A lane that accumulated nothing is dropped, not
+        # published as an empty subtitle.
+        chunker = CaptionChunker()
+        chunker.open_item("u1", 0.0)
+        chunker.observe(CaptionObservation("endpoint", 1, "u1", end_pcm=1.0))
+        decision = chunker.expire(1e9)
+        self.assertEqual(decision.chunks, ())
+
+    def test_hard_deadline_does_not_displace_a_boundary_that_arrives_in_time(self) -> None:
+        # The backstop must stay a fallback: when the sentence ends before the
+        # deadline, the boundary wins and hard_deadline is never used.
+        chunker = CaptionChunker()
+        chunker.open_item("u1", 0.0)
+        decided = chunker.observe(stable(token("終わりました。", 0.0, 1.5, language="ja")))
+        self.assertEqual([chunk.cut_reason for chunk in decided.chunks], ["terminal_punctuation"])
+        self.assertEqual(chunker.expire(1e9).chunks, ())
+        self.assertEqual(chunker.telemetry().chunk_cut_reasons, (("terminal_punctuation", 1),))
 
     def test_local_agreement_two_commits_policy_text_without_rewriting_it(self) -> None:
         chunker = CaptionChunker()
