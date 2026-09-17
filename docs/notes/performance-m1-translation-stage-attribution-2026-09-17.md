@@ -26,7 +26,13 @@
 | 09-17 01:35 | 1 | 0 | 0 |
 | **合计** | **49** | **26** | **9** |
 
-**主因不是"某个 provider 坏了"，而是"整条链没能在该 cue 的预算内跑完"（49/75 = 65%）。**
+**主因不是"某个 provider 坏了"，而是"整条链没能在该 cue 的预算内跑完"（在已记录的 75 行里占 65%）。**
+
+**这 75 是什么、不是什么。** 75 是**已被记录下来的失败事件行数**，不是失败总数，也不等于 `/api/status` 的失败人群：
+
+- `subtitle_pipeline.py:1360` 对**每一次** provider 阶段失败都累加 `translation_failures`，但 `:1364` 只在 `_translation_failure_recorded` 为假时才写日志，而这个标志只在**一次成功翻译之后**（`:1333`）才被复位。**连续失败因此被折叠成一行。** 所以这 75 行是 provider 阶段失败次数的**下界**，真实次数无法从这批日志还原。
+- 队列等待造成的到期走 `:1337` 的独立分支，**只加计数、不写日志**（见 §3），完全不在 75 里。
+- 因此下文所有 49/26/9 都是**对这 75 行记录的分类**，不是对全部失败人口的分类，也不能与 `/api/status` 的 `translationFailures` 互相充当分子或分母。
 
 ---
 
@@ -63,8 +69,8 @@ if playback_delay_seconds is not None and audio_end_wall is not None:
    - **9 次**明确记录 **fallback（`translation-1` / label `deepseek`）收到的是已过期 deadline**；
    - **12 次**（只出现在最早的 12:37 那次会话）是 fallback 撞 `maxTokens` 截断（`finish_reason=length`）。
 3. **那 9 次的机制是精确的**：`providers/http.py:42-49` 的 `request_timeout()` 在 `deadline − now ≤ 0` 时**不发请求**，直接
-   `raise asyncio.TimeoutError("translation deadline has expired")`。所以这 9 条 = **兜底被叫到的时候，请求已经过期，它连发都没发。** 这正是 B2 缺陷在真实运行中的字节级签名。
-   - **附带的二阶伤害**：这个"未发出请求"的 TimeoutError 被链当成 provider 失败计入 `consecutive_failures`，**可能让一个本来健康的兜底进入冷却**。
+   `raise asyncio.TimeoutError("translation deadline has expired")`。所以这 9 条 = **兜底被叫到的时候，请求已经过期，它连发都没发。** 这 9 行**记录为**兜底收到已经过期的期限。**限制：**这些日志只有异常名、没有调用栈，所以它证明的是"记录里出现了这句话"，不是"所有运行形态下这句话都一定在这个位置抛出"。
+   - **附带的二阶伤害**：这个"未发出请求"的 TimeoutError 被链当成 provider 失败计入 `consecutive_failures`，**可能让一个本来健康的兜底进入冷却**——这是从代码路径读出的可能性，不是这批日志测到的效果；它由 B2-R 的回归用例来证伪或确认。
 4. **当前配置**（非密钥字段）：主 = `bailian-qwen35-flash`，label `gemini-3.7-flash-low`，指向**本机网关**，`timeoutSeconds = 6`，`maxTokens = 256`；兜底 = `translation-1`（`deepseek-flash`，真实远端 API），`timeoutSeconds = 6`，`maxTokens = 1024`，`reasoningEffort = none`；`fallback_reserve_seconds` 默认 2.0。
    → **整条链总共只有 6 秒**，主服务被截到 4 秒，兜底 2 秒。
 5. **主服务的失败形态是超时**：16:24 与 17:04 两次会话共 9 次链耗尽，其中 8 次把主服务记为 `TimeoutError`（唯一例外是 16:44:11，那次只列了兜底 `deepseek: ProviderRefusalError`，主服务当时应在冷却）。而它指向的是**本机网关**。
@@ -81,7 +87,7 @@ if playback_delay_seconds is not None and audio_end_wall is not None:
 
 按 §5.4 的规则，下面每一项都**另作产品选择**，不由本报告自动执行：更换/修正主服务、调整 `timeoutSeconds`、调整 `fallback_reserve_seconds`、调整 `maxTokens`、增加并发或放宽字幕期限。
 
-**B2 已落地（`ce1e47e`）恰好命中第 3 条里的 9 次**，并且顺带消除了"兜底因未发出的请求而被判失败、进而冷却"这条误判。这是对既定排序的一次事后验证。
+**B2 已落地（`ce1e47e`），但它修的是一个机制，不是这 9 次事件。** 原稿在这里写过"恰好命中第 3 条里的 9 次，并且顺带消除了兜底被误判冷却这条误判"——**该结论已撤回**：那 9 行是历史记录，修复之后没有任何测量重新跑过同样的边界；"消除了"是断言而不是结果，而且它把"日志里出现过的 9 行"当成了"当时真实发生的全部该类事件"。正确表述是：B2 修好了一条预算分配路径，**剩余边界由 B2-R 的回归用例证明**，而它挽回了多少历史事件、带来多少收益，**本轮未验证**。
 
 ---
 
