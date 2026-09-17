@@ -36,15 +36,6 @@ _CONTINUATION_GAP = 1.2
 # recovered several, including a Japanese topic + predicate, at lower wait
 # than 2s. Only finalized residuals receive this bounded opportunity.
 _RESIDUAL_GRACE = 1.2
-# A boundary candidate that lands on the END of the arrived text is not evidence
-# that the sentence stopped: nothing to its right has arrived to confirm it, and
-# a Provider that punctuates at pauses writes 。 mid-phrase (live: "…担当として
-# 仕事。" published, then "を熱心に…" published as the next caption). A lexically
-# gated veto cannot fix that -- it can only judge text it can already see -- so
-# the tail candidate waits here for the next token, and this window is what
-# bounds the wait when the speaker really did stop. Same "one breath" scale as
-# _CONTINUATION_GAP: below it, two pieces belong to one caption.
-_TAIL_CONFIRM_SECONDS = 1.2
 _TIMESTAMP_JITTER = 0.06
 
 # Session-length bounds. A live stream runs for hours, so every per-utterance
@@ -166,12 +157,6 @@ class _CaptionState:
     on every unit and only once the Provider has closed the item, so it can
     never rescue an utterance the Provider is still holding open.
     """
-    tail_hold_until: float | None = None
-    """Wall-clock end of the confirmation window for a held tail cut.
-
-    Separate from both deadlines above because it answers a third question: is
-    the sentence really over, or has its continuation simply not arrived yet?
-    """
     last_chunk_ended_mid: bool | None = None
     emitted_chunks: int = 0
     pending_reported: bool = False
@@ -285,16 +270,10 @@ class CaptionChunker:
                         break
         for key in sorted(affected, key=repr):
             caption = self._captions[key]
-            chunks.extend(self._drain_ready(caption, now))
+            chunks.extend(self._drain_ready(caption))
             # An endpoint releases only evidence already stable. It does not
             # close the item: e.g. VAD stop can precede final transcription.
-            # It also defers to a held tail, because the Provider marks the
-            # utterance over at the same pause where it writes the terminal: this
-            # emit was the second publisher that defeated the hold (measured live:
-            # 20 of the first 24 cuts came back as utterance_endpoint). The window
-            # releases the caption instead, so nothing is stranded.
-            if (self.realtime and caption.units and caption.tail_hold_until is None
-                    and observation.kind in {"endpoint", "utterance_final"}):
+            if self.realtime and caption.units and observation.kind in {"endpoint", "utterance_final"}:
                 if all(u.item_id == observation.item_id for u in caption.units):
                     chunks.append(self._emit(caption, len(caption.units) - 1, "utterance_endpoint"))
             if caption.units and all(
@@ -380,7 +359,7 @@ class CaptionChunker:
             (
                 deadline
                 for state in self._captions.values()
-                for deadline in (state.deadline, state.hard_deadline, state.tail_hold_until)
+                for deadline in (state.deadline, state.hard_deadline)
                 if deadline is not None
             ),
             default=None,
@@ -402,24 +381,8 @@ class CaptionChunker:
                 else:
                     del self._captions[key]
                 continue
-            released = False
-            if caption.tail_hold_until is not None and now >= caption.tail_hold_until:
-                # The window is over, so the tail cut is now the best evidence there
-                # is. Release it through _drain_ready so it keeps its own cut reason
-                # instead of being relabelled as an endpoint flush.
-                chunks.extend(self._drain_ready(caption, now))
-                released = True
             if caption.deadline is not None and now >= caption.deadline:
-                chunks.extend(self._drain_ready(caption, now))
-                if caption.units:
-                    chunks.append(self._close_caption(key))
-                else:
-                    del self._captions[key]
-                continue
-            if released and not caption.units and key[0].startswith("item:"):
-                # An emptied item lane can never receive another unit, so drop it now
-                # instead of leaving it for reclamation.
-                del self._captions[key]
+                chunks.append(self._close_caption(key))
         return ChunkerDecision(tuple(chunks))
 
     def _close_caption(
@@ -604,9 +567,8 @@ class CaptionChunker:
         state.begin_pcm = _minimum_time(state.begin_pcm, begin)
         state.accepted_end = _maximum_time(state.accepted_end, end)
 
-    def _drain_ready(self, state: _CaptionState, now: float = 0.0) -> list[CaptionChunk]:
+    def _drain_ready(self, state: _CaptionState) -> list[CaptionChunk]:
         if not state.units:
-            state.tail_hold_until = None
             return []
         text, edges = _unit_text_edges(state.units)
         endpoints = {edge for edge, unit in zip(edges, state.units) if unit.endpoint}
@@ -615,21 +577,6 @@ class CaptionChunker:
             from .punctuation_boundaries import select_boundaries
             candidates = select_boundaries(text, edges, [u.begin for u in state.units],
                 [u.end for u in state.units], language, endpoints)
-            # A candidate whose cut is the end of the arrived text claims the phrase
-            # stopped there, but the evidence that could confirm it has not arrived.
-            # Hold that one candidate for the confirmation window: the next token
-            # usually resolves it at once, and the window is what bounds the wait when
-            # the speaker really did stop. Every other candidate is already safe,
-            # because text exists to its right.
-            if candidates and edges[candidates[-1][0]] >= len(text):
-                if state.tail_hold_until is None:
-                    state.tail_hold_until = now + _TAIL_CONFIRM_SECONDS
-                if now < state.tail_hold_until:
-                    candidates = candidates[:-1]
-                else:
-                    state.tail_hold_until = None
-            else:
-                state.tail_hold_until = None
             chunks = []
             removed = 0
             for index, reason in candidates:

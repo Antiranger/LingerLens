@@ -58,21 +58,12 @@ class EvidenceTests(unittest.TestCase):
         c=CaptionChunker(realtime=True)
         for _ in range(4):
             self.assertFalse(c.observe(CaptionObservation('text_snapshot',1,'a',tentative_text='Wrong sentence.',begin_pcm=0,end_pcm=1)).chunks)
-        c.observe(CaptionObservation('utterance_final',1,'a',stable_text='Correct sentence.',begin_pcm=0,end_pcm=1))
-        # The claim is about WHICH evidence may be published, not about when: the final
-        # is published, and it is published through the tail confirmation window that
-        # keeps a pause-punctuated phrase from being cut in half.
-        result=c.expire(1.3).chunks
+        result=c.observe(CaptionObservation('utterance_final',1,'a',stable_text='Correct sentence.',begin_pcm=0,end_pcm=1)).chunks
         self.assertEqual([x.text for x in result],['Correct sentence.'])
     def test_final_word_snapshot_deduplicates(self):
         c=CaptionChunker(realtime=True)
         tokens=(RecognitionToken('Hello.',0,1,True,language='en'),RecognitionToken('draft',1,2,False,language='en'))
         first=c.observe(CaptionObservation('token_snapshot',1,'a',tokens=tokens)).chunks
-        # A terminal that is the last thing arrived now waits one confirmation window
-        # before it is published, so the release is driven explicitly here; the claim
-        # under test is about the tokens, not about the timing.
-        self.assertFalse(first)
-        first=c.expire(1.3).chunks
         second=c.observe(CaptionObservation('token_snapshot',1,'a',tokens=tokens)).chunks
         self.assertEqual([x.text for x in first],['Hello.']);self.assertFalse(second)
 

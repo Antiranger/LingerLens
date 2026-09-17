@@ -109,13 +109,7 @@ class NoneItemIdIsToleratedTests(unittest.IsolatedAsyncioTestCase):
                                begin_pcm=0.0, end_pcm=1.0, language="ja"),
             now=1_000.0,
         )
-        # The item is closed and its text ends in a terminal, so it is held for the
-        # confirmation window rather than published at the endpoint; the window then
-        # releases it under its own cut reason.
-        self.assertEqual([c.text for c in decision.chunks], [])
-        released = chunker.expire(1_000.0 + 1.3)
-        self.assertEqual([c.text for c in released.chunks], ["こんにちは。"])
-        self.assertEqual(released.chunks[0].cut_reason, "terminal_punctuation")
+        self.assertEqual([c.text for c in decision.chunks], ["こんにちは。"])
 
     async def test_none_item_id_events_never_raise_out_of_the_pipeline(self) -> None:
         """The regression: this used to raise and trigger an ASR reconnect."""

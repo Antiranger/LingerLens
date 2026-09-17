@@ -153,14 +153,6 @@ async def deliver_final(
     )
     before = len(pipeline.store)
     await pipeline._handle_asr_event(event)
-    # A terminal that is the last thing arrived is held for one confirmation window
-    # before it is published (caption_chunker._TAIL_CONFIRM_SECONDS), because a
-    # streaming Provider writes the terminal at the same pause where it marks the
-    # utterance over. A caller that wants the published cue therefore has to let that
-    # window elapse; the pipeline's deadline worker is not running in these tests, so
-    # drive it here. Passing the time explicitly leaves the pipeline's own clock alone.
-    window_end = pipeline.monotonic() + 1.3
-    pipeline._materialize_caption_decision(pipeline.caption_chunker.expire(window_end))
     return list(pipeline.store._cues)[before:]
 
 
@@ -1494,8 +1486,6 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         stream = _SonioxStream(provider, SourceLanguagePolicy.specified("ja"), 16000, [])
         stream._audio_bytes_sent = 5 * 32000
         pipeline = self.make_pipeline()
-        clock = [50.0]
-        pipeline.monotonic = lambda: clock[0]
         frames = [
             [("私", 0, 200, "1"), ("は", 200, 400, "1"), ("。", 400, 400, "1")],
             [("<end>", None, None, None)],
@@ -1510,12 +1500,6 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                    language="ja", is_final=True) for text, begin, end, speaker in frame]}
             for event in stream._map_event(raw):
                 await pipeline._handle_asr_event(event)
-            # A caption whose text ends in a terminal waits one confirmation window
-            # before it is published, because this Provider writes the terminal at the
-            # same pause where it marks the utterance over. Real time passes between
-            # utterances, so close the window here and keep publication in media order.
-            clock[0] += 1.3
-            pipeline._materialize_caption_decision(pipeline.caption_chunker.expire(clock[0]))
         cues = pipeline.store.query(after_seq=0)
         self.assertEqual([c.src for c in cues], ["私は。", "はい。", "12個買いました。"])
         self.assertEqual([c.speaker for c in cues], ["1", "2", "1"])
@@ -1603,9 +1587,7 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pipeline.status()["captionChunks"], len(cues))
 
     async def test_complete_stable_sentence_does_not_wait_for_utterance_final(self) -> None:
-        now = [50.0]
         pipeline = self.make_pipeline()
-        pipeline.monotonic = lambda: now[0]
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="soniox"))
         await pipeline._handle_asr_event(ASREvent(
             "interim", text="Chat, listen to me.", item_id="soniox", language="en",
@@ -1620,15 +1602,6 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 begin_pcm=0.0, end_pcm=1.6, language="en",
             ),
         ))
-        # A provider-final token that happens to end in a terminal is not proof that the
-        # sentence stopped: a streaming Provider marks a token final as soon as it stops
-        # changing, which can be in the middle of a phrase (live: "…担当として仕事。"
-        # was published and "を熱心に…" followed as the next caption). So the tail
-        # candidate waits one confirmation window -- and the point of this test still
-        # holds, because the release does not need the utterance_final event.
-        self.assertEqual([c.src for c in pipeline.store.query(after_seq=0)], [])
-        now[0] += 1.3
-        pipeline._materialize_caption_decision(pipeline.caption_chunker.expire(now[0]))
         await pipeline._handle_asr_event(ASREvent(
             "speech_stopped", end_pcm=1.6, item_id="soniox",
         ))
@@ -1715,14 +1688,6 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "speech_stopped", end_pcm=5.2, item_id="prefix",
             caption_observation=CaptionObservation("endpoint", 0, "prefix", end_pcm=5.2),
         ))
-        cues = pipeline.store.query(after_seq=0)
-        self.assertEqual([cue.src for cue in cues], [])
-        # The text ends in a terminal, so it waits one confirmation window before it is
-        # published; the pipeline's deadline worker is not running in this test, so the
-        # window is closed explicitly. Passing the time keeps the pipeline clock frozen.
-        pipeline._materialize_caption_decision(
-            pipeline.caption_chunker.expire(pipeline.monotonic() + 1.3)
-        )
         cues = pipeline.store.query(after_seq=0)
         self.assertEqual([cue.src for cue in cues], ["This is confirmed."])
         self.assertEqual(cues[0].timing_source, "vad")

@@ -169,12 +169,6 @@ class ProviderHotSwapTests(unittest.IsolatedAsyncioTestCase):
             for event in observations_for(f"u{index}", begin, self.pipeline._generation):
                 await self.pipeline._handle_asr_event(event)
             await asyncio.sleep(0)
-        # Release the caption tails still inside their confirmation window: every
-        # utterance here ends in a terminal, so nothing is published until the window
-        # elapses, and the deadline worker is not running in these tests.
-        self.pipeline._materialize_caption_decision(
-            self.pipeline.caption_chunker.expire(self.pipeline.monotonic() + 1.3)
-        )
 
     async def test_hot_swap_leaves_no_cue_without_a_terminal_state(self) -> None:
         await self._queue(60)
