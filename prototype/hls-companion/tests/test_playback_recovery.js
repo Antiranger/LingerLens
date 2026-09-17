@@ -64,6 +64,57 @@ test("restores normal speed inside the target band", () => {
   }), { action: "normal", desiredDelay: 12, playbackRate: 1 });
 });
 
+/*
+ * E1: the recovery policy must not classify the source a second time.
+ *
+ * The caller passes `classifySourceHealth`'s own result -- 0 when it did not
+ * report an upstream stall, the stall it measured otherwise -- so the policy
+ * holds on ANY positive value. Judging that value again against a flat 5s was a
+ * second threshold on a different ruler from the one that produced it.
+ */
+function recoveryActionFor(healthInput) {
+  const health = classifySourceHealth(healthInput);
+  const isStalled = health.active && health.kind === "upstream";
+  return decidePlaybackRecovery({
+    playerBehind: 42,
+    targetDelay: 15,
+    hiddenDelay: 3,
+    bufferAhead: 2,
+    sourceStallSeconds: isStalled ? health.stallSeconds : 0,
+    recovered: false,
+  }).action;
+}
+
+test("a positive stall from the classification holds without a flat 5s retest", () => {
+  // 3s would not have passed a flat 5s test. The value only arrives here AFTER
+  // the classification reported an upstream stall, which cannot happen below
+  // the scaled threshold -- so the flat retest was dead weight that read as a
+  // safety check and invited the two rules to drift apart.
+  assert.equal(decidePlaybackRecovery({
+    playerBehind: 42,
+    targetDelay: 15,
+    hiddenDelay: 3,
+    bufferAhead: 2,
+    sourceStallSeconds: 3,
+    recovered: false,
+  }).action, "hold");
+});
+
+test("the recovery action follows the scaled threshold, not a flat one", () => {
+  const base = { state: "running", playlistReady: true, sourceStallSeconds: 0.2 };
+  const media = (idle) => [{ role: "media", sourceIdleSeconds: idle }];
+  // Short segments keep the 5s floor, so 6s of leg silence is an outage.
+  assert.equal(recoveryActionFor({ ...base, targetDuration: 1, sourceIngest: media(6) }), "hold");
+  // Longer segments move the threshold with the segment length: the same 6s is
+  // inside the normal cadence ...
+  assert.equal(recoveryActionFor({ ...base, targetDuration: 6, sourceIngest: media(6) }), "normal");
+  // ... and just past it, it is an outage again.
+  assert.equal(recoveryActionFor({ ...base, targetDuration: 6, sourceIngest: media(8.1) }), "hold");
+  // Unknown segment length keeps the 5s floor, on both sides of it.
+  assert.equal(recoveryActionFor({ ...base, sourceIngest: media(5.1) }), "hold");
+  assert.equal(recoveryActionFor({ ...base, sourceIngest: media(4.9) }), "normal");
+});
+
 test("does not call a publisher-only playlist pause an upstream outage", () => {
   assert.deepEqual(classifySourceHealth({
     state: "running",

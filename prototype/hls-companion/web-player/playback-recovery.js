@@ -206,7 +206,20 @@
     const behind = finiteOr(playerBehind, null);
     const buffer = Math.max(0, finiteOr(bufferAhead, 0));
     if (behind === null) return { action: "normal", desiredDelay, playbackRate: 1 };
-    if (finiteOr(sourceStallSeconds, 0) > SOURCE_STALL_SECONDS) {
+    /*
+     * `sourceStallSeconds` here is the CLASSIFICATION's own output, not a raw
+     * measurement: the caller passes 0 unless `classifySourceHealth` reported
+     * `active && kind === "upstream"`, and otherwise passes the stall it
+     * measured. So any positive value already means "the source is stalled".
+     *
+     * This used to re-test that value against a flat 5s -- a second
+     * classification on a different ruler from the one that produced it. The
+     * scaled threshold is `max(5, ceil(targetDuration) + 2)`, so the value that
+     * arrives is always above 5 and the flat test could never be false. It read
+     * like a safety check and was not one; two rules for one question is how
+     * they drift apart.
+     */
+    if (finiteOr(sourceStallSeconds, 0) > 0) {
       return { action: "hold", desiredDelay, playbackRate: 1 };
     }
 
