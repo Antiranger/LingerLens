@@ -1192,14 +1192,26 @@ class CompanionApplication:
         return f"http://{authority}:{int(self.args.port)}/_private-hls/{token}/live.m3u8"
 
     async def _stop_subtitles(self) -> None:
-        pipeline, self.subtitle_pipeline = self.subtitle_pipeline, None
-        if pipeline:
-            await pipeline.stop()
-        audio_ingest, self.asr_audio_ingest = self.asr_audio_ingest, None
-        if audio_ingest is not None:
-            await asyncio.to_thread(audio_ingest.stop)
-        self.private_hls_token = None
-        self._asr_audio_leg = False
+        pipeline = self.subtitle_pipeline
+        try:
+            if pipeline is not None:
+                await pipeline.stop()
+                # Forget the pipeline only once its teardown has actually
+                # finished. Clearing the reference BEFORE the await let a failed
+                # teardown hide an unreaped decoder behind a None attribute, so
+                # the next Start had nothing to refuse on and simply started a
+                # second one; a failing stop() now propagates out of
+                # _teardown_session instead.
+                if self.subtitle_pipeline is pipeline:
+                    self.subtitle_pipeline = None
+        finally:
+            # Everything below is independent of the subtitle pipeline, so it
+            # still runs on that failure path rather than being skipped by it.
+            audio_ingest, self.asr_audio_ingest = self.asr_audio_ingest, None
+            if audio_ingest is not None:
+                await asyncio.to_thread(audio_ingest.stop)
+            self.private_hls_token = None
+            self._asr_audio_leg = False
 
     def _subtitle_status(self) -> dict[str, Any]:
         if self.subtitle_pipeline:

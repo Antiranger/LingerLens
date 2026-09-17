@@ -65,6 +65,44 @@ _PENDING_FINAL_GRACE_SECONDS = 10.0
 # 2.4s Stop into 5.5s, because the cancelled close consumed both budgets.
 _STOP_ASR_CLOSE_SECONDS = 5.0
 
+# The subtitle decoder's stderr has never had a reader. FFmpeg writes its
+# diagnostics there for as long as the process lives, so the pipe fills and the
+# write that blocks is the one immediately before the next PCM byte: a burst of
+# decoder errors stops the audio that feeds recognition. Isolated repro:
+# 0.1s PCM -> 1 MiB stderr -> 0.1s PCM leaves the PCM stopped at 0.1s.
+#
+# The read size bounds one read and one trim. The tail is a BYTE cap and not a
+# line cap, because a single line can be arbitrarily long and a line count
+# therefore cannot bound memory. Both numbers are choices of this change and not
+# measured optima; there is one tail per decoder, so neither is configurable.
+_STDERR_READ_BYTES = 4096
+_STDERR_TAIL_BYTES = 65536
+# What one snapshot may quote: the last complete non-empty lines of the tail.
+# Two snapshots per decoder lifecycle, so the worst case is 14 records out of the
+# logbook's 500 -- an error storm cannot push out the lines the user needs.
+_STDERR_TAIL_LINES = 6
+_STDERR_MAX_SNAPSHOTS = 2
+# Terminate-to-kill grace. Not a new budget: it is the original stop's one second
+# made explicit, and it runs concurrently with the provider close rather than
+# after it.
+_STOP_TERMINATE_GRACE_SECONDS = 1.0
+# The decoder's stdout is read in the same block size the PCM reader uses, so
+# teardown iterations cost what a session iteration costs.
+_STDOUT_DRAIN_BYTES = PCM_CHUNK_BYTES
+
+
+def _consume_task_result(task: "asyncio.Task[Any]") -> None:
+    """Retrieve a finished task's result so it cannot warn later.
+
+    Teardown cancels things it no longer waits for. A task that raised before it
+    was cancelled would otherwise report "exception was never retrieved" long
+    after the teardown returned, which reads like a new failure.
+    """
+    if task.cancelled():
+        return
+    with contextlib.suppress(Exception):
+        task.exception()
+
 
 def _usage_integer(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -327,6 +365,20 @@ class SubtitlePipeline:
         self._translation_budgets: dict[int, TranslationBudget] = {}
         self._tasks: list[asyncio.Task[Any]] = []
         self._process: Any = None
+        # Bounded retention of the decoder's OWN diagnostics. Reset with every
+        # decoder lifecycle, because it describes one process.
+        self._stderr_task: asyncio.Task[Any] | None = None
+        self._stderr_tail = bytearray()
+        self._stderr_bytes = 0
+        self._stderr_tail_truncated = False
+        self._stderr_snapshots = 0
+        # Teardown has exactly one owner. `stop()` reuses this task instead of
+        # starting a second teardown, `start()` refuses to run while it is
+        # unfinished, and `_residue` names whatever was still alive when the
+        # deadline expired -- kept so a retry can reap it rather than forgotten.
+        self._stop_task: asyncio.Task[None] | None = None
+        self._teardown_done = False
+        self._residue: list[str] = []
         self._stream: ASRStream | None = None
         self._running = False
         self._stopping = False
@@ -423,12 +475,28 @@ class SubtitlePipeline:
         """
         if self._running:
             return
+        if self._residue:
+            # A previous decoder is still alive. Starting another one on top of
+            # it is how the old code silently overwrote an unreaped process, so
+            # this refuses instead of pretending the cleanup happened.
+            raise RuntimeError(
+                "the previous subtitle decoder was not cleaned up: " + ", ".join(self._residue)
+            )
+        if self._stop_task is not None and not self._stop_task.done():
+            raise RuntimeError("the previous subtitle teardown is still running")
         if not audio_url:
             raise ValueError("caption audio source URL is required")
         self.private_playlist_url = audio_url
         self.input_format = input_format
         self.media_epoch = float(media_epoch) if media_epoch is not None else None
         self._stopping = False
+        self._teardown_done = False
+        self._residue = []
+        self._stderr_task = None
+        self._stderr_tail = bytearray()
+        self._stderr_bytes = 0
+        self._stderr_tail_truncated = False
+        self._stderr_snapshots = 0
         self._begin_generation()
         self._pcm_queue = asyncio.Queue(maxsize=self.pcm_queue_chunks)
         try:
@@ -457,6 +525,12 @@ class SubtitlePipeline:
                 stderr=asyncio.subprocess.PIPE,
             )
             self._running = True
+            # Start draining stderr before anything else: it is the pipe whose
+            # blockage stops PCM, so it must never be the last reader to come up.
+            self._stderr_task = asyncio.create_task(
+                self._stderr_reader(self._process), name="subtitle-stderr-reader"
+            )
+            self._stderr_task.add_done_callback(self._on_stderr_done)
             self._tasks = [
                 asyncio.create_task(self._pcm_reader(), name="subtitle-pcm-reader"),
                 asyncio.create_task(self._pcm_sender(), name="subtitle-pcm-sender"),
@@ -478,7 +552,9 @@ class SubtitlePipeline:
                 )
         except Exception as exc:
             self.stats.last_error = self._error_text(exc)
-            await self.stop()
+            # A failed teardown must not replace the reason start() failed.
+            with contextlib.suppress(Exception):
+                await self.stop()
             raise
         return None
 
@@ -568,61 +644,218 @@ class SubtitlePipeline:
                 self._flush_pending_finals()
 
     async def stop(self) -> None:
-        """Idempotently stop all workers without propagating provider/process errors."""
-        if self._stopping:
+        """Idempotently stop all workers without propagating provider/process errors.
+
+        Every caller awaits the SAME teardown task, so two overlapping Stops
+        clean up once, and a caller that is itself cancelled does not abandon the
+        cleanup half-owned: ``shield`` keeps it running.
+        """
+        if self._teardown_done:
             return
+        await asyncio.shield(self._ensure_stop_task())
+
+    def _ensure_stop_task(self) -> "asyncio.Task[None]":
+        """The one teardown owner for the current decoder lifecycle."""
+        task = self._stop_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._stop_impl(), name="subtitle-stop")
+            self._stop_task = task
+        return task
+
+    async def _stop_impl(self) -> None:
+        """One teardown, on ONE absolute deadline, reporting what it could not end.
+
+        The previous shape gave flush/aclose five seconds, then handed the ASR
+        drain a fresh five seconds, and after the kill awaited the process with
+        no bound at all. A decoder that ignored terminate could spend ten seconds
+        and still be alive, while the caller had already forgotten the reference.
+        Here every wait -- provider close, ASR drain, worker cancellation, both
+        pipes, process reap -- spends what is left of a single deadline, and
+        whatever survives it is REPORTED rather than cleared away.
+        """
         self._stopping = True
         self._running = False
+        deadline = time.monotonic() + _STOP_ASR_CLOSE_SECONDS
+        terminate_deadline = time.monotonic() + _STOP_TERMINATE_GRACE_SECONDS
+        # task -> the step that did not finish, which becomes the residue report.
+        pending: dict[asyncio.Task[Any], str] = {}
+
+        def remaining() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        # End production first, and let the reap run CONCURRENTLY with the
+        # provider close below: the grace is one second of wall clock, not one
+        # second appended after everything else has already finished.
+        process, self._process = self._process, None
+        reap: asyncio.Task[Any] | None = None
+        if process is not None and getattr(process, "returncode", None) is None:
+            with contextlib.suppress(Exception):
+                process.terminate()
+            reap = asyncio.ensure_future(process.wait())
+
         stream = self._stream
         if stream is not None:
-            # Bounded only as a backstop: the Adapter's own close already waits
-            # for its tail finals within a window it owns, and flush/aclose are
-            # one handshake. A single deadline covers the pair so a socket that
-            # accepts nothing cannot extend Stop by two budgets in a row.
-            deadline = time.monotonic() + _STOP_ASR_CLOSE_SECONDS
             for step in ("flush", "aclose"):
                 call = getattr(stream, step, None)
                 if call is None:
                     continue
-                remaining = max(0.1, deadline - time.monotonic())
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(call(), timeout=remaining)
-            # Several realtime protocols flush their last final tokens only
-            # after the close/finalize control (Soniox empty frame, AssemblyAI
+                await self._bounded_call(call(), remaining(), pending, f"stream.{step}")
+            # Several realtime protocols flush their last final tokens only after
+            # the close/finalize control (Soniox empty frame, AssemblyAI
             # Terminate, Volcengine negative packet). Give the existing ASR
             # consumer a bounded chance to drain those events before cancelling
             # workers; otherwise a correct Adapter still loses the last cue.
-            asr_tasks = [task for task in self._tasks if task.get_name() == "subtitle-asr-manager"]
-            if asr_tasks:
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(
-                        asyncio.gather(*asr_tasks, return_exceptions=True),
-                        timeout=_STOP_ASR_CLOSE_SECONDS,
-                    )
+            await self._await_then_cancel(
+                {task for task in self._tasks if task.get_name() == "subtitle-asr-manager"},
+                remaining(),
+                pending,
+                "asr final drain",
+            )
             if self._stream is stream:
                 self._stream = None
         self._flush_caption_session()
-        for task in self._tasks:
-            task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+        await self._cancel_then_await(
+            [task for task in self._tasks if task not in pending],
+            remaining(),
+            pending,
+            "worker cancellation",
+        )
+        pcm_task = next(
+            (task for task in self._tasks if task.get_name() == "subtitle-pcm-reader"), None
+        )
         self._discard_translation_queue()
         self._audio_end_walls.clear()
         self._pending_finals.clear()
-        process, self._process = self._process, None
-        if process is not None:
-            if getattr(process, "returncode", None) is None:
+
+        # Reap BEFORE waiting on the pipes. The stderr reader ends at EOF, and EOF
+        # only happens once its writer is gone, so waiting for the reader first
+        # would spend the whole budget on a process that has not been killed yet
+        # and then report the reader as residue it could never have avoided.
+        if reap is not None:
+            if not reap.done():
+                grace = min(max(0.0, terminate_deadline - time.monotonic()), remaining())
+                if grace > 0:
+                    await asyncio.wait({reap}, timeout=grace)
+            if reap.done():
+                _consume_task_result(reap)
+            else:
                 with contextlib.suppress(Exception):
-                    process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), 1.0)
-                except Exception:
-                    with contextlib.suppress(Exception):
-                        process.kill()
-                    with contextlib.suppress(Exception):
-                        await process.wait()
+                    process.kill()
+                await self._await_then_cancel({reap}, remaining(), pending, "decoder process")
+            if not reap.done():
+                # Keep the handle: a retry of stop() must still be able to kill
+                # and reap it, and start() must refuse to run while it is alive.
+                self._process = process
+
+        # Only now may anything else read stdout. Two readers on one StreamReader
+        # would interleave, and the tail would land in whichever of them read
+        # first. This sends nothing to the ASR, which is closing.
+        if pcm_task is None or pcm_task.done():
+            stdout = getattr(process, "stdout", None) if process is not None else None
+            if stdout is not None and getattr(process, "returncode", None) is not None:
+                await self._bounded_call(
+                    self._discard_stdout_tail(stdout), remaining(), pending, "stdout drain"
+                )
+
+        # The stderr reader outlives its writer on purpose: it is the only thing
+        # keeping a dying decoder from blocking on a full stderr pipe, so it is
+        # not cancelled together with the workers above.
+        stderr_task = self._stderr_task
+        if stderr_task is not None and not stderr_task.done():
+            await self._await_then_cancel({stderr_task}, remaining(), pending, "stderr drain")
+        if self._stderr_task is not None and self._stderr_task.done():
+            _consume_task_result(self._stderr_task)
+            self._stderr_task = None
+
+        if self._stderr_bytes:
+            self._emit_decoder_diagnostic(
+                "error" if pending else "info",
+                "字幕解码器诊断末尾（累计 "
+                f"{self._stderr_bytes} 字节"
+                + ("，尾部已按字节上限截断" if self._stderr_tail_truncated else "")
+                + "）",
+            )
+
+        for task in list(pending):
+            if task.done():
+                _consume_task_result(task)
+                pending.pop(task)
+        self._tasks = [task for task in self._tasks if not task.done()]
+        self._residue = sorted(set(pending.values()))
         self._stopping = False
+        if self._residue:
+            # Never report a clean teardown while a task or a process is still
+            # alive. The handles stay reachable, and the caller must not start a
+            # new decoder on top of them -- forgetting them here is exactly how
+            # the old shape lost an unreaped process behind a cleared attribute.
+            raise RuntimeError(
+                "subtitle decoder teardown did not finish: " + ", ".join(self._residue)
+            )
+        self._teardown_done = True
+
+    async def _bounded_call(
+        self,
+        awaitable: Any,
+        budget: float,
+        pending: dict[asyncio.Task[Any], str],
+        label: str,
+    ) -> None:
+        """Run one close handshake under the shared deadline.
+
+        ``asyncio.wait_for`` cancels the awaitable AND awaits its unwinding, so a
+        coroutine that swallows cancellation extends the wait past the timeout it
+        was handed -- the bound would be a promise rather than a bound. Waiting
+        on the deadline and cancelling afterwards makes it a wall-clock bound,
+        and anything that survives is named in the residue instead of awaited.
+        """
+        await self._await_then_cancel({asyncio.ensure_future(awaitable)}, budget, pending, label)
+
+    async def _await_then_cancel(
+        self,
+        tasks: Any,
+        budget: float,
+        pending: dict[asyncio.Task[Any], str],
+        label: str,
+    ) -> None:
+        """Give tasks ``budget`` to finish, then cancel and keep what is left."""
+        given = set(tasks)
+        for task in given:
+            if task.done():
+                _consume_task_result(task)
+        live = {task for task in given if not task.done()}
+        if not live:
+            return
+        still = live
+        if budget > 0:
+            _, still = await asyncio.wait(live, timeout=budget)
+        for task in still:
+            task.cancel()
+        for task in still:
+            task.add_done_callback(_consume_task_result)
+            pending[task] = label
+
+    async def _cancel_then_await(
+        self,
+        tasks: Any,
+        budget: float,
+        pending: dict[asyncio.Task[Any], str],
+        label: str,
+    ) -> None:
+        """Cancel tasks, then give them ``budget`` to actually stop."""
+        given = list(tasks)
+        if not given:
+            return
+        for task in given:
+            task.cancel()
+        still = {task for task in given if not task.done()}
+        if still and budget > 0:
+            _, still = await asyncio.wait(still, timeout=budget)
+        for task in given:
+            if task.done():
+                _consume_task_result(task)
+        for task in still:
+            task.add_done_callback(_consume_task_result)
+            pending[task] = label
 
     async def _enqueue_pcm_chunk(self, chunk: bytes, chunk_start: float) -> None:
         """Queue decoded PCM with bounded backpressure for the production reader."""
@@ -654,6 +887,136 @@ class SubtitlePipeline:
             raise
         except Exception as exc:
             self._record_error(exc)
+
+    async def _stderr_reader(self, process: Any) -> None:
+        """Drain the decoder's stderr so it can never block the PCM before it.
+
+        Deliberately not conditioned on ``_running``: Stop clears that flag first
+        and then waits for this decoder to exit, and a reader that quit at that
+        moment would hand a dying process a full pipe to block on.
+
+        ``process`` is passed in rather than read from ``self._process``, which
+        teardown nulls while this reader is still required.
+        """
+        stderr = getattr(process, "stderr", None)
+        if stderr is None:
+            return
+        since_yield = 0
+        first_block = True
+        while True:
+            block = await stderr.read(_STDERR_READ_BYTES)
+            if not block:
+                return
+            self._stderr_bytes += len(block)
+            self._stderr_tail.extend(block)
+            extra = len(self._stderr_tail) - _STDERR_TAIL_BYTES
+            if extra > 0:
+                del self._stderr_tail[:extra]
+                self._stderr_tail_truncated = True
+            if first_block:
+                first_block = False
+                # One record when the decoder starts complaining, one at the end.
+                # Anything more would make an error storm the only thing the
+                # diagnostics bar shows, which is the failure mode this reader
+                # exists to survive rather than to reproduce in the log.
+                self._emit_decoder_diagnostic(
+                    "warn", f"字幕解码器开始输出诊断（累计 {self._stderr_bytes} 字节）"
+                )
+            since_yield += len(block)
+            if since_yield >= _STDERR_TAIL_BYTES:
+                # A burst that is already buffered must not keep the event loop
+                # from running the tasks that deliver PCM and ASR events.
+                since_yield = 0
+                await asyncio.sleep(0)
+
+    def _on_stderr_done(self, task: asyncio.Task[Any]) -> None:
+        """Fault owner for the stderr reader: never leave an unread writer alive.
+
+        The reader cannot recover on its own. If it fails and nothing acts, the
+        decoder keeps writing into a pipe nobody reads -- the original stall,
+        now with a record saying it happened. So the failure ends this decoder
+        and hands the teardown to the same single owner ``stop()`` uses, instead
+        of starting an ownerless task out of a callback.
+        """
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None or self._stopping:
+            return
+        self._record_error(error)
+        self._emit_decoder_diagnostic(
+            "error", f"字幕解码器诊断读取失败：{self._error_text(error)}"
+        )
+        process = self._process
+        if process is not None and getattr(process, "returncode", None) is None:
+            try:
+                process.kill()
+            except Exception as exc:
+                # A kill that fails belongs to the same teardown result: the
+                # decoder stays alive and that must be visible, not swallowed.
+                self._record_error(exc)
+        self._ensure_stop_task()
+
+    def _emit_decoder_diagnostic(self, level: str, summary: str) -> bool:
+        """Publish one bounded snapshot of what the decoder has said so far.
+
+        Bounded twice on purpose: a fixed number of snapshots per decoder
+        lifecycle and a fixed number of lines per snapshot. A decoder writing
+        megabytes of errors is at once the case where an unbounded diagnostic
+        would evict everything else the user needs from the logbook -- and the
+        case that produced the stall this reader exists to prevent.
+
+        The level states what was observed rather than what it implies: text on
+        stderr is not by itself a fatal error, so the first capture is a warning
+        and only a real read failure is an error.
+        """
+        if self._stderr_snapshots >= _STDERR_MAX_SNAPSHOTS:
+            return False
+        self._stderr_snapshots += 1
+        log_record(level, "media", summary)
+        for line in self._decoder_tail_lines():
+            log_record(level, "media", line)
+        return True
+
+    def _decoder_tail_lines(self) -> list[str]:
+        """The last complete, non-empty lines of the retained tail.
+
+        A fragment at the front is dropped rather than shown. The trim happens on
+        a byte boundary, so the leading fragment can begin mid-token inside a
+        signed URL -- and such a fragment still survives the logbook's
+        scheme-based redaction while carrying the rest of the query string. Only
+        the first line can be a fragment; every later line starts at a newline by
+        construction.
+        """
+        text = bytes(self._stderr_tail).decode("utf-8", errors="replace")
+        if self._stderr_tail_truncated:
+            _, separator, text = text.partition("\n")
+            if not separator:
+                # The whole retained window is one unfinished line. Quoting a
+                # slice of it is neither a diagnostic nor something the
+                # scheme-based redaction can be trusted with, so state the size
+                # instead.
+                text = ""
+        lines = [line.strip() for line in text.splitlines()]
+        lines = [line for line in lines if line]
+        if not lines:
+            return [
+                f"（无完整诊断行可引用，累计 {self._stderr_bytes} 字节，超长诊断已省略）"
+            ]
+        return lines[-_STDERR_TAIL_LINES:]
+
+    async def _discard_stdout_tail(self, stdout: Any) -> None:
+        """Discard what is left in stdout once the PCM reader is gone.
+
+        Teardown-only, and it hands nothing to the ASR: the point is that a
+        decoder which is still writing cannot be blocked by a full stdout pipe
+        while it is being reaped. The PCM reader owns this pipe for the whole
+        session, which is why this may only run after that reader has stopped.
+        """
+        while True:
+            block = await stdout.read(_STDOUT_DRAIN_BYTES)
+            if not block:
+                return
 
     def _server_to_pipeline(self, server_seconds: float | None) -> float | None:
         """Map an ASR-session audio offset onto our ``_pcm_offset`` timeline.
