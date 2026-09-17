@@ -820,7 +820,13 @@ class FallbackDeterminismTests(unittest.IsolatedAsyncioTestCase):
         request.deadline_monotonic = 11.0
         with self.assertRaises(RuntimeError) as caught:
             await chain.translate(request)
-        self.assertIn("skipped", str(caught.exception))
+        # The final message has to say which provider was NOT CALLED and which
+        # one actually failed: "all translation providers failed" over a
+        # synthetic skip described a call that never happened (B2-R).
+        message = str(caught.exception)
+        self.assertIn("second: TimeoutError: slow", message)
+        self.assertIn("first: not called", message)
+        self.assertNotIn("first: RuntimeError", message)
         self.assertEqual(first.calls, 0)
         self.assertIsNone(chain.health["first"].disabled_reason)
         self.assertEqual(chain.health["first"].consecutive_failures, 0)

@@ -16,6 +16,7 @@ from .base import (
     TranslationProvider,
     TranslationRequest,
     TranslationResult,
+    validate_translation_pair,
 )
 
 
@@ -122,101 +123,110 @@ class FallbackChain(TranslationProvider):
             language=_combined_language_capabilities([item.language for item in capabilities]),
         )
 
-    def _could_try_any(
+    def _eligibility_reason(
         self,
-        providers: Sequence[TranslationProvider],
+        provider: TranslationProvider,
+        request: TranslationRequest,
         now: float,
-        source_text: str,
-    ) -> bool:
-        """Whether any of these providers is not already ruled out.
+    ) -> str | None:
+        """Why this provider cannot serve THIS cue right now, or None if it can.
 
-        Mirrors the loop's own preconditions -- not misconfigured for the
-        session, not cooling down, and a cue its declared input limit can hold.
-        It is a statement about eligibility, not about the network: no probing,
-        no new circuit breaker.
+        Pure: it reads health and never writes it, which is what keeps a local
+        budget or language decision from being recorded as a provider failure.
+        It also refuses to predict the network -- being disabled, cooling, over
+        the declared input limit, or knowing it cannot translate the pair are all
+        facts the chain already has. An unknown or open-world language contract
+        stays eligible: this does not probe and does not invent a second health
+        model.
         """
-        for provider in providers:
-            state = self.health[provider.id]
-            if state.disabled_reason is not None:
-                continue
-            if state.cooldown_until > now:
-                continue
-            limit = getattr(provider.capabilities, "max_input_chars", 0) or 0
-            if limit > 0 and len(source_text) > limit:
-                continue
-            return True
-        return False
+        state = self.health[provider.id]
+        if state.disabled_reason is not None:
+            return "disabled"
+        if state.cooldown_until > now:
+            return "cooling"
+        limit = getattr(provider.capabilities, "max_input_chars", 0) or 0
+        if limit > 0 and len(request.source_text) > limit:
+            return "input-limit"
+        try:
+            validate_translation_pair(
+                request.meta.source_lang,
+                request.meta.target_lang,
+                provider.capabilities.language,
+            )
+        except LanguageNotSupportedError:
+            # Declared not to handle this pair. Holding the primary's budget open
+            # so that a provider which cannot answer this cue still gets a turn
+            # costs the primary time and buys nothing.
+            return "unsupported-pair"
+        return None
 
     async def translate(self, request: TranslationRequest) -> TranslationResult:
-        now = self.clock()
+        # Real failures and local skips are kept apart. Only the first group says
+        # anything about a provider, and only it may become an exception cause:
+        # folding a budget decision into `errors` made a healthy fallback look
+        # like the reason a cue failed, and left `errors[-1]` describing a call
+        # that never happened.
         errors: list[tuple[str, BaseException]] = []
+        skips: list[tuple[str, str]] = []
         attempted = False
-        # A reservation is only meaningful if some later provider could actually
-        # be tried right now. Reserving for a disabled or cooling one would
-        # shorten the primary's deadline and buy nothing.
+        deadline = request.deadline_monotonic
+        now = self.clock()
+        # A reservation only means something if some later provider could be tried
+        # for THIS cue right now. Reserving for a disabled, cooling, too-small or
+        # language-incompatible fallback would shorten the primary's deadline and
+        # buy nothing.
         reserve = 0.0
-        if self.fallback_reserve_seconds > 0 and self._could_try_any(
-            self.providers[1:], now, request.source_text
+        if self.fallback_reserve_seconds > 0 and any(
+            self._eligibility_reason(provider, request, now) is None
+            for provider in self.providers[1:]
         ):
             reserve = self.fallback_reserve_seconds
         for index, provider in enumerate(self.providers):
+            # Refresh the clock every iteration. A provider call awaited, and a
+            # `now` captured before it is what made the old loop skip a fallback
+            # whose cooldown had already expired while the primary was running.
+            now = self.clock()
+            if deadline is not None and deadline - now <= 0:
+                # The cue's own budget is gone, so no provider may be STARTED.
+                # Checked outside the call's try/except on purpose: this is the
+                # chain running out of time, not a provider failing, and nothing
+                # may be recorded against a provider that was never called.
+                #
+                # Note which deadline this is. The primary is called with a LOCAL
+                # deadline of `deadline - reserve`; that one expiring must still
+                # let the fallback run, which is the entire point of the reserve.
+                # Only the original budget expiring stops new attempts.
+                raise asyncio.TimeoutError("translation chain deadline has expired")
+            reason = self._eligibility_reason(provider, request, now)
+            if reason is not None:
+                skips.append((_name_of(provider), reason))
+                continue
             state = self.health[provider.id]
-            if state.disabled_reason is not None:
-                continue
-            if state.cooldown_until > now:
-                continue
             if state.cooldown_until:
+                # A cooldown window that has passed gives the provider a clean
+                # slate. Kept here, next to the call, so exactly one place owns
+                # this transition.
                 state.cooldown_until = 0.0
                 state.consecutive_failures = 0
+            provider_request = request
+            if index == 0 and reserve > 0 and deadline is not None:
+                remaining = deadline - now
+                if remaining <= reserve:
+                    # Not enough left to cover both. The whole remainder goes to
+                    # the providers that can still be tried, because handing it
+                    # to the primary is what left the fallback an already-expired
+                    # deadline at exactly the boundary the reserve exists for.
+                    skips.append((
+                        _name_of(provider),
+                        f"not called: {remaining:.2f}s left does not cover the "
+                        f"{reserve:.2f}s fallback reserve",
+                    ))
+                    continue
+                provider_request = dataclasses.replace(
+                    request, deadline_monotonic=deadline - reserve
+                )
             attempted = True
-            # Enforce the declared input limit BEFORE calling. Nothing read
-            # max_input_chars, so an over-long cue reached the Provider, came
-            # back as a 400 (context_length_exceeded), and was classified as
-            # ProviderRequestError -- which disables that Provider for the rest
-            # of the session. With the default single-Provider configuration
-            # that meant one long sentence silently ended all subtitles until a
-            # restart. A cue that does not fit is a cue-level skip instead.
-            limit = getattr(provider.capabilities, "max_input_chars", 0) or 0
-            if limit > 0 and len(request.source_text) > limit:
-                errors.append((
-                    _name_of(provider),
-                    ProviderRequestError(
-                        f"cue of {len(request.source_text)} chars exceeds the "
-                        f"{limit}-char limit for {_name_of(provider)}"
-                    ),
-                ))
-                continue
             try:
-                provider_request = request
-                # Keep a small, explicit budget for the next provider.  The
-                # pipeline's cue deadline is a total latency budget; without
-                # this reservation a primary timeout consumes all of it and
-                # the fallback immediately sees an expired request.
-                #
-                # When the remaining budget does not even cover the reserve,
-                # give the WHOLE remainder to the providers that can still be
-                # tried. Handing it to the primary instead was the old
-                # behaviour, and it meant a slow primary spent the entire cue
-                # budget and left the fallback an already-expired deadline --
-                # the reservation this block exists to provide, inverted at
-                # exactly the boundary where it matters. Skipping is a budget
-                # decision, not a provider failure: it touches no health state,
-                # so nothing is disabled or cooled by it.
-                if index == 0 and reserve > 0 and request.deadline_monotonic is not None:
-                    remaining = request.deadline_monotonic - self.clock()
-                    if remaining <= reserve:
-                        errors.append((
-                            _name_of(provider),
-                            RuntimeError(
-                                f"skipped: {remaining:.2f}s left does not cover the "
-                                f"{reserve:.2f}s fallback reserve"
-                            ),
-                        ))
-                        continue
-                    provider_request = dataclasses.replace(
-                        request,
-                        deadline_monotonic=request.deadline_monotonic - reserve,
-                    )
                 result = await provider.translate(provider_request)
             except (ProviderAuthError, ProviderRequestError, LanguageNotSupportedError) as exc:
                 # Deterministic config/auth/request problem: retrying this
@@ -245,9 +255,19 @@ class FallbackChain(TranslationProvider):
             state.cooldown_until = 0.0
             return result
         if not attempted:
-            raise RuntimeError("all translation providers are cooling down or disabled")
-        detail = "; ".join(f"{name}: {_describe(error)}" for name, error in errors)
-        raise RuntimeError(f"all translation providers failed: {detail}") from errors[-1][1]
+            # Nothing was called, so "failed" would be a statement about
+            # providers that never ran. The reasons are listed instead.
+            detail = "; ".join(f"{name}: {why}" for name, why in skips)
+            raise RuntimeError(
+                "all translation providers are cooling down or disabled"
+                + (f" ({detail})" if detail else "")
+            )
+        detail = "; ".join(
+            [f"{name}: {_describe(error)}" for name, error in errors]
+            + [f"{name}: not called ({why})" for name, why in skips]
+        )
+        exc = RuntimeError(f"all translation providers failed: {detail}")
+        raise exc from (errors[-1][1] if errors else None)
 
 
 def _combined_language_capabilities(
