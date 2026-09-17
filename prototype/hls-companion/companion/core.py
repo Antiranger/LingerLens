@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -1004,6 +1005,14 @@ class LiveSession:
         self.quality: QualityOption | None = None
         self.page_url: str | None = None
         self.started_at: float | None = None
+        # Identity of the current MEDIA session, or None when there is none.
+        # The page needs it to tell "the session I stopped" from "a session that
+        # started afterwards": playlistUrl is the same string for every session,
+        # uptimeSeconds is a duration rather than an identity, pdtEpoch can be
+        # absent while the session is still being prepared, and logbook's
+        # sessionId belongs to the backend process and survives every restart of
+        # the media session inside it.
+        self.media_session_id: str | None = None
         self.log_tail: deque[str] = deque(maxlen=30)
         self._log_thread: threading.Thread | None = None
         self.error: str | None = None
@@ -1078,6 +1087,15 @@ class LiveSession:
             self.ingests[0].start(process.stdin)
         self._log_thread = threading.Thread(target=self._read_log, name="ffmpeg-log", daemon=True)
         self._log_thread.start()
+        # Generated LAST, so a start that failed at any earlier step cannot leave
+        # a live-looking identity behind, and late enough that the /api/start
+        # response carries it (start() is synchronous, so nothing observes a
+        # status in between). 128 bits of randomness rather than a counter or a
+        # timestamp: the page compares it against what it saw before a Stop, and
+        # it must not repeat across a backend restart or a re-open of the same
+        # source. It is not a credential -- it grants nothing and is reported
+        # only to a localhost client.
+        self.media_session_id = secrets.token_hex(16)
 
     def _fail(self, message: str) -> None:
         """Enter the error state once, and make it visible in the UI log.
@@ -1145,6 +1163,7 @@ class LiveSession:
         self.quality = None
         self.page_url = None
         self.started_at = None
+        self.media_session_id = None
         self.error = None
         self.log_tail.clear()
         self._log_thread = None
@@ -1169,5 +1188,6 @@ class LiveSession:
             "uptimeSeconds": round(time.monotonic() - self.started_at, 1) if self.started_at and running else 0,
             "playlistUrl": "/hls/live.m3u8" if publisher.get("playlistReady") else None,
             "ffmpegLogTail": list(self.log_tail)[-6:] if self.error else [],
+            "mediaSessionId": self.media_session_id,
             **publisher,
         }
