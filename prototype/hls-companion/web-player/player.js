@@ -1106,16 +1106,18 @@
       };
     // Only an ingest-confirmed outage should pause catch-up. A publisher-only
     // pause is a local packaging hiccup; the player can keep draining its
-    // buffer and recover without being forced into a hold state.
-    const isStalled = health.active && health.kind === "upstream";
-    const stall = isStalled ? Number(health.stallSeconds) : 0;
+    // buffer and recover without being forced into a hold state. The policy
+    // takes this as a BOOLEAN: the seconds that produced it belong to the
+    // classifier, and re-judging them downstream is how two rules for one
+    // question drift apart. `=== true` so a non-boolean cannot pose as a stall.
+    const isStalled = health.active === true && health.kind === "upstream";
     const recovered = sourceWasStalled && !isStalled;
     const decision = window.decidePlaybackRecovery?.({
       playerBehind,
       targetDelay: data.targetDelaySeconds,
       hiddenDelay: data.hiddenMediaSeconds,
       bufferAhead: ahead,
-      sourceStallSeconds: stall,
+      upstreamStalled: isStalled,
       recovered,
     });
     sourceWasStalled = isStalled;

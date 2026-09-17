@@ -31,19 +31,61 @@ function playerSource() {
 }
 
 /*
- * Drop trailing whitespace and any block comments that sit after the last real
- * statement, so the end-of-function check below is about the code rather than
- * about the comment a developer left between two declarations.
+ * Find the closing brace of the declaration that starts at `start`.
+ *
+ * The obvious heuristic -- "up to the next top-level `function`" -- is wrong for
+ * any function followed by module-level state: updatePlaybackRecovery is followed
+ * by two `let` declarations and a comment block, so the slice swallowed them.
+ * Matching braces handles both shapes.
+ *
+ * The scanner skips line comments, block comments and quoted strings. It does not
+ * understand regex literals, so a pattern containing `{` or `}` inside one of
+ * these functions would throw the count off -- which the caller's compile check
+ * and "declared exactly once" check are there to catch rather than to hide.
  */
-function trimTrailingComments(text) {
-  let out = text.replace(/\s+$/, "");
-  for (;;) {
-    const start = out.lastIndexOf("/*");
-    if (start === -1) return out;
-    const end = out.indexOf("*/", start);
-    if (end === -1 || out.slice(end + 2).trim() !== "") return out;
-    out = out.slice(0, start).replace(/\s+$/, "");
+function functionEnd(source, start) {
+  let depth = 0;
+  let mode = null;
+  for (let index = source.indexOf("{", start); index < source.length; index += 1) {
+    const ch = source[index];
+    const next = source[index + 1];
+    if (mode === "//") {
+      if (ch === "\n") mode = null;
+      continue;
+    }
+    if (mode === "/*") {
+      if (ch === "*" && next === "/") {
+        mode = null;
+        index += 1;
+      }
+      continue;
+    }
+    if (mode === "'" || mode === '"' || mode === "`") {
+      if (ch === "\\") index += 1;
+      else if (ch === mode) mode = null;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      mode = "//";
+      index += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      mode = "/*";
+      index += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      mode = ch;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
   }
+  return -1;
 }
 
 function extractFunction(source, name) {
@@ -57,17 +99,12 @@ function extractFunction(source, name) {
     `${name}() is not declared exactly once at the top level of player.js`,
   );
   const start = hits[0] + 1;
-  const boundaries = [
-    source.indexOf("\n  async function ", start),
-    source.indexOf("\n  function ", start),
-  ].filter((index) => index !== -1);
-  const end = boundaries.length ? Math.min(...boundaries) : source.length;
+  const end = functionEnd(source, start);
+  assert.notEqual(end, -1, `${name}(): the end of its body was not found`);
   const text = source.slice(start, end);
-  // A slice that stops early can still compile if the cut lands on a statement
-  // boundary, so also require the braces to have closed again inside the slice.
   assert.ok(
-    trimTrailingComments(text).endsWith("}"),
-    `${name}() does not end on a top-level closing brace: the extraction bound moved`,
+    text.trimEnd().endsWith("}"),
+    `${name}() did not end on a closing brace: the extraction bound moved`,
   );
   return text;
 }
@@ -89,6 +126,14 @@ function stubElement() {
     src: "",
     dataset: {},
     style: {},
+    paused: false,
+    playbackRate: 1,
+    currentTime: 0,
+    readyState: 4,
+    volume: 1,
+    muted: false,
+    buffered: { length: 0, end: () => 0, start: () => 0 },
+    seekable: { length: 0, end: () => 0, start: () => 0 },
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     setAttribute() {},
     removeAttribute() {},
@@ -253,11 +298,11 @@ module.exports = {
   deferred,
   elementLookup,
   extractFunction,
+  functionEnd,
   pendingRequests,
   playerContext,
   playerSource,
   sessionGlobals,
   spy,
   stubElement,
-  trimTrailingComments,
 };

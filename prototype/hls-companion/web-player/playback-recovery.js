@@ -196,7 +196,7 @@
     targetDelay = 15,
     hiddenDelay = 0,
     bufferAhead = 0,
-    sourceStallSeconds = 0,
+    upstreamStalled = false,
     recovered = false,
   } = {}) {
     const desiredDelay = Math.max(
@@ -207,19 +207,23 @@
     const buffer = Math.max(0, finiteOr(bufferAhead, 0));
     if (behind === null) return { action: "normal", desiredDelay, playbackRate: 1 };
     /*
-     * `sourceStallSeconds` here is the CLASSIFICATION's own output, not a raw
-     * measurement: the caller passes 0 unless `classifySourceHealth` reported
-     * `active && kind === "upstream"`, and otherwise passes the stall it
-     * measured. So any positive value already means "the source is stalled".
+     * `upstreamStalled` is the CLASSIFICATION's own answer, not a measurement.
+     * The caller sets it only when `classifySourceHealth` reported
+     * `active && kind === "upstream"`, and passes false for a publisher-only
+     * pause so that a local packaging hiccup does not block catch-up.
      *
-     * This used to re-test that value against a flat 5s -- a second
-     * classification on a different ruler from the one that produced it. The
-     * scaled threshold is `max(5, ceil(targetDuration) + 2)`, so the value that
-     * arrives is always above 5 and the flat test could never be false. It read
-     * like a safety check and was not one; two rules for one question is how
-     * they drift apart.
+     * This used to be a number that the caller re-tested HERE against a flat 5s
+     * -- a second classification, on a different ruler from the one that
+     * produced the value, of a question that had already been answered. The
+     * scaled threshold is `max(5, ceil(targetDuration) + 2)`, so the number that
+     * arrived was always above 5 and the retest could never be false: it read
+     * like a safety check and was not one.
+     *
+     * It is a strict boolean on purpose. `=== true` means a truthy-but-wrong
+     * value ("true", 1, a stale raw stall count) cannot silently hold catch-up,
+     * and omitting it means "not stalled" rather than "unknown".
      */
-    if (finiteOr(sourceStallSeconds, 0) > 0) {
+    if (upstreamStalled === true) {
       return { action: "hold", desiredDelay, playbackRate: 1 };
     }
 

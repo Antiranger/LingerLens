@@ -15,7 +15,7 @@ test("holds normal playback while the source is stalled", () => {
     targetDelay: 15,
     hiddenDelay: 3,
     bufferAhead: 2,
-    sourceStallSeconds: 18,
+    upstreamStalled: true,
     recovered: false,
   }), { action: "hold", desiredDelay: 12, playbackRate: 1 });
 });
@@ -26,7 +26,7 @@ test("seeks to the target edge distance immediately after a recovered stall", ()
     targetDelay: 15,
     hiddenDelay: 3,
     bufferAhead: 20,
-    sourceStallSeconds: 0,
+    upstreamStalled: false,
     recovered: true,
   }), { action: "seek", desiredDelay: 12, playbackRate: 1 });
 });
@@ -37,7 +37,7 @@ test("uses a small temporary rate increase for a moderate drift", () => {
     targetDelay: 15,
     hiddenDelay: 3,
     bufferAhead: 20,
-    sourceStallSeconds: 0,
+    upstreamStalled: false,
     recovered: false,
   }), { action: "rate", desiredDelay: 12, playbackRate: 1.08 });
 });
@@ -48,7 +48,7 @@ test("does not seek into an insufficient buffer", () => {
     targetDelay: 15,
     hiddenDelay: 3,
     bufferAhead: 4,
-    sourceStallSeconds: 0,
+    upstreamStalled: false,
     recovered: true,
   }), { action: "normal", desiredDelay: 12, playbackRate: 1 });
 });
@@ -59,37 +59,46 @@ test("restores normal speed inside the target band", () => {
     targetDelay: 15,
     hiddenDelay: 3,
     bufferAhead: 12,
-    sourceStallSeconds: 0,
+    upstreamStalled: false,
     recovered: false,
   }), { action: "normal", desiredDelay: 12, playbackRate: 1 });
 });
 
 /*
- * E1: the recovery policy must not classify the source a second time.
+ * E1-R: the recovery policy consumes a boolean, it does not re-classify the source.
  *
- * The caller passes `classifySourceHealth`'s own result -- 0 when it did not
- * report an upstream stall, the stall it measured otherwise -- so the policy
- * holds on ANY positive value. Judging that value again against a flat 5s was a
- * second threshold on a different ruler from the one that produced it.
+ * The caller passes `classifySourceHealth`'s own answer. Judging a number again
+ * against a flat 5s was a second threshold, on a different ruler from the one
+ * that produced it, so the interface is now the answer itself: `true` for an
+ * ingest-confirmed upstream outage, `false` for everything else.
  */
 function recoveryActionFor(healthInput) {
   const health = classifySourceHealth(healthInput);
-  const isStalled = health.active && health.kind === "upstream";
+  const isStalled = health.active === true && health.kind === "upstream";
   return decidePlaybackRecovery({
     playerBehind: 42,
     targetDelay: 15,
     hiddenDelay: 3,
     bufferAhead: 2,
-    sourceStallSeconds: isStalled ? health.stallSeconds : 0,
+    upstreamStalled: isStalled,
     recovered: false,
   }).action;
 }
 
-test("a positive stall from the classification holds without a flat 5s retest", () => {
-  // 3s would not have passed a flat 5s test. The value only arrives here AFTER
-  // the classification reported an upstream stall, which cannot happen below
-  // the scaled threshold -- so the flat retest was dead weight that read as a
-  // safety check and invited the two rules to drift apart.
+test("the boolean holds catch-up, and a raw stall count does not stand in for it", () => {
+  // D: an upstream stall holds, whatever the classification measured.
+  assert.equal(decidePlaybackRecovery({
+    playerBehind: 42,
+    targetDelay: 15,
+    hiddenDelay: 3,
+    bufferAhead: 2,
+    upstreamStalled: true,
+    recovered: false,
+  }).action, "hold");
+
+  // D: 3 seconds used to hold on its own (`> 0`), and it no longer means
+  // anything here -- the number is not the interface. With a 2s buffer neither
+  // catch-up branch qualifies, so the answer is normal.
   assert.equal(decidePlaybackRecovery({
     playerBehind: 42,
     targetDelay: 15,
@@ -97,7 +106,19 @@ test("a positive stall from the classification holds without a flat 5s retest", 
     bufferAhead: 2,
     sourceStallSeconds: 3,
     recovered: false,
-  }).action, "hold");
+  }).action, "normal");
+});
+
+test("only a strict true holds, so a non-boolean cannot pose as a stall", () => {
+  const base = { playerBehind: 42, targetDelay: 15, hiddenDelay: 3, bufferAhead: 2 };
+  // G: omitting it means "not stalled", not "unknown".
+  assert.equal(decidePlaybackRecovery({ ...base }).action, "normal");
+  // G: a truthy-but-wrong value must not silently hold catch-up.
+  assert.equal(decidePlaybackRecovery({ ...base, upstreamStalled: "true" }).action, "normal");
+  assert.equal(decidePlaybackRecovery({ ...base, upstreamStalled: 1 }).action, "normal");
+  assert.equal(decidePlaybackRecovery({ ...base, upstreamStalled: 1.08 }).action, "normal");
+  assert.equal(decidePlaybackRecovery({ ...base, upstreamStalled: true }).action, "hold");
+  assert.equal(decidePlaybackRecovery({ ...base, upstreamStalled: false }).action, "normal");
 });
 
 test("the recovery action follows the scaled threshold, not a flat one", () => {
