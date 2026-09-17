@@ -189,6 +189,8 @@
 
 **同步说明的不回归**：正常同侧对齐（27886.406 / 27881.4 → 5.006）、小幅 PTS 倒退容忍、`test_media_anchor.py` 原有的「无 provider 保持原行为」等用例全部保持。回退方式按计划要求：R1 是**一个提交**，probe／ingest／server／anchor 必须一起回退——只回 probe 会让消费者继续把 raw 当展开值用。
 
+**R1 上线后是坏的，实测抓到并已修（`ad04dee`）。** 上面那句「R1 已完成」在实测之前是**错的**：`sourceClockValid`／`sourceClockReason` 只被写进 `snapshot()` 的**字典**，而 `server.py` 的消费者问的是**对象**上的同名属性。对象从来没有它，于是**每个会话**都被判为不可信；而拒绝同时会关掉 `sampled_fallback_allowed`，所以后果不是退回采样窗，而是**一条字幕都不发**（实测：会话已跑 80 秒、ASR 已转写 65 秒，`mediaAnchor` 不存在、发布 0 条）。修法是单一 `source_clock_state` 属性、两端同读；修后同一形态的会话报 `exactOffset: 4.985`、发布 **27 条**、`pendingFinals`／`finalDiscarded`／`unmappedObservations` 全 0。**687 个单元测试全程是绿的**，因为每个测消费者的用例都问一条**假腿**，而假腿声明的正是真实对象缺少的那个字段。两个能抓住它的新用例在旧码上红、在新码上绿（`('untrusted','clock-validity-not-reported') != ('trusted', None)`，与线上失败逐字相同）。四次真实运行的完整数据、复现脚本 `prototype/hls-companion/scripts/live-backend-smoke.py`、以及实测**没有**覆盖的部分（无回绕、无 Electron 真实点击、`/api/subtitles` 的 cue 字段名未证实、U1/U2/U3 未触碰）都在 [handoff 文档](performance-remediation-handoff-2026-09-17.md) §3.5。
+
 ---
 
 ## 3. 设计来源表
