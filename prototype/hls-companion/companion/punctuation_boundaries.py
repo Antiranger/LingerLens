@@ -55,7 +55,16 @@ def _ja_vetoes(text, edges):
         preceding_noun = left > 0 and words[left-1].feature.pos1 in {'名詞','代名詞'}
         if preceding_noun and prefix[-1] in WEAK and last.surface == 'の' and last.feature.pos2 in {'格助詞','準体助詞'}:
             vetoes[i] = 'ja_left_genitive'; continue
-        if after >= len(words): continue  # no waiting for right evidence
+        if after >= len(words):
+            # Nothing to the right yet. That alone is NOT a veto: it is how every
+            # sentence ends, and vetoing it wholesale delayed nearly every subtitle.
+            # But a terminal straight after a NOUN is the shape the Provider makes
+            # when it splits one sentence into pieces (防災。 / 大臣。 / も兼任…,
+            # observed live). Hold that one and let the next token or the endpoint
+            # decide; the chunker's hard deadline emits it anyway if neither comes.
+            if last.feature.pos1 == '名詞':
+                vetoes[i] = 'ja_tail_noun'
+            continue  # no waiting for right evidence
         following = words[after]
         # Standalone でも after a finite predicate begins a new clause.
         discourse_demo = prefix[-1] in TERMINALS and text[edge:].lstrip().startswith('でも') and any(f in last.feature.cForm for f in ('終止形','命令形','意志推量形'))

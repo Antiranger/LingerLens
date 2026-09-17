@@ -356,6 +356,22 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertIsNone(timed_out.chunks[0].ends_mid_sentence)
         self.assertEqual(chunker.telemetry().chunk_cut_reasons, (("hard_deadline", 1),))
 
+    def test_tail_terminal_after_a_noun_is_held_but_a_verb_end_still_cuts(self) -> None:
+        # Live at 01:26 the Provider delivered 「…防災。」 then 「大臣。」 then 「も兼任…」
+        # and each piece became its own cue. A terminal straight after a noun with
+        # nothing after it yet is now held, so later evidence can decide the cut.
+        held = CaptionChunker(realtime=True)
+        held.open_item("u1", 0.0)
+        self.assertEqual(held.observe(stable(token("防災。", 0.0, 1.0, language="ja"))).chunks, ())
+
+        # A genuine sentence end is unaffected: Japanese sentences end in an auxiliary,
+        # a verb or an adjective, not a noun, so it still cuts immediately.
+        verb_end = CaptionChunker(realtime=True)
+        verb_end.open_item("u1", 0.0)
+        decision = verb_end.observe(stable(token("終わりました。", 0.0, 1.0, language="ja")))
+        self.assertEqual([chunk.text for chunk in decision.chunks], ["終わりました。"])
+        self.assertEqual([chunk.cut_reason for chunk in decision.chunks], ["terminal_punctuation"])
+
     def test_terminal_after_a_noun_waits_for_its_particle(self) -> None:
         # Observed live: the Provider placed 。 mid-phrase, the cue was cut between the
         # noun and its particle, and the screen showed "…焦点。" followed by "は今後…".
