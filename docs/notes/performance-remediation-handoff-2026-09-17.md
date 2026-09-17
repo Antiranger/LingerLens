@@ -276,7 +276,8 @@ gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline
 
 **还没做、但技术上可行（需要用户点头，因为会起真实进程 / 真实网络 / 产生费用）**：
 
-- ~~跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。~~ **已做，见 §3.5.7**（用 CDP 驱动正在运行的应用，两轮 Start→Stop，两场都真的播起来、都干净停止、零 console 错误；脚本 `scratch` 级，未入库，因为它是针对本机应用的一次性工具）。
+- ~~跑 Electron 并驱动 player 页面做计划要求的**一次** Start→Stop→Start。~~ **已做，见 §3.5.7**，脚本与后端那个并列入库：`prototype/hls-companion/scripts/live-page-smoke.js`（Node 22+ 自带 WebSocket，通过 CDP 驱动**已在运行**的应用，按「解析→开始→停止」两轮跑；只点页面自己的按钮，只额外把 `#video` 静音以免出声）。
+- **应用后端的日志环怎么读**：应用的后端用随机端口 + 每次启动的 session token，页面自己也不发那个头（应该是主进程注入的），而页面上下文里的 fetch 不进 resource timing，所以**从前端侧够不到 `/api/logs`**。要判断 §3.5.8 里 `deepseek` 是「被调用后超时」还是「期限已到未被调用」，两条可行路线：**(a)** 打开应用自带的「记录日志到文件」再复现一次；**(b)** 用用户自己的 providers 配置在独立后端上复现（我的 `live-backend-smoke.py` 默认读仓库里那份 dev 配置，与应用的配置不是同一份，这大概就是为什么我的运行里回退一次都没被触发）。**(b) 更便宜，而且不碰应用。**
 - 更长的会话（>150 秒）以观察退化、或让它跨过 26.5 小时边界。
 - **多标签页/多窗口并发抢占同一会话**：这是 S1 唯一还没被真实覆盖的场景。技术上可以做（在应用里或我自己的服务器页面上开第二个标签页，驱动它对同一会话发 start/stop），但它比上面那些更容易把状态搅乱，**需要用户明确同意**。
 
