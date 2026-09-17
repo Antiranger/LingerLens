@@ -288,7 +288,13 @@ class CaptionChunker:
             chunks.extend(self._drain_ready(caption, now))
             # An endpoint releases only evidence already stable. It does not
             # close the item: e.g. VAD stop can precede final transcription.
-            if self.realtime and caption.units and observation.kind in {"endpoint", "utterance_final"}:
+            # It also defers to a held tail, because the Provider marks the
+            # utterance over at the same pause where it writes the terminal: this
+            # emit was the second publisher that defeated the hold (measured live:
+            # 20 of the first 24 cuts came back as utterance_endpoint). The window
+            # releases the caption instead, so nothing is stranded.
+            if (self.realtime and caption.units and caption.tail_hold_until is None
+                    and observation.kind in {"endpoint", "utterance_final"}):
                 if all(u.item_id == observation.item_id for u in caption.units):
                     chunks.append(self._emit(caption, len(caption.units) - 1, "utterance_endpoint"))
             if caption.units and all(
@@ -396,17 +402,24 @@ class CaptionChunker:
                 else:
                     del self._captions[key]
                 continue
+            released = False
             if caption.tail_hold_until is not None and now >= caption.tail_hold_until:
                 # The window is over, so the tail cut is now the best evidence there
                 # is. Release it through _drain_ready so it keeps its own cut reason
                 # instead of being relabelled as an endpoint flush.
                 chunks.extend(self._drain_ready(caption, now))
+                released = True
             if caption.deadline is not None and now >= caption.deadline:
                 chunks.extend(self._drain_ready(caption, now))
                 if caption.units:
                     chunks.append(self._close_caption(key))
                 else:
                     del self._captions[key]
+                continue
+            if released and not caption.units and key[0].startswith("item:"):
+                # An emptied item lane can never receive another unit, so drop it now
+                # instead of leaving it for reclamation.
+                del self._captions[key]
         return ChunkerDecision(tuple(chunks))
 
     def _close_caption(

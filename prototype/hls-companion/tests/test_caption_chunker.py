@@ -385,6 +385,32 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertIn("を熱心に", released.chunks[0].text)
         self.assertEqual(released.chunks[0].cut_reason, "terminal_punctuation")
 
+    def test_an_endpoint_does_not_publish_a_held_tail_because_the_phrase_may_continue(self) -> None:
+        # The endpoint emit is a SECOND publisher, and it was defeating the hold: the
+        # Provider marks the utterance over at the very pause where it also writes the
+        # 。, so the caption went out as an endpoint flush and the phrase still split.
+        # Measured live: 20 of the first 24 cuts came back as utterance_endpoint.
+        chunker = CaptionChunker(realtime=True)
+        chunker.open_item("u1", 0.0)
+        chunker.observe(
+            stable(token("その民主党政権のときに原発事故の担当として仕事。", 0.0, 3.2, language="ja", speaker="3")),
+            now=100.0,
+        )
+        decision = chunker.observe(
+            CaptionObservation(
+                "utterance_final", 1, "u1",
+                stable_text="その民主党政権のときに原発事故の担当として仕事。",
+                begin_pcm=0.0, end_pcm=3.2, language="ja", speaker="3",
+            ),
+            now=100.2,
+        )
+        self.assertEqual(decision.chunks, ())
+
+        # Nothing is stranded by that: the window still releases it, under its own reason.
+        released = chunker.expire(101.3)
+        self.assertEqual([chunk.text for chunk in released.chunks], ["その民主党政権のときに原発事故の担当として仕事。"])
+        self.assertEqual(released.chunks[0].cut_reason, "terminal_punctuation")
+
     def test_a_held_tail_is_released_after_the_window_so_a_sentence_end_is_never_blank(self) -> None:
         # A real sentence end must still reach the screen: the hold is a wait, not a
         # veto, so once the window is over the caption appears with its own reason.

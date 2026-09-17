@@ -85,6 +85,9 @@ class ReclamationTests(unittest.TestCase):
                 mono += pace
                 emitted += len(chunker.observe(observation, now=mono).chunks)
                 emitted += len(chunker.expire(mono).chunks)
+        # The last utterance's tail is still inside its confirmation window.
+        mono += 1.3
+        emitted += len(chunker.expire(mono).chunks)
         return chunker, mono, emitted
 
     def test_item_ledger_stays_bounded_without_utterance_final(self) -> None:
@@ -124,6 +127,9 @@ class ReclamationTests(unittest.TestCase):
                 mono += 0.02
                 texts.extend(c.text for c in chunker.observe(observation, now=mono).chunks)
                 texts.extend(c.text for c in chunker.expire(mono).chunks)
+        # The last utterance's tail is still inside its confirmation window.
+        mono += 1.3
+        texts.extend(c.text for c in chunker.expire(mono).chunks)
         self.assertEqual(len(texts), 600)
         self.assertTrue(all(t.strip() for t in texts))
         # Every utterance produced the same joined text, so the segmenter is

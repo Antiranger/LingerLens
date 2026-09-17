@@ -58,7 +58,11 @@ class EvidenceTests(unittest.TestCase):
         c=CaptionChunker(realtime=True)
         for _ in range(4):
             self.assertFalse(c.observe(CaptionObservation('text_snapshot',1,'a',tentative_text='Wrong sentence.',begin_pcm=0,end_pcm=1)).chunks)
-        result=c.observe(CaptionObservation('utterance_final',1,'a',stable_text='Correct sentence.',begin_pcm=0,end_pcm=1)).chunks
+        c.observe(CaptionObservation('utterance_final',1,'a',stable_text='Correct sentence.',begin_pcm=0,end_pcm=1))
+        # The claim is about WHICH evidence may be published, not about when: the final
+        # is published, and it is published through the tail confirmation window that
+        # keeps a pause-punctuated phrase from being cut in half.
+        result=c.expire(1.3).chunks
         self.assertEqual([x.text for x in result],['Correct sentence.'])
     def test_final_word_snapshot_deduplicates(self):
         c=CaptionChunker(realtime=True)
