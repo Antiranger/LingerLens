@@ -263,15 +263,36 @@ gemini-3.7-flash-low: TimeoutError; deepseek: TimeoutError: translation deadline
 
 **那行日志与应用诊断栏里的那条逐字相同**，所以用户应用里那 17 条诊断，就是这一族。
 
-**但「TimeoutError」这个名字会骗人**，机制在代码里：
+**但「TimeoutError」这个名字会骗人，机制在代码里**：
 
-- `subtitle_pipeline.py:220`：`class TranslationDeadlineExpired(asyncio.TimeoutError)`——**预算耗尽是 `asyncio.TimeoutError` 的子类**，所以它一路冒上来时名字就叫 `TimeoutError`。
-- `subtitle_pipeline.py:1543-1550`：进翻译队列之前先要预算，`budget.remaining(...) <= 0` 就**直接丢**，`translation_deadline_expired += 1`，**根本不调用任何 provider**。而它上面那句注释恰好预言了这次的误读：这么做是为了「不让陈旧的启动积压变成一串**误导性的 provider 超时错误**」。
-- 实测的 provider 延迟是 **P50 1.094 / P95 2.094 秒**（开聊天）对 **6 秒**预算——**provider 一点都不慢**，跑光的是**这条字幕自己的显示预算**。
+- `subtitle_pipeline.py:220`：`class TranslationDeadlineExpired(asyncio.TimeoutError)`——**显示预算耗尽是 `asyncio.TimeoutError` 的子类**，所以它一路冒上来时名字就叫 `TimeoutError`。
+- **两条不同的丢失路径，必须先分清**：
+  1. **队列缝丢弃**（`subtitle_pipeline.py:1543-1550`）：进队列前预算已 `<= 0`，**直接丢、不调用任何 provider**，只把 `translation_deadline_expired += 1`。它上面那句注释恰好预言了这次的误读：这么做是为了「不让陈旧的启动积压变成一串**误导性的 provider 超时错误**」。**这条路不会产生「translation failed」那条消息。**
+  2. **调用中被期限打断**：预算在 provider 往返期间耗尽，`TranslationDeadlineExpired` 在调用内部抛出。
+- 实测的 provider 延迟是 **P50 1.094 / P95 2.094 秒**（开聊天）对 **6 秒**预算——**provider 一点都不慢**，跑光的是**这条字幕自己的显示预算**，而 provider 的往返只要 1～2 秒，在余量已经为负的情况下足够让窗口在调用途中关闭。
 
-**为什么会跑光**：`readyLagP95 = 14.972` 而 `targetDelaySeconds = 15`——**p95 正好压在目标延迟上，余量约等于零**。任何额外负载（聊天翻译让调用数 +54%）都会把个别 chunk 推过线，于是它的译文被丢、只显示原文（`sourceOnlyCues`）。
+**所以 M1 的机制是**：显示预算的余量长期贴着零甚至为负（见 §3.5.11 里应用自己的 `budgetMargin`），于是 provider 往返途中窗口关闭 → 该次调用被 `translation deadline has expired` 打断 → 因为期限作用于整条链，回退 provider 同样被打断 → 最终聚合成「all translation providers failed」。任何额外负载（聊天翻译让调用数 +54%）都会把更多 chunk 推过线，于是只显示原文（`sourceOnlyCues`）。
 
-**这就是 M1 的机制**，而且它给出了可选的修法方向（提高目标延迟、压低单 chunk 延迟、或让聊天翻译不与字幕抢同一预算），**但这属于产品决定，不是执行者该自选的**。同时它把「判断 deepseek 是被调用后超时还是没被调用」这个问题**改了性质**：按上面的代码，那不是判断依据——`translationDeadlineExpired` 与 `translationProviderFailures` 才是，而实测里前者可以在**零 provider 调用**的情况下自增。
+**可选修法方向**（提高目标延迟、压低单 chunk 延迟、或让聊天翻译不与字幕抢同一预算）**属于产品决定，不是执行者该自选的**。它同时否掉了上一版 handoff 里的一个问题提法：**「deepseek 是被调用后超时还是没被调用」不是判断依据**——`fallback.py:269` 的格式（由 B2-R 建立并被它自己的测试钉住）已经把「没被调用」写成 `not called (why)`，所以消息里出现 `deepseek: TimeoutError: ...` **就证明它被调用了**。B2-R 在这里是**承重的**：没有它，这条消息根本无法区分这两种情况。
+
+### 3.5.11 应用自己的数字：预算余量长期为负（M1 的结构性原因）
+
+上面 §3.5.10 是我在**独立后端**上用**用户的配置**复现的。为了看**用户应用自己**的数字（它的后端随机端口 + session token，够不到 `/api/logs`，而 dev 日志这次没开），我用 CDP 驱动应用跑了一场真实会话，只读它自己的检查器字段，**没有改任何设置**：
+
+```
+目标延迟输入框: 15        实际 hiddenDelay: 5.0 秒 -> 3.0 秒（自适应）
+budgetMargin:  -8.8s  -2.4  -2.5  -2.5  -2.5  -2.8  -2.8  -2.8  -2.8  +0.2  -0.4  -1.0  +3.0  +0.2  -0.6
+readyLag:      13.82s/13.82s  ->  7.56s/13.81s
+translationLatency: 0.83 - 1.69 秒        schedulerDrops: 0 丢 / 0 迟到
+cueDuration: 2.0 - 2.5s / 4.4 - 4.9s      timingSources: asr 100% · vad 0%
+diagCount: 17 -> 20（这场会话新增 3 条，且 chatTranslate = false）
+```
+
+**预算余量 15 个采样里有 12 个是负的。** 这就是结构性原因：应用绝大多数时间**在超出自己的显示预算运行**，provider 往返只要 1～2 秒，而余量在 −0.5 秒这个量级——**窗口在调用途中关闭是常态而不是意外**。聊天翻译只是把它推得更狠的一种方式，不是必要条件（这一场 `chatTranslate = false` 仍然新增了 3 条诊断）。
+
+**两条副产物，都值得记**：
+- **配置的 15 秒与实际的 3～5 秒不是一回事**：`targetDelay` 输入框是 15，而实际 `hiddenDelay` 是自适应降到 5.0/3.0 秒的。所以「把目标延迟调大」是不是有效修法，**取决于那个自适应值是怎么算出来的**——这一点我没有查。
+- `schedulerDrops: 0 丢 / 0 迟到`：这一场**没有**发生队列丢弃，所以这 3 条诊断走的是 §3.5.10 的第 2 条路径（调用中被期限打断），与 §3.5.10 末尾从消息格式推出的结论一致。两条独立证据指向同一条路径。
 
 ### 3.5.5 这几次实测**没有**覆盖的
 
