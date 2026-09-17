@@ -64,7 +64,7 @@
 
 **因此最该补的仪器是出帧路径，不是应用内的计数器**（上面三条已经把应用自身的 JS 和媒体腿排除了）：
 
-- 页面里加 `video.requestVideoFrameCallback`，拿「真正呈现的帧」的时间戳，区分「解码了」和「显示了」。目前全仓没有一处使用它。
+- 页面里加 `video.requestVideoFrameCallback`，拿 `metadata.mediaTime` / `presentedFrames` / `expectedDisplayTime`，区分「解码了」和「显示了」。产品代码里没有用过它，但 `.scratch/live-caption-onset-v1/browser-observer.js`（2026-09-05）已经用过——它证明这条路在本应用里走得通，不过那里只把 rVFC 当节拍器，没有取呈现时间戳。**复用那个文件时注意：它第 68 行有 `video.muted = true`，而隐藏 + 静音会挂起媒体管线，不要带过来。**
 - 记录 `document.hidden` 与遮挡状态。`player.js` 现在只有 `isHidden: () => document.hidden` 一处在用，采样器一个字段都没记。
 - 外部用 ETW / WPA 看 DWM 与显示调度；事后采 CPU 看不见这条路。
 
