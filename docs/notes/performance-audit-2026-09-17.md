@@ -6,6 +6,8 @@
 
 审计基线为 `b56582fdcc1bf46faa2a7cae95b61d94813fae9f`，分支 `wip/subtitle-anchor-correction`，加上工作区已有的停止按钮改动。那些未提交的业务代码属于另一轮工作，本轮未覆盖、回退或纳入提交。逐文件 SHA-256 和 Git 状态见 `.scratch/performance-audit-20260917/source-snapshot.json`。
 
+> **修订记录：** 第 6 节表中 `tmPairs` 一行的结论（原文为"生效"）由另一个会话在 `5cf8b05` 修正——`QwenMTTranslationProvider` 没有 `@register`，`qwen-mt` 不在翻译白名单且被测试断言不存在，所以默认模型下该选项是惰性的。**其余内容一字未改**，包括第 5.1 节"当前启用的 Soniox 不使用这些集合"这一限定——计划文档转述时丢掉了它。
+
 ## 结论与优先级
 
 | 项目 | 证据等级 | 实际影响 | 建议顺序 |

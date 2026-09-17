@@ -6,6 +6,10 @@
 配套审计：[performance-audit-2026-09-17.md](performance-audit-2026-09-17.md)  
 配套选项表：[performance-audit-2026-09-17-options.md](performance-audit-2026-09-17-options.md)
 
+> **修订记录——以下改动不是原作者写的。** `5cf8b05` 与 `d74bb4a` 由**另一个会话**写入，内容为：项目名改回 `LingerLens`、新增「已录到的那一次」一节、4B 换成日志频次表、U 行结论从「从未复现」改成「轻症已录到」、开头从两类现象改成三类（补回「越跑越卡」）、阶段 5 第 1 条改为维护已有表、更正 `requestVideoFrameCallback` 的说法。
+>
+> **原作者的排序没有被改**：本文仍然把两个"复现得最干净"的缺陷（stderr 读者、正文超时）排在第一批。与之竞争的另一份排序意见被**有意存放在工作区之外**——`%TEMP%\laglingo-opinion-remediation-ranking-20260917.md`——以免后续会话把它当成项目共识。两份都只是提案，都不等于结论。
+
 本文、配套审计和选项表一起保存在 `dc55cb2`（2026-09-17），这是本文修改前的回退点。
 
 工作区里那 8 个已修改文件和未跟踪的 `companion/win_job.py` **属于另一个仍在运行的会话**（停止按钮延迟），本文不回退、不覆盖、不纳入提交。它们的主题是把 Stop 变成一次本地即时动作：`server.py` 抽出统一的 `_teardown_session()`，`win_job.py` 用 Windows Job Object 结束 yt-dlp→ffmpeg 进程树，`player.js` 让 `stop()` 同步返回。**它们没有实现本文阶段 3 的任何一条。**
