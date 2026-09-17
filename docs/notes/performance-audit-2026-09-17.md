@@ -125,7 +125,7 @@ AssemblyAI `_turn_started`、Speechmatics `_started_items` 没有回收旧 ID。
 | 选项 | 配置/写入 | 消费者 | UI | 结论 |
 |---|---|---|---|---|
 | contextSeconds | 默认模板 90 + catalog | server → RollingContext | 无单独字段 | 生效，但隐藏 |
-| tmPairs | catalog / JSON，代码默认 4 | Qwen MT 路径 | 无 | 生效，仅部分翻译模式使用 |
+| tmPairs | catalog / JSON，代码默认 4 | Qwen MT 路径 | 无 | 仅 qwen-mt 模型下生效（mt_openai_compat.py:156）。`QwenMTTranslationProvider` 没有 `@register`，`qwen-mt` 不在翻译白名单（config.py:362）且被 tests/test_providers.py:63 断言不存在，所以 mt_qwen_mt.py:105 不可达。默认模型下是惰性的 |
 | enablePartials | Speechmatics 模板 + catalog | Speechmatics | 有 | 接通 |
 | maxSpeakers | 模板/catalog | AssemblyAI、Speechmatics | 有 | 接通；后者由 diarization 控制 |
 | maxDelaySeconds | Speechmatics 模板 + catalog | Speechmatics | 有 | 接通 |
