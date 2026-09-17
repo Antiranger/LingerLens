@@ -64,6 +64,11 @@ class EvidenceTests(unittest.TestCase):
         c=CaptionChunker(realtime=True)
         tokens=(RecognitionToken('Hello.',0,1,True,language='en'),RecognitionToken('draft',1,2,False,language='en'))
         first=c.observe(CaptionObservation('token_snapshot',1,'a',tokens=tokens)).chunks
+        # A terminal that is the last thing arrived now waits one confirmation window
+        # before it is published, so the release is driven explicitly here; the claim
+        # under test is about the tokens, not about the timing.
+        self.assertFalse(first)
+        first=c.expire(1.3).chunks
         second=c.observe(CaptionObservation('token_snapshot',1,'a',tokens=tokens)).chunks
         self.assertEqual([x.text for x in first],['Hello.']);self.assertFalse(second)
 

@@ -356,21 +356,66 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertIsNone(timed_out.chunks[0].ends_mid_sentence)
         self.assertEqual(chunker.telemetry().chunk_cut_reasons, (("hard_deadline", 1),))
 
-    def test_tail_terminal_after_a_noun_is_held_but_a_verb_end_still_cuts(self) -> None:
-        # Live at 01:26 the Provider delivered 「…防災。」 then 「大臣。」 then 「も兼任…」
-        # and each piece became its own cue. A terminal straight after a noun with
-        # nothing after it yet is now held, so later evidence can decide the cut.
-        held = CaptionChunker(realtime=True)
-        held.open_item("u1", 0.0)
-        self.assertEqual(held.observe(stable(token("防災。", 0.0, 1.0, language="ja"))).chunks, ())
+    def test_a_tail_terminal_waits_for_the_rest_of_the_phrase_instead_of_splitting_it(self) -> None:
+        # Live at 01:41 the screen showed "…担当として仕事。" and then "を熱心に…" as two
+        # captions. The period reached the chunker while the rest of the phrase had not,
+        # and a terminal that is merely the LAST thing arrived was published at once.
+        # A veto cannot help there: it can only judge text it can already see, so the
+        # wait has to belong to the publish decision itself.
+        chunker = CaptionChunker(realtime=True)
+        chunker.open_item("u1", 0.0)
+        first = chunker.observe(
+            stable(token("その民主党政権のときに原発事故の担当として仕事。", 0.0, 3.2, language="ja", speaker="3")),
+            now=100.0,
+        )
+        self.assertEqual(first.chunks, ())
 
-        # A genuine sentence end is unaffected: Japanese sentences end in an auxiliary,
-        # a verb or an adjective, not a noun, so it still cuts immediately.
-        verb_end = CaptionChunker(realtime=True)
-        verb_end.open_item("u1", 0.0)
-        decision = verb_end.observe(stable(token("終わりました。", 0.0, 1.0, language="ja")))
-        self.assertEqual([chunk.text for chunk in decision.chunks], ["終わりました。"])
-        self.assertEqual([chunk.cut_reason for chunk in decision.chunks], ["terminal_punctuation"])
+        second = chunker.observe(
+            stable(token("を熱心にされた方で、今回自民党で再び復興大臣の職に就いたということなんです。", 3.2, 9.0, language="ja", speaker="3")),
+            now=100.4,
+        )
+        self.assertEqual(second.chunks, ())
+
+        # The confirmation window is what bounds the wait when nothing follows, and
+        # releasing through it keeps the cut's own reason instead of relabelling it.
+        self.assertAlmostEqual(chunker.next_deadline, 101.2, places=3)
+        released = chunker.expire(chunker.next_deadline + 0.01)
+        self.assertEqual(len(released.chunks), 1)
+        self.assertIn("仕事。", released.chunks[0].text)
+        self.assertIn("を熱心に", released.chunks[0].text)
+        self.assertEqual(released.chunks[0].cut_reason, "terminal_punctuation")
+
+    def test_a_held_tail_is_released_after_the_window_so_a_sentence_end_is_never_blank(self) -> None:
+        # A real sentence end must still reach the screen: the hold is a wait, not a
+        # veto, so once the window is over the caption appears with its own reason.
+        chunker = CaptionChunker(realtime=True)
+        chunker.open_item("u1", 0.0)
+        chunker.observe(stable(token("負傷者はなしとのこと。", 0.0, 1.9, language="ja", speaker="3")), now=50.0)
+
+        self.assertEqual(chunker.expire(50.9).chunks, ())
+        released = chunker.expire(51.3)
+        self.assertEqual([chunk.text for chunk in released.chunks], ["負傷者はなしとのこと。"])
+        self.assertEqual(released.chunks[0].cut_reason, "terminal_punctuation")
+        self.assertFalse(released.chunks[0].ends_mid_sentence)
+
+    def test_a_terminal_with_text_already_after_it_still_cuts_without_waiting(self) -> None:
+        # The wait costs nothing in the ordinary case: when the following words are
+        # already in hand the cut is not the tail one and happens immediately.
+        chunker = CaptionChunker(realtime=True)
+        chunker.open_item("u1", 0.0)
+        decision = chunker.observe(
+            stable(
+                token("負傷者はなしとのこと。", 0.0, 1.9, language="ja", speaker="3"),
+                token("安心しました。", 1.9, 2.7, language="ja", speaker="3"),
+            ),
+            now=10.0,
+        )
+        self.assertEqual([chunk.text for chunk in decision.chunks], ["負傷者はなしとのこと。"])
+        self.assertEqual(decision.chunks[0].cut_reason, "terminal_punctuation")
+
+        # ...and the caption that ends the arrived text still waits for its window.
+        self.assertEqual(chunker.expire(10.5).chunks, ())
+        self.assertEqual([chunk.text for chunk in chunker.expire(11.3).chunks], ["安心しました。"])
 
     def test_terminal_after_a_noun_waits_for_its_particle(self) -> None:
         # Observed live: the Provider placed 。 mid-phrase, the cue was cut between the
