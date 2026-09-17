@@ -1265,11 +1265,24 @@
      * source is still worth recording, so it goes to the diagnostics bar.
      */
     const starving = ahead < STALL_VISIBLE_BUFFER_SECONDS;
+    /*
+     * One record per quiet-source TRANSITION, and it states only what is visible
+     * right now.
+     *
+     * It used to say "未打扰播放" -- and then, in the same call, show the banner and
+     * pause playback whenever the buffer was under three seconds, which is most of
+     * the time a stall is worth reporting at all. A live session on 2026-09-17
+     * wrote "直播源已停 8 秒（upstream），播放缓冲仍有 2 秒，未打扰播放" and paused
+     * playback immediately afterwards: the message asserted the opposite of what
+     * the code did next, which is worse than no message. The fix is not a better
+     * prediction but no prediction -- the buffer size and the fact of the pause are
+     * each recorded where they actually happen.
+     */
     if (stalled !== quietSourceLogged) {
       quietSourceLogged = stalled;
       if (stalled) {
         diagnosticsBar?.push("warn", "source",
-          `直播源已停 ${Math.round(health.stallSeconds)} 秒（${health.kind}），播放缓冲仍有 ${Math.round(ahead)} 秒，未打扰播放`);
+          `直播源已停 ${Math.round(health.stallSeconds)} 秒（${health.kind}），当前播放缓冲 ${Math.round(ahead)} 秒`);
       }
     }
     if (!stalled || !starving) {
@@ -1281,6 +1294,9 @@
     if (!video.paused && !stallAutoPauseSuppressed) {
       autoPausedForStall = true;
       video.pause();
+      // Recorded AFTER it happened, so the log cannot promise a pause that some
+      // later condition prevented.
+      diagnosticsBar?.push("warn", "source", "缓冲不足，本次已自动暂停等待补充");
     }
   }
 

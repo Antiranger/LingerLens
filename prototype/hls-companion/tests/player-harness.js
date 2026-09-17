@@ -88,6 +88,30 @@ function functionEnd(source, start) {
   return -1;
 }
 
+/*
+ * Extract a single-line `const NAME = ...;` declaration.
+ *
+ * Constants are taken from the file rather than retyped in the test: a test that
+ * hardcodes "3" keeps passing when the product changes the threshold to 4, which
+ * is exactly the kind of silent drift these tests exist to catch. Multi-line
+ * initialisers are refused rather than half-read.
+ */
+function extractConst(source, name) {
+  const marker = `\n  const ${name} = `;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `const ${name} was not found at the top level of player.js`);
+  // Search for the semicolon rather than for ";\n": the checkout is CRLF, so a
+  // newline-anchored search silently fails on every declaration.
+  const end = source.indexOf(";", start);
+  assert.notEqual(end, -1, `const ${name} has no terminating semicolon`);
+  const text = source.slice(start + 1, end + 1);
+  assert.ok(
+    !text.includes("\n"),
+    `const ${name} spans multiple lines: the single-line extractor cannot read it`,
+  );
+  return text;
+}
+
 function extractFunction(source, name) {
   const markers = [`\n  async function ${name}(`, `\n  function ${name}(`];
   const hits = markers
@@ -208,12 +232,13 @@ function spy(implementation) {
  * bindings inside the vm, and `read()`/`write()` bridge them back out so a test
  * can observe what the shipped function did to module-level state.
  */
-function playerContext({ state = {}, globals = {}, functions = [] } = {}) {
+function playerContext({ state = {}, globals = {}, functions = [], constants = [] } = {}) {
   const source = playerSource();
   const names = Object.keys(state);
   const declarations = names
     .map((name) => `let ${name} = ${JSON.stringify(state[name])};`)
     .join("\n");
+  const constantText = constants.map((name) => extractConst(source, name)).join("\n");
   const body = functions.map((name) => extractFunction(source, name)).join("\n");
   const readFields = names.map((name) => `    ${JSON.stringify(name)}: ${name},`).join("\n");
   const writeFields = names
@@ -224,6 +249,7 @@ function playerContext({ state = {}, globals = {}, functions = [] } = {}) {
     )
     .join("\n");
   const prelude = [
+    constantText,
     declarations,
     body,
     "  this.__read = () => ({",
@@ -297,6 +323,7 @@ module.exports = {
   PLAYER,
   deferred,
   elementLookup,
+  extractConst,
   extractFunction,
   functionEnd,
   pendingRequests,
