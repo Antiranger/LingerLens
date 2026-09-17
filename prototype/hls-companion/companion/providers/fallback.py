@@ -122,10 +122,43 @@ class FallbackChain(TranslationProvider):
             language=_combined_language_capabilities([item.language for item in capabilities]),
         )
 
+    def _could_try_any(
+        self,
+        providers: Sequence[TranslationProvider],
+        now: float,
+        source_text: str,
+    ) -> bool:
+        """Whether any of these providers is not already ruled out.
+
+        Mirrors the loop's own preconditions -- not misconfigured for the
+        session, not cooling down, and a cue its declared input limit can hold.
+        It is a statement about eligibility, not about the network: no probing,
+        no new circuit breaker.
+        """
+        for provider in providers:
+            state = self.health[provider.id]
+            if state.disabled_reason is not None:
+                continue
+            if state.cooldown_until > now:
+                continue
+            limit = getattr(provider.capabilities, "max_input_chars", 0) or 0
+            if limit > 0 and len(source_text) > limit:
+                continue
+            return True
+        return False
+
     async def translate(self, request: TranslationRequest) -> TranslationResult:
         now = self.clock()
         errors: list[tuple[str, BaseException]] = []
         attempted = False
+        # A reservation is only meaningful if some later provider could actually
+        # be tried right now. Reserving for a disabled or cooling one would
+        # shorten the primary's deadline and buy nothing.
+        reserve = 0.0
+        if self.fallback_reserve_seconds > 0 and self._could_try_any(
+            self.providers[1:], now, request.source_text
+        ):
+            reserve = self.fallback_reserve_seconds
         for index, provider in enumerate(self.providers):
             state = self.health[provider.id]
             if state.disabled_reason is not None:
@@ -159,19 +192,31 @@ class FallbackChain(TranslationProvider):
                 # pipeline's cue deadline is a total latency budget; without
                 # this reservation a primary timeout consumes all of it and
                 # the fallback immediately sees an expired request.
-                if (
-                    index == 0
-                    and len(self.providers) > 1
-                    and request.deadline_monotonic is not None
-                    and self.fallback_reserve_seconds > 0
-                ):
+                #
+                # When the remaining budget does not even cover the reserve,
+                # give the WHOLE remainder to the providers that can still be
+                # tried. Handing it to the primary instead was the old
+                # behaviour, and it meant a slow primary spent the entire cue
+                # budget and left the fallback an already-expired deadline --
+                # the reservation this block exists to provide, inverted at
+                # exactly the boundary where it matters. Skipping is a budget
+                # decision, not a provider failure: it touches no health state,
+                # so nothing is disabled or cooled by it.
+                if index == 0 and reserve > 0 and request.deadline_monotonic is not None:
                     remaining = request.deadline_monotonic - self.clock()
-                    primary_budget = remaining - self.fallback_reserve_seconds
-                    if primary_budget > 0:
-                        provider_request = dataclasses.replace(
-                            request,
-                            deadline_monotonic=request.deadline_monotonic - self.fallback_reserve_seconds,
-                        )
+                    if remaining <= reserve:
+                        errors.append((
+                            _name_of(provider),
+                            RuntimeError(
+                                f"skipped: {remaining:.2f}s left does not cover the "
+                                f"{reserve:.2f}s fallback reserve"
+                            ),
+                        ))
+                        continue
+                    provider_request = dataclasses.replace(
+                        request,
+                        deadline_monotonic=request.deadline_monotonic - reserve,
+                    )
                 result = await provider.translate(provider_request)
             except (ProviderAuthError, ProviderRequestError, LanguageNotSupportedError) as exc:
                 # Deterministic config/auth/request problem: retrying this

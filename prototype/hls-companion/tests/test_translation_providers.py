@@ -543,6 +543,23 @@ class ScriptedTranslation(TranslationProvider):
         return TranslationResult(str(outcome), self.id, 1, self.usage)
 
 
+class DeadlineRecordingTranslation(ScriptedTranslation):
+    """A scripted provider that remembers the deadline each call was given."""
+
+    def __init__(self, provider_id: str, outcomes: list[object], limit: int = 1000, label: str | None = None):
+        super().__init__(provider_id, outcomes, label=label)
+        self.limit = limit
+        self.deadlines: list[float | None] = []
+
+    @property
+    def capabilities(self) -> TranslationCapabilities:
+        return TranslationCapabilities(True, True, True, False, self.limit)
+
+    async def translate(self, request: TranslationRequest) -> TranslationResult:
+        self.deadlines.append(request.deadline_monotonic)
+        return await super().translate(request)
+
+
 class FailureDetailTests(unittest.IsolatedAsyncioTestCase):
     """What a translation failure is allowed to say about itself.
 
@@ -681,6 +698,157 @@ class FallbackDeterminismTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.provider_id, "second")
         self.assertEqual(first.deadlines, [14.0])
         self.assertEqual(second.deadlines, [16.0])
+
+    async def test_a_budget_that_cannot_cover_the_reserve_skips_the_primary(self) -> None:
+        """The reservation used to invert at exactly the boundary it protects.
+
+        ``primary_budget = remaining - reserve`` was only applied when positive,
+        so a remaining budget at or below the reserve handed the primary the
+        WHOLE deadline and left the fallback an already-expired request. Live
+        logs recorded that as ``translation-1: translation deadline has expired``
+        9 times across 75 translation failures.
+        """
+        now = [10.0]
+        # 0 < R <= reserve, including R == reserve exactly.
+        for remaining in (1.0, 2.0):
+            with self.subTest(remaining=remaining):
+                first = DeadlineRecordingTranslation("first", ["primary"])
+                second = DeadlineRecordingTranslation("second", ["fallback"])
+                chain = FallbackChain(
+                    [first, second], fallback_reserve_seconds=2.0, clock=lambda: now[0]
+                )
+                request = make_request()
+                request.deadline_monotonic = 10.0 + remaining
+                result = await chain.translate(request)
+                self.assertEqual(result.provider_id, "second")
+                self.assertEqual(first.calls, 0)
+                # The fallback inherits the whole remainder, not a reset budget.
+                self.assertEqual(second.deadlines, [10.0 + remaining])
+
+    async def test_just_over_the_reserve_the_primary_still_goes_first(self) -> None:
+        now = [10.0]
+        first = DeadlineRecordingTranslation("first", [asyncio.TimeoutError("slow")])
+        second = DeadlineRecordingTranslation("second", ["fallback"])
+        chain = FallbackChain(
+            [first, second], fallback_reserve_seconds=2.0, clock=lambda: now[0]
+        )
+        request = make_request()
+        request.deadline_monotonic = 12.01
+        result = await chain.translate(request)
+        self.assertEqual(result.provider_id, "second")
+        self.assertEqual(first.deadlines, [10.01])
+        self.assertEqual(second.deadlines, [12.01])
+
+    async def test_a_disabled_fallback_does_not_shorten_the_primary(self) -> None:
+        """Reserving for a provider that can never be tried only costs latency."""
+        now = [10.0]
+        first = DeadlineRecordingTranslation("first", [asyncio.TimeoutError("slow"), "primary"])
+        second = ScriptedTranslation("second", [ProviderAuthError("401 bad key")])
+        chain = FallbackChain(
+            [first, second], fallback_reserve_seconds=2.0, clock=lambda: now[0]
+        )
+
+        # Cue 1: the fallback answers, fails deterministically, and is disabled.
+        request = make_request()
+        request.deadline_monotonic = 16.0
+        with self.assertRaises(RuntimeError):
+            await chain.translate(request)
+        self.assertEqual(first.deadlines, [14.0])
+        self.assertIsNotNone(chain.health["second"].disabled_reason)
+
+        # Cue 2: no usable fallback remains, so the primary keeps the whole budget.
+        first.deadlines.clear()
+        request = make_request()
+        request.deadline_monotonic = 16.0
+        result = await chain.translate(request)
+        self.assertEqual(result.provider_id, "first")
+        self.assertEqual(first.deadlines, [16.0])
+
+    async def test_a_cooling_fallback_does_not_shorten_the_primary(self) -> None:
+        now = [10.0]
+        first = DeadlineRecordingTranslation("first", [asyncio.TimeoutError("slow"), "primary"])
+        second = ScriptedTranslation("second", [ProviderRateLimitError("429 slow down")])
+        chain = FallbackChain(
+            [first, second],
+            fallback_reserve_seconds=2.0,
+            cooldown_seconds=60.0,
+            clock=lambda: now[0],
+        )
+
+        request = make_request()
+        request.deadline_monotonic = 16.0
+        with self.assertRaises(RuntimeError):
+            await chain.translate(request)
+        self.assertEqual(first.deadlines, [14.0])
+        self.assertGreater(chain.health["second"].cooldown_until, now[0])
+
+        first.deadlines.clear()
+        request = make_request()
+        request.deadline_monotonic = 16.0
+        result = await chain.translate(request)
+        self.assertEqual(result.provider_id, "first")
+        self.assertEqual(first.deadlines, [16.0])
+
+    async def test_a_cue_the_fallback_cannot_hold_does_not_reserve_for_it(self) -> None:
+        now = [10.0]
+        first = DeadlineRecordingTranslation("first", ["primary"])
+        second = DeadlineRecordingTranslation("second", ["fallback"], limit=5)
+        chain = FallbackChain(
+            [first, second], fallback_reserve_seconds=2.0, clock=lambda: now[0]
+        )
+        request = make_request(source_text="あ" * 20)
+        request.deadline_monotonic = 11.0
+        result = await chain.translate(request)
+        self.assertEqual(result.provider_id, "first")
+        self.assertEqual(first.deadlines, [11.0])
+        self.assertEqual(second.calls, 0)
+
+    async def test_a_budget_skip_is_not_a_provider_failure(self) -> None:
+        """Skipping spends no health state: nothing is disabled or cooled."""
+        now = [10.0]
+        first = DeadlineRecordingTranslation("first", ["primary"])
+        second = ScriptedTranslation("second", [asyncio.TimeoutError("slow")])
+        chain = FallbackChain(
+            [first, second],
+            fallback_reserve_seconds=2.0,
+            failure_threshold=1,
+            cooldown_seconds=60.0,
+            clock=lambda: now[0],
+        )
+
+        request = make_request()
+        request.deadline_monotonic = 11.0
+        with self.assertRaises(RuntimeError) as caught:
+            await chain.translate(request)
+        self.assertIn("skipped", str(caught.exception))
+        self.assertEqual(first.calls, 0)
+        self.assertIsNone(chain.health["first"].disabled_reason)
+        self.assertEqual(chain.health["first"].consecutive_failures, 0)
+        self.assertEqual(chain.health["first"].cooldown_until, 0.0)
+
+        # A later cue with room still goes to the primary first.
+        request = make_request()
+        request.deadline_monotonic = 20.0
+        result = await chain.translate(request)
+        self.assertEqual(result.provider_id, "first")
+        self.assertEqual(first.deadlines, [20.0])
+
+    async def test_no_deadline_is_ever_extended_past_the_cue_budget(self) -> None:
+        """Whatever the branch, every request stays inside the original D."""
+        now = [10.0]
+        for remaining in (0.5, 1.0, 2.0, 2.01, 6.0, 30.0):
+            with self.subTest(remaining=remaining):
+                first = DeadlineRecordingTranslation("first", ["primary"])
+                second = DeadlineRecordingTranslation("second", ["fallback"])
+                chain = FallbackChain(
+                    [first, second], fallback_reserve_seconds=2.0, clock=lambda: now[0]
+                )
+                request = make_request()
+                request.deadline_monotonic = 10.0 + remaining
+                await chain.translate(request)
+                for provider in (first, second):
+                    for deadline in provider.deadlines:
+                        self.assertLessEqual(deadline, 10.0 + remaining)
 
     async def test_auth_and_request_errors_disable_the_provider_for_the_session(self) -> None:
         now = [10.0]
