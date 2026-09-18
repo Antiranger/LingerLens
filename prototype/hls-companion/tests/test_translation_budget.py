@@ -21,7 +21,7 @@ class TranslationBudgetPolicyTests(unittest.TestCase):
         self.assertEqual(budget.deadline_monotonic, 106.0)
         self.assertEqual(budget.remaining(103.0), 3.0)
 
-    def test_an_already_visible_cue_gets_no_provider_window(self) -> None:
+    def test_a_window_that_has_passed_is_reported_without_cancelling_the_call(self) -> None:
         policy = TranslationBudgetPolicy(
             6.0,
             playback_delay_seconds=lambda: 15.0,
@@ -31,9 +31,12 @@ class TranslationBudgetPolicyTests(unittest.TestCase):
 
         budget = policy.allocate(audio_end_wall=1_000.0)
 
+        # The window is still measured and reported: 20 seconds of age against a
+        # 15 second delay leaves none. It no longer truncates the deadline,
+        # because the age is an estimate and the renderer owns the real answer.
         self.assertEqual(budget.playback_window_seconds, 0.0)
-        self.assertEqual(budget.deadline_monotonic, 100.0)
-        self.assertEqual(budget.remaining(100.0), 0.0)
+        self.assertEqual(budget.deadline_monotonic, 106.0)
+        self.assertEqual(budget.remaining(100.0), 6.0)
 
     def test_without_media_timing_it_falls_back_to_provider_timeout(self) -> None:
         policy = TranslationBudgetPolicy(

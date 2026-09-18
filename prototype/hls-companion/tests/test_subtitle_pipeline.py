@@ -1188,7 +1188,13 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
-    async def test_already_late_cue_is_dropped_at_queue_seam(self) -> None:
+    async def test_a_cue_past_its_estimated_window_still_reaches_the_provider(self) -> None:
+        """The backend estimates lateness; only the renderer can know it.
+
+        ``audio_end_wall`` 20s behind a 15s delay is the session-head case that
+        used to drop the caption here, with no provider call, while the renderer
+        still had seconds of window left for it.
+        """
         provider = self.ControlledTranslation()
         pipeline = SubtitlePipeline(
             asr_provider=FakeASR(),
@@ -1199,22 +1205,31 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
             translation_timeout_seconds=6.0,
             playback_delay_seconds=lambda: 15.0,
             wall_clock=lambda: 1_020.0,
-            monotonic=lambda: 100.0,
+            monotonic=time.monotonic,
         )
         cue = pipeline.store.add(
-            t_start=0.0, t_end=1.0, hold=1.2, src="stale", lang="en", timing_source="asr",
+            t_start=0.0, t_end=1.0, hold=1.2, src="late", lang="en", timing_source="asr",
             generation=1, chunk_order=1,
         )
         pipeline._audio_end_walls[cue.id] = 1_000.0
+        pipeline._running = True
+        worker = asyncio.create_task(pipeline._translation_worker())
+        try:
+            pipeline._enqueue_translation(cue)
 
-        pipeline._enqueue_translation(cue)
+            await asyncio.wait_for(provider.started.setdefault(1, asyncio.Event()).wait(), 1)
+            self.assertEqual(pipeline.stats.translation_dropped, 0)
+            self.assertEqual(pipeline.stats.translation_deadline_expired, 0)
+            self.assertEqual(pipeline.stats.translation_failures, 0)
 
-        self.assertEqual(pipeline._translation_queue.qsize(), 0)
-        self.assertEqual(provider.requests, {})
-        self.assertEqual(pipeline.store.get(cue.id).state, "failed")
-        self.assertEqual(pipeline.stats.translation_dropped, 1)
-        self.assertEqual(pipeline.stats.translation_deadline_expired, 1)
-        self.assertEqual(pipeline.stats.translation_failures, 0)
+            provider.releases.setdefault(1, asyncio.Event()).set()
+            await asyncio.wait_for(pipeline._translation_queue.join(), 1)
+            self.assertEqual(pipeline.store.get(cue.id).state, "done")
+            self.assertEqual(pipeline.store.get(cue.id).zh, "z1")
+        finally:
+            pipeline._running = False
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
 
     async def test_target_hot_switch_discards_inflight_old_language_and_updates_next_cue(self) -> None:
         provider = self.ControlledTranslation()

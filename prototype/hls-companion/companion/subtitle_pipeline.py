@@ -1540,13 +1540,13 @@ class SubtitlePipeline:
                          chunk_order=cue.chunk_order, media_t_end=cue.t_end)
         self.context.trim(generation=cue.generation, at_media_time=cue.t_end)
         budget = self._translation_budget_policy.allocate(self._audio_end_walls.get(cue.id))
-        if budget.remaining(self.monotonic()) <= 0:
-            # The cue is already beyond the delayed player's display window.
-            # Drop it at the queue seam so a worker cannot turn a stale startup
-            # backlog into a stream of misleading provider-timeout errors.
-            self.stats.translation_deadline_expired += 1
-            self._drop_translation_cue(cue)
-            return
+        # No lateness drop here, deliberately. How far the pushed audio has run
+        # ahead of a sentence is only an ESTIMATE of what the viewer has already
+        # passed; the renderer knows the playhead and already refuses cues whose
+        # window has gone. Dropping on the estimate threw away captions the
+        # renderer would still have shown: measured at a session head, three were
+        # dropped with 2.6s, 3.3s and 6.3s of real time left, and none of them was
+        # ever handed to a provider. The queue bound below still caps a burst.
         self._translation_budgets[cue.id] = budget
         while self._translation_backlog >= self._queue_limit:
             dropped = self._translation_queue.get_nowait()

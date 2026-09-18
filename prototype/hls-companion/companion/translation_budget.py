@@ -3,9 +3,20 @@
 The pipeline has two clocks that constrain a translation request:
 
 * ``provider_timeout_seconds`` is the maximum time we are willing to spend on
-  the provider call itself.
-* ``playback_delay_seconds`` is the remaining wall-clock window before the
-  cue's audio end reaches the delayed player.
+  the provider call itself.  It is the whole budget.
+* ``playback_delay_seconds`` describes the window the cue's audio still has
+  before the delayed player reaches it.  It is measured and reported, but it no
+  longer shortens the deadline.
+
+The window used to truncate the deadline as well, which discarded captions the
+renderer would still have accepted.  Its estimate comes from how far the pushed
+audio has run ahead of the sentence, and it assumes the viewer trails the audio
+leg by exactly ``playback_delay_seconds``.  That holds in steady state and does
+not hold while the buffer is filling: measured at a session head, the real lag
+was 22-24s against a nominal 15s, so captions with 2.6-6.3s of real slack left
+were dropped without a provider call.  Whether a caption is too late to be worth
+showing is a fact the renderer owns -- it knows the playhead and already drops
+cues whose window has passed -- so the backend now only bounds its own work.
 
 ``audio_end_wall`` already describes the end of the cue.  The policy therefore
 never subtracts the cue's duration again; doing so double-counts long cues and
@@ -21,11 +32,16 @@ from collections.abc import Callable
 
 @dataclasses.dataclass(frozen=True)
 class TranslationBudget:
-    """A single cue's absolute deadline and its two useful constraints."""
+    """A cue's absolute deadline and the window it was measured against."""
 
     deadline_monotonic: float
     provider_timeout_seconds: float
     playback_window_seconds: float | None
+    """Estimated window left before the delayed player reaches the cue's audio.
+
+    Reported for diagnosis only.  It no longer shortens ``deadline_monotonic``:
+    see the module docstring for the measurement that made it advisory.
+    """
 
     def remaining(self, now_monotonic: float) -> float:
         """Return the non-negative portion of the cue's total budget."""
@@ -57,10 +73,11 @@ class TranslationBudgetPolicy:
         self.monotonic = monotonic
 
     def allocate(self, audio_end_wall: float | None) -> TranslationBudget:
-        """Allocate a deadline from the cue end, never from its start.
+        """Allocate the provider budget; the cue end stays a reported window.
 
-        ``audio_end_wall`` can be absent for synthetic/offline cues.  In that
-        case the provider timeout remains the only constraint.
+        ``audio_end_wall`` can be absent for synthetic/offline cues.  Either way
+        the provider timeout is the budget, and the playback window is computed
+        only so the margin we used to enforce stays visible in telemetry.
         """
 
         now = self.monotonic()
@@ -70,7 +87,6 @@ class TranslationBudgetPolicy:
             target_delay = max(0.0, float(self.playback_delay_seconds()))
             age = max(0.0, self.wall_clock() - audio_end_wall)
             playback_window = max(0.0, target_delay - age)
-            deadline = min(deadline, now + playback_window)
         return TranslationBudget(
             deadline_monotonic=deadline,
             provider_timeout_seconds=self.provider_timeout_seconds,
