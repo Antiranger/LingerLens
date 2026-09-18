@@ -85,8 +85,8 @@
 
 1. 页面与后端的 cue 列表都是**滚动窗口**：R5 开头 354 秒的 cue 正文已永久丢失（只剩计数器）。
 2. 采样器每 5 秒一帧，且**不投影** `asrAdapterDelay*` / `chunkerPolicyDelay*`（这些只在 `/api/status` 里有）。
-3. `/api/status` 的 `*DelayP50/P95` 是 `deque(maxlen=60)` 的滚动窗口，且 `asrAdapter`/`chunkerPolicy` 等**只对"整条链路跑完（含翻译成功）"的字幕采样**（`subtitle_pipeline.py:1761-1794`：任一环节缺就跳过并计入 `latencyUnknown`）。
-4. 百分位取法是 `index = round(fraction × (n−1))`（`subtitle_pipeline.py:1803-1805`）：**n=20 时"P95"就是第 19 个样本**，≈ 最慢的一条，不是分布。
+3. `/api/status` 的 `*DelayP50/P95` 是 `deque(maxlen=60)` 的滚动窗口；stage lag 的采样条件是**六个标记（`audioPushed / evidenceAvailable / chunkEmitted / translationStarted / providerFinished / cueReady`）全部非空且单调**（`subtitle_pipeline.py:1761-1784`），缺任一就 `_latency_unknown += 1` 并 `return`。翻译**失败**也会写 `provider_finished`（`:1721-1722`）因而**进入**统计；被排除的是**没有走到 provider 的那批**（队列到期、排队被丢弃等，`providerFinished` 为空 ⇒ 该 cue 的所有 stage 样本都不记）。
+4. 百分位取法是 `index = round(fraction × (n−1))`（`subtitle_pipeline.py:1803-1805`）：**n=20 时"P95"就是第 19 个样本、n=25 时是第 24 个**，即窗口没满时"P95"≈ 最慢的那一两条，不是分布。
 5. 会话开头音频腿是追赶式的，所有延迟量在开头都偏大（见 §3-P4）。
 
 ---
@@ -139,7 +139,7 @@ R7 的时长直方图（`tEnd − tStart`）：`<1s` 21、`1-2s` 17、`2-3s` 12�
 **代码事实**
 
 - `caption_chunker.observe()`（`caption_chunker.py:274-278`）：当观察是 `endpoint` / `utterance_final`，且 lane 内所有 unit 都属于该 item 时，**把整条 caption 立刻发出**，reason = `utterance_endpoint`。这条路径**不经过 `select_boundaries()`**，因此不受任何标点或长度闸门约束。
-- ASR 侧：Soniox 的 `<end>` / `<fin>` token 触发 `_finish_utterance()`，其中 `item_id = str(self._utterance)` 且 `self._utterance += 1`（`providers/asr_soniox_realtime.py:393-416`），即**每个端点都会开一个新的 lane**。
+- ASR 侧：Soniox 的 `<end>` / `<fin>` token 触发 `_finish_utterance()`，其中 `item_id = str(self._utterance)` 且 `self._utterance += 1`（`providers/asr_soniox_realtime.py:393-416`），即**每个端点都会开一个新的 item**。注意 item 不等于 lane：lane 的键是 `("speaker:<标签>", 语种)`，有 speaker 时跨 item 延续（仅当新 unit 比 lane 末尾晚 `_CONTINUATION_GAP = 1.2` 秒以上、或时间回跳超过 `_TIMESTAMP_JITTER = 0.06` 才关闭），只有没有 speaker 时才落到 `("item:<id>", 语种)` 这类 item 局部 lane（`caption_chunker.py:245-253`）。
 
 **复现**：`py -3.10 .scratch/trace-soniox-fixture.py`（用官方事件形状逐帧打印每条字幕由哪条路径发布）。
 
@@ -201,10 +201,10 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 
 ### P5 测量口径：`asrAdapterDelay` 的采样条件与 P95 取法
 
-- `subtitle_pipeline.py:1761-1794`：只有在 `audioPushed / evidenceAvailable / chunkEmitted / translationStarted / providerFinished` 全部非空且单调时，六项 stage lag 才各记一个样本；否则 `_latency_unknown += 1` 并 `return`。**即：只对"翻译成功跑完"的字幕采样。**
-- `_lag_percentiles`（`1798-1806`）：`index = min(len−1, max(0, round(fraction × (len−1))))`；窗口 `deque(maxlen=60)`。
-- 实例：R6 在 `uptimeSeconds = 82.8` 时读到 `asrAdapterDelayP50/P95 = 11.797 / 14.953`，当时 `latencyWindowSamples` 约 25 ⇒ 该 P95 等于"窗口内第 19 个样本"。
-- 同一构建同一位置的其他值：`chunkerPolicyDelayP50/P95 = 0.015 / 1.203`；`translationProviderDelayP50/P95 = 1.296 / 1.859`；`translationQueueDelay = 0 / 0`；`readyLagP50/P95 = 13.772 / 17.761`；`sourceReadyLagP50/P95 = 12.94 / 17.761`；`totalReadyDelayP50/P95 = 12.438 / 16.953`；`targetDelaySeconds = 15.0`。
+- `subtitle_pipeline.py:1761-1784`：只有在 `audioPushed / evidenceAvailable / chunkEmitted / translationStarted / providerFinished` 全部非空且单调时，六项 stage lag 才各记一个样本；否则 `_latency_unknown += 1` 并 `return`。**即：有一条完整的六段链路才记样本；没走到 provider 的字幕（队列到期/丢弃）不记，而翻译失败因为会写 `provider_finished`（`:1721-1722`）仍然会记。**
+- `_lag_percentiles`（`1798-1806`）：`index = min(len−1, max(0, round(fraction × (len−1))))`；窗口 `deque(maxlen=60)`。n=20 时"P95"= 第 19 个、n=25 时 = 第 24 个（见 §2 口径限制 4）。
+- 现场读数实例（**未落盘，无法复算**）：R6 在 `uptimeSeconds = 82.8` 时 `/api/status` 读到 `asrAdapterDelayP50/P95 = 11.797 / 14.953`、`chunkerPolicyDelayP50/P95 = 0.015 / 1.203`、`translationProviderDelayP50/P95 = 1.296 / 1.859`、`translationQueueDelay = 0 / 0`、`readyLagP50/P95 = 13.772 / 17.761`、`sourceReadyLagP50/P95 = 12.94 / 17.761`、`totalReadyDelayP50/P95 = 12.438 / 16.953`、`targetDelaySeconds = 15.0`。这组数字取自当时终端输出，没有写入任何文件；当时窗口内样本数未记录，因此不能据它复算具体分位索引。
+- 落盘可复算的对照（R7，`.scratch/api-status.json`，`uptimeSeconds = 295.8`）：`asrAdapterDelayP50/P95 = 2.5 / 6.781`、`chunkerPolicyDelayP50/P95 = 0 / 0.016`、`translationProviderDelayP50/P95 = 1.297 / 3.235`、`readyLagP50/P95`（见 §4 表）、`latencyWindowSamples = 60`、`latencySamples = 81`、`latencyUnknown = 1`、`latencyUnknownReasons = {translationStarted: 1, providerFinished: 1}`（这条正好是"没走到 provider 的 cue 被排除"的现场实例）。
 
 ---
 
@@ -212,7 +212,7 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 
 - R5：11 条；R7：`西。` `日本。` `大気。` `大。` `60。` `えー。` `その。` `少し。` `日本は。` 等，多为 0.060 秒（个别 0.30 秒）。
 - 事实：这些 cue 的 `tEnd − tStart = 0.060`；它们可读**只因为 `hold` 有 1.2 秒的下限**（`subtitle_text.calculate_hold(..., minimum)`）。
-- 相关来源：Soniox 返回的 token `start_ms` / `end_ms` 在这些位置上几乎重合（例如 `西` 与 `。` 相差 60 ms）。
+- 相关来源**尚未确定**：本次执行者没有把 ASR 的原始 token 流落盘，所以"0.060 秒来自 provider 还是来自时间映射"没有被直接观测。可用来收窄范围的两条代码事实：(1) 适配器的时间投影 `_project_token_clock()`（`providers/asr_soniox_realtime.py:371-391`）对 `start_ms` 与 `end_ms` 减的是**同一个** `correction_ms`，因此**不改变 token 自身时长**，只有 `max(0.0, …)` 的截断（会话开头、或 correction 大于原时间戳时）会把起点压到 0 从而缩短跨度；(2) `caption_chunker.py:39` 存在常量 `_TIMESTAMP_JITTER = 0.06`（用于判定时间回跳），与观测到的 0.060 秒数值相同，但本执行者**没有**证明两者相关。
 
 ---
 
@@ -272,13 +272,15 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 |---|---|---|
 | 抓取覆盖 | 78 秒 | 287 秒 |
 | 无译文（不显示）条数 | **7 / 25** | **1（会话 +90 秒时，attempts 24）** |
-| `chunkerPolicyDelay` P50 / P95 | 0.015 / **1.203** | 0 / **0.016** |
+| `chunkerPolicyDelay` P50 / P95（现场读数，未落盘） | 0.015 / **1.203** | 0 / **0.016** |
 | 以助词开头 | 8.0% | 19.5% |
 | ≤4 字符 | 8.0% | 18.3% |
 | 以 `。` 结尾 | 60.0% | 73.2% |
 | 含 `、。` | 0 | 1 |
 | 空档总计 | 0.0 秒 | 28.7 秒 |
-| `readyLag` P50 / P95（会话 ≈83–86 秒处） | 13.772 / 17.761 | 9.407 / 13.521 |
+| `readyLag` P50 / P95（现场读数，未落盘；会话 ≈83–86 秒处） | 13.772 / 17.761 | 9.407 / 13.521 |
+
+该表 R6 的两行延迟值取自终端现场读取，**没有落盘**；R7 那一列的两个值可在 `.scratch/lag-timeline.jsonl` 的首个样本（`uptimeSeconds = 86.4`：`readyLagP50/P95 = 9.407 / 13.521`）与 `.scratch/api-status.json`（`uptimeSeconds = 295.8`）中复算。表格其余各行都由落盘的 cue 抓取统计得出（见 §2 的抓取文件清单）。
 
 **回退前后的两次全量测试**：改动后 `PASS=55 | tests run=696`、`npm run ci` 退出 0；回退后同样全绿。
 
@@ -299,10 +301,11 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 
 以下为推断，**没有做过 A/B**，仅供下一位处理者判断是否需要先验证：
 
-1. "本执行者的 1.2 秒等待导致 R6 的 7 条无译文"：依据是算术（`age` 在入队那刻用 `pcm_offset` 取值，推迟发布即增大 `age`）+ 两次历史会话在会话头各丢 1 条、R6 丢 7 条；**未做"回退后同样 78 秒"的直接对照**。
+1. "本执行者的 1.2 秒等待导致 R6 的 7 条无译文"：依据是**代码算术**——`audio_end_wall` 在入队时按音频时间轴算死（`subtitle_pipeline.py:1355`），而 `age = wall_clock() − audio_end_wall` 是在**分配预算那一刻**取的（`translation_budget.py:66-73`），分配与入队同一时刻（`:1542`），因此发布推迟 δ 秒会让 `age` 大 δ 秒、可用窗口少 δ 秒（前提是 PCM 按 1:1 推进）；再加旁证"两次历史会话在会话头各丢 1 条、R6 丢 7 条"。**未做"回退后同样 78 秒"的直接对照**。
 2. R6 与 R7 的 `readyLag` 差异（13.772 vs 9.407）包含内容差异与会话起点的混淆，不能当作纯效应量。
 3. `asrAdapterDelay` 在会话开头偏大与"音频腿追赶式灌入"的关系：只测到两者同时出现，未做因果实验。
-4. `。` 出现在词组中间（`仕事。を`、`細野。さん`）由 ASR 侧产生：依据是"仓库无任何代码追加 `。`"与适配器原样透传；**未取得 ASR 原始 token 流**（`raw` 未落盘）来直接展示。
+4. `。` 出现在词组中间（`仕事。を`、`細野。さん`）由 ASR 侧产生：依据是"仓库无任何代码追加 `。`（全仓检索无匹配）"与适配器把 token 文本原样透传；**未取得 ASR 原始 token 流**（`raw` 未落盘）来直接展示。
+5. 本节第 1 条的算术（"晚发 δ 秒 ⇒ 少 δ 秒预算"）是**代码结构上的推论**，不是两次只有该变量不同的对照实验；`audio_end_wall` 本身是估算量（由 `pcm_offset` 与 `chunk.end_pcm` 推出），不是独立测得的声音发生时刻。
 
 ---
 
