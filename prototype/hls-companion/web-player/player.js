@@ -2019,7 +2019,7 @@
 
     const t = wallClock + subtitlePrefs.offset;
     const sortedCues = [...subtitleCues.values()]
-      .filter((cue) => cue && (cue.state === "done" && typeof cue.zh === "string" && cue.zh.trim()) && cue.tStart <= t)
+      .filter((cue) => subtitleLines(cue) && cue.tStart <= t)
       .sort((a, b) => a.tStart - b.tStart);
 
     const empty = container.querySelector(".timeline-empty-state");
@@ -2057,6 +2057,7 @@
       let row = existingRows.get(String(cue.id));
       const isActive = activeCue && activeCue.id === cue.id;
       const timing = timingFor(cue.tStart, subtitlePrefs.offset, fmtTime);
+      const lines = subtitleLines(cue);
       if (!row) {
         row = document.createElement("div");
         row.className = "timeline-row subtitle-timeline-row";
@@ -2064,8 +2065,8 @@
         row.innerHTML = `
           <div class="timeline-time"></div>
           <div class="timeline-body">
-            ${cue.zh ? `<div class="timeline-text-translated">${escapeHtml(cue.zh)}</div>` : ""}
-            ${cue.src ? `<div class="timeline-text-source">${escapeHtml(cue.src)}</div>` : ""}
+            <div class="timeline-text-translated"></div>
+            <div class="timeline-text-source"></div>
           </div>
         `;
         row.tabIndex = 0;
@@ -2074,6 +2075,19 @@
         row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); seekCue(); } });
         container.appendChild(row);
         hasNewAppended = true;
+      }
+      // The body is rewritten whenever the cue's revision changes, so a row created
+      // from source text is upgraded in place when its translation lands instead of
+      // keeping the source for the rest of the session.
+      const bodyRevision = `${cue.seq}\u001f${cue.revision}\u001f${lines.translated}\u001f${lines.source}`;
+      if (row.dataset.bodyRevision !== bodyRevision) {
+        const translatedLine = row.querySelector(".timeline-text-translated");
+        const sourceLine = row.querySelector(".timeline-text-source");
+        translatedLine.textContent = lines.translated;
+        sourceLine.textContent = lines.source;
+        translatedLine.hidden = !lines.translated;
+        sourceLine.hidden = !lines.source;
+        row.dataset.bodyRevision = bodyRevision;
       }
       const seekWallTime = String(timing.wallTime);
       if (row.dataset.seekWallTime !== seekWallTime) row.dataset.seekWallTime = seekWallTime;
@@ -2279,8 +2293,13 @@
         row.setAttribute("aria-label", cue.speaker ? `说话人 ${cue.speaker}` : "字幕");
         const zhLine = row.querySelector(".subtitle-zh");
         const srcLine = row.querySelector(".subtitle-src");
-        zhLine.textContent = cue.zh || "";
-        srcLine.textContent = cue.src || "";
+        const lines = subtitleLines(cue) || { translated: "", source: "" };
+        zhLine.textContent = lines.translated;
+        srcLine.textContent = lines.source;
+        // Translation-only mode hides the source line. A cue with no translation
+        // takes that line over through style.css rather than showing nothing.
+        if (lines.translated) delete row.dataset.sourceOnly;
+        else row.dataset.sourceOnly = "1";
         // Bidi: each line resolves its own direction (RTL translations never leak
         // into the LTR source line). dir=auto is primary; the catalog direction
         // is kept on data-direction as the fallback for old browsers.

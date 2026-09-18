@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { createSubtitleScheduler, mergeCueBySeq } = require(path.resolve(__dirname, "../web-player/subtitle-scheduler.js"));
+const { createSubtitleScheduler, mergeCueBySeq, subtitleLines } = require(path.resolve(__dirname, "../web-player/subtitle-scheduler.js"));
 
 function cue(id, tStart, tEnd, state = "done", hold = 2, zh = `译${id}`) {
   return { id, tStart, tEnd, hold, state, src: `原${id}`, zh };
@@ -45,25 +45,60 @@ test("higher-seq same-cue revision preserves text and schedule fields", () => {
   assert.equal(cues.get(7).tStart, original.tStart);
 });
 
-test("never displays pending, failed or empty translations", () => {
+test("settled source text is shown before its translation arrives", () => {
   const scheduler = createSubtitleScheduler();
-  assert.equal(scheduler.pick([cue(1, 8, 10, "src")], 9), null);
-  assert.equal(scheduler.pick([cue(1, 8, 10, "translating")], 9), null);
-  assert.equal(scheduler.pick([cue(1, 8, 10, "failed", 2, null)], 9), null);
-  assert.equal(scheduler.pick([cue(2, 8, 10, "done", 2, "   ")], 9), null);
+  assert.equal(scheduler.pick([cue(1, 8, 10, "src")], 9).id, 1);
+  assert.equal(scheduler.pick([cue(1, 8, 10, "translating")], 9).id, 1);
+  assert.equal(scheduler.pick([cue(1, 8, 10, "failed", 2, null)], 9).id, 1);
+  // A done cue with a blank translation still carries settled source text.
+  assert.equal(scheduler.pick([cue(2, 8, 10, "done", 2, "   ")], 9).id, 2);
+  // A cue with no text at all is the one thing that must never render.
+  assert.equal(scheduler.pick([{ id: 3, tStart: 8, tEnd: 10, hold: 2, state: "src", src: "   ", zh: null }], 9), null);
+});
+
+test("the shared text rule prefers the translation and never duplicates the source", () => {
+  assert.deepEqual(subtitleLines(cue(1, 0, 1, "done", 2, "译")), { translated: "译", source: "原1" });
+  assert.deepEqual(subtitleLines(cue(1, 0, 1, "failed", 2, null)), { translated: "", source: "原1" });
+  assert.deepEqual(subtitleLines(cue(1, 0, 1, "done", 2, "   ")), { translated: "", source: "原1" });
+  assert.equal(subtitleLines({ id: 2, state: "src", src: "  ", zh: null }), null);
+  assert.equal(subtitleLines(null), null);
+});
+
+test("a translation landing after the source keeps the same admission", () => {
+  const scheduler = createSubtitleScheduler();
+  const item = cue(1, 8, 10, "src", 2, null);
+  assert.equal(scheduler.pick([item], 9).id, 1, "shown as source at the sentence start");
+  assert.equal(scheduler.stats.sourceOnlyCues, 1);
+  item.state = "done";
+  item.zh = "译文";
+  assert.equal(scheduler.pick([item], 9).id, 1, "same cue, no new lifecycle");
+  assert.equal(scheduler.stats.sourceOnlyCues, 1, "counted once, when it first appeared");
+  assert.equal(scheduler.stats.lateCues, 0, "an upgrade is not a late admission");
+});
+
+test("a source-only cue past the late window stays dropped, translation or not", () => {
+  const scheduler = createSubtitleScheduler({ maxLateSeconds: 2 });
+  const item = cue(1, 9, 10, "src", 1, null);
+  assert.equal(scheduler.pick([item], 13.1), null);
+  assert.equal(scheduler.stats.droppedLateCues, 1);
+  item.state = "done";
+  item.zh = "译文";
+  assert.equal(scheduler.pick([item], 13.2), null, "the fallback must not revive it");
+  assert.equal(scheduler.stats.droppedLateCues, 1);
 });
 
 // The video overlay renders through active(), not pick(). media-clock.js used to
 // carry a second cue-visibility rule that accepted state "failed"; it was dead
 // code in the browser (workbench-controller.js is loaded later) but it disagreed
 // with this one, so pin the live rule on the path the overlay actually uses.
-test("the overlay path rejects the same states as the timeline path", () => {
+test("the overlay path admits the same cues as the timeline path", () => {
   const scheduler = createSubtitleScheduler();
-  assert.deepEqual(scheduler.active([cue(1, 8, 10, "src")], 9), []);
-  assert.deepEqual(scheduler.active([cue(1, 8, 10, "translating")], 9), []);
-  assert.deepEqual(scheduler.active([cue(1, 8, 10, "failed", 2, null)], 9), []);
-  assert.deepEqual(scheduler.active([cue(2, 8, 10, "done", 2, "   ")], 9), []);
+  assert.deepEqual(scheduler.active([cue(1, 8, 10, "src")], 9).map((c) => c.id), [1]);
+  assert.deepEqual(scheduler.active([cue(1, 8, 10, "translating")], 9).map((c) => c.id), [1]);
+  assert.deepEqual(scheduler.active([cue(1, 8, 10, "failed", 2, null)], 9).map((c) => c.id), [1]);
+  assert.deepEqual(scheduler.active([cue(2, 8, 10, "done", 2, "   ")], 9).map((c) => c.id), [2]);
   assert.deepEqual(scheduler.active([cue(3, 8, 10)], 9).map((c) => c.id), [3]);
+  assert.deepEqual(scheduler.active([{ id: 4, tStart: 8, tEnd: 10, hold: 2, state: "src", src: " " }], 9), []);
 });
 
 test("shows the whole sentence from tStart and holds it through tEnd", () => {

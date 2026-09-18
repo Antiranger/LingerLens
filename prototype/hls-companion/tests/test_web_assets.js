@@ -214,20 +214,23 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(html, /当前实测延迟/);
   assert.match(html, /不包含直播源本身的延迟/);
   assert.doesNotMatch(js, /textContent\s*=\s*["'`]翻译中/);
-  // Assert the live rule, not a comment. This previously matched
-  // `cue.state === "done" || cue.state === "failed"`, which appears ONLY in a
-  // comment at subtitle-scheduler.js:30 that says the opposite of the code at
-  // :57 -- so the check passed no matter what displayable() did.
+  // Assert the live rule, never a comment. The eligibility rule now lives in
+  // subtitleLines(): a translation counts only in state "done", and settled
+  // source text is the fallback, so a cue whose translation never arrives is
+  // read instead of leaving a gap. A comment that says the opposite of the code
+  // is exactly what made the previous version of this check pass regardless.
   const schedulerCode = scheduler.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-  assert.match(
-    schedulerCode,
-    /function displayable\(cue\)\s*\{[\s\S]*?cue\.state === "done"[\s\S]*?\}/
-  );
-  assert.doesNotMatch(
-    schedulerCode,
-    /cue\.state === "failed"/,
-    "a failed cue has no translation and must never be rendered"
-  );
+  assert.match(schedulerCode, /function subtitleLines\(cue\) \{[\s\S]*?cue\.state === "done"[\s\S]*?cue\.zh[\s\S]*?\}/);
+  assert.match(schedulerCode, /cue\.src/, "source text is the fallback the rule accepts");
+  assert.match(schedulerCode, /function displayable\(cue\) \{[\s\S]*?subtitleLines\(cue\)/);
+  // player.js must render through the same rule, or the overlay and the timeline
+  // would disagree about what a cue shows.
+  assert.match(js, /const lines = subtitleLines\(cue\) \|\| \{ translated: "", source: "" \}/);
+  assert.match(js, /\.filter\(\(cue\) => subtitleLines\(cue\) && cue\.tStart <= t\)/);
+  // "Translation only" hides the source line, so a cue with no translation has to
+  // take that line over instead of rendering nothing.
+  assert.match(css, /\[data-mode="zh"\] \.subtitle-cue-row\[data-source-only="1"\] \.subtitle-src \{[\s\S]*?display: block/);
+  assert.match(js, /row\.dataset\.sourceOnly = "1"/);
   // The display window is anchored at the sentence start, not its end.
   assert.match(scheduler, /Math\.max\(t, startOf\(cue\)\)/);
   assert.doesNotMatch(scheduler, /Math\.max\(t, cue\.tEnd\)/);

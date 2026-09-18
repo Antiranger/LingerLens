@@ -5,8 +5,12 @@
  * (tests/test_cue_scheduler.js) and driven by player.js's 100ms tick.
  *
  * Contract:
- *  - A cue is displayable ONLY in state "done" with non-empty translation. "src"/"translating"
- *    never reach the screen; there is no "translating…" placeholder.
+ *  - A cue is displayable as soon as it has settled text: the translation when one
+ *    exists, otherwise the ASR source text. Translation state decides which line has
+ *    content, not whether the cue may be shown; there is still no "translating…"
+ *    placeholder.
+ *  - A cue that is already past maxLateSeconds when it first becomes displayable is
+ *    still dropped, and a dropped cue is never revived by a later translation.
  *  - The display window is anchored at the sentence START: [tStart, tEnd + tail].
  *    The whole sentence appears when the speaker begins saying it and stays up
  *    for the entire utterance. `tail` only becomes visible during a genuine
@@ -27,7 +31,9 @@
   "use strict";
 
   var DROPPED = { dropped: true };
-  // Compatibility marker: cue.state === "done" || cue.state === "failed" is legacy input; failed cues remain hidden.
+  // Compatibility marker: cue.state === "done" || cue.state === "failed" is legacy
+  // input. Neither means "hidden": subtitleLines() decides what text a cue carries,
+  // so a failed translation shows the source text it already has.
 
   function mergeCueBySeq(cues, incoming) {
     var current = cues.get(incoming.id);
@@ -36,6 +42,19 @@
       return true;
     }
     return false;
+  }
+
+  // What a cue contributes to the screen. Only state "done" carries a translation;
+  // a pending or failed cue keeps the source text it already has, so a sentence the
+  // Provider never translated is read rather than left as a gap. `null` marks a cue
+  // with no text at all -- the one case that must never render a row. Module scope
+  // on purpose: the scheduler admits on this rule and player.js renders from it.
+  function subtitleLines(cue) {
+    if (!cue) return null;
+    var translated = cue.state === "done" && typeof cue.zh === "string" ? cue.zh.trim() : "";
+    var source = typeof cue.src === "string" ? cue.src.trim() : "";
+    if (!translated && !source) return null;
+    return { translated: translated, source: source };
   }
 
   function createSubtitleScheduler(options) {
@@ -54,7 +73,7 @@
     var shownSince = null;
 
     function displayable(cue) {
-      return Boolean(cue) && cue.state === "done" && typeof cue.zh === "string" && cue.zh.trim().length > 0;
+      return subtitleLines(cue) !== null;
     }
 
     function startOf(cue) {
@@ -225,7 +244,12 @@
 
   global.createSubtitleScheduler = createSubtitleScheduler;
   global.mergeSubtitleCueBySeq = mergeCueBySeq;
+  global.subtitleLines = subtitleLines;
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { createSubtitleScheduler: createSubtitleScheduler, mergeCueBySeq: mergeCueBySeq };
+    module.exports = {
+      createSubtitleScheduler: createSubtitleScheduler,
+      mergeCueBySeq: mergeCueBySeq,
+      subtitleLines: subtitleLines,
+    };
   }
 })(typeof window !== "undefined" ? window : globalThis);

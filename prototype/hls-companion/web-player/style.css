@@ -1038,6 +1038,15 @@ video::-webkit-media-controls-fullscreen-button { display: none; }
 .subtitle-layer[data-mode="zh"] .subtitle-src,
 .subtitle-layer[data-mode="src"] .subtitle-zh { display: none; }
 .subtitle-layer[data-mode="src"] .subtitle-src { font-size: 1.13em; color: var(--speaker-color); }
+/* "Translation only" hides the source line, which would leave a cue whose
+   translation never arrived completely invisible. Such a row promotes the
+   source text it does have into the primary slot. The attribute is set by
+   player.js from subtitleLines(), the same rule the scheduler admits on. */
+.subtitle-layer[data-mode="zh"] .subtitle-cue-row[data-source-only="1"] .subtitle-src {
+  display: block;
+  font-size: 1.13em;
+  color: var(--speaker-color);
+}
 
 /* 缓冲横幅（原型 657-677） */
 .stall-banner {
