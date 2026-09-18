@@ -373,32 +373,6 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertEqual([chunk.text for chunk in decision.chunks], ["終わりました。"])
         self.assertEqual([chunk.cut_reason for chunk in decision.chunks], ["terminal_punctuation"])
 
-    def test_a_provider_endpoint_does_not_publish_a_subsecond_piece(self) -> None:
-        # Live at 22:39 on 2026-09-18 (YouTube, ja, diarization on): Soniox places
-        # 。 mid-phrase and reported an endpoint right after でもDNA。 (0.96s), so
-        # that piece became its own caption and the 60ms stub では。 followed it.
-        # An endpoint means the speaker paused -- maxEndpointDelayMs is 700 -- not
-        # that the sentence ended, so the provider's word may publish early, but
-        # never a stub.
-        chunker = CaptionChunker(realtime=True)
-        chunker.observe(stable(token("でも", 0.0, 0.4, language="ja", speaker="1")), now=1.0)
-        chunker.observe(stable(token("DNA", 0.4, 0.9, language="ja", speaker="1")), now=1.1)
-        chunker.observe(stable(token("。", 0.9, 0.96, language="ja", speaker="1")), now=1.2)
-        held = chunker.observe(
-            CaptionObservation("endpoint", 1, "u1", begin_pcm=0.96, end_pcm=0.96), now=1.3)
-        self.assertEqual(held.chunks, ())
-
-        # The particle stub cannot become its own caption either: it belongs to
-        # the sentence the Provider split, not to a caption of its own.
-        stub = chunker.observe(stable(token("では", 0.96, 1.02, language="ja", speaker="1"), item_id="u2"), now=1.4)
-        self.assertEqual(stub.chunks, ())
-        terminated = chunker.observe(stable(token("。", 1.02, 1.08, language="ja", speaker="1"), item_id="u2"), now=1.5)
-        self.assertEqual(terminated.chunks, ())
-        # Nothing is lost. The held text comes out whole on the hard deadline.
-        released = chunker.expire(8.5).chunks
-        self.assertEqual([chunk.text for chunk in released], ["でもDNA。では。"])
-        self.assertEqual([chunk.cut_reason for chunk in released], ["hard_deadline"])
-
     def test_terminal_after_a_noun_waits_for_its_particle(self) -> None:
         # Observed live: the Provider placed 。 mid-phrase, the cue was cut between the
         # noun and its particle, and the screen showed "…焦点。" followed by "は今後…".

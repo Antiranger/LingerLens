@@ -537,12 +537,9 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_final_for_the_same_item_publishes_only_one_cue(self) -> None:
         pipeline = self.make_pipeline()
         self.prime_timeline(pipeline)
-        # Two seconds of speech, not one: a caption is only published for an
-        # utterance the provider's close may act on (ENDPOINT_PUBLISH_SPAN_SECONDS
-        # is 1.2s), and this test is about deduplication, not about the floor.
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=1.0, item_id="a"))
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=3.0, item_id="a"))
-        pipeline._last_sent_pcm_offset = 3.0
+        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=2.0, item_id="a"))
+        pipeline._last_sent_pcm_offset = 2.0
         first = await deliver_final(pipeline, "うん。", "a")
         self.assertEqual([cue.src for cue in first], ["うん。"])
 
@@ -552,7 +549,7 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         # because CaptionChunker closes the item on its `utterance_final`
         # observation and returns an empty decision for further evidence
         # (caption_chunker.py ``observe``, the `state.closed` guard).
-        pipeline._last_sent_pcm_offset = 3.5
+        pipeline._last_sent_pcm_offset = 2.5
         self.assertEqual(await deliver_final(pipeline, "うん。", "a"), [])
         self.assertEqual(len(pipeline.store), 1)
 
@@ -560,8 +557,8 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         # not suppressed: the dedup key is the item id, never "same text
         # recently", so a real second "うん。" still reaches the viewer.
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=20.0, item_id="b"))
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=22.0, item_id="b"))
-        pipeline._last_sent_pcm_offset = 22.0
+        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=21.0, item_id="b"))
+        pipeline._last_sent_pcm_offset = 21.0
         again = await deliver_final(pipeline, "うん。", "b")
         self.assertEqual([cue.src for cue in again], ["うん。"])
         self.assertEqual(len(pipeline.store), 2)
@@ -614,11 +611,9 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_final_waits_for_private_hls_epoch(self) -> None:
         pipeline = self.make_pipeline()
-        # Two seconds of speech so the hold under test is the missing epoch, not
-        # the provider-endpoint floor.
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=1.0, item_id="a"))
-        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=3.0, item_id="a"))
-        pipeline._last_sent_pcm_offset = 3.0
+        await pipeline._handle_asr_event(ASREvent("speech_stopped", end_pcm=2.0, item_id="a"))
+        pipeline._last_sent_pcm_offset = 2.0
         cues = await deliver_final(pipeline, "こんにちは", "a")
         self.assertEqual(cues, [])
         self.assertEqual(len(pipeline._pending_finals), 1)
@@ -627,7 +622,7 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         pipeline.media_epoch = 949.75
         flushed = pipeline._flush_pending_finals()
         self.assertEqual([cue.src for cue in flushed], ["こんにちは"])
-        self.assertAlmostEqual(flushed[0].t_end, 952.75)
+        self.assertAlmostEqual(flushed[0].t_end, 951.75)
         self.assertEqual(len(pipeline._pending_finals), 0)
 
     async def test_ingest_error_suppresses_final(self) -> None:
@@ -768,9 +763,8 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
         anchor = MediaAnchor(clock=lambda: now[0])
         pipeline = self.make_pipeline(anchor)
         # Anchor not ready: the final is held, not materialized on a
-        # meaningless timeline. Two seconds of speech so what is under test here
-        # is the anchor mapping, not the provider-endpoint floor.
-        cues = await self.emit_final(pipeline, begin=1.0, end=3.0)
+        # meaningless timeline.
+        cues = await self.emit_final(pipeline)
         self.assertEqual(cues, [])
         self.assertEqual(len(pipeline.store), 0)
         self.assertEqual(len(pipeline._pending_finals), 1)
@@ -780,7 +774,7 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(anchor.ready)
         flushed = pipeline._flush_pending_finals()
         self.assertEqual(len(flushed), 1)
-        self.assertAlmostEqual(flushed[0].t_end, 950.0 + 3.0 + 40.0)
+        self.assertAlmostEqual(flushed[0].t_end, 950.0 + 2.0 + 40.0)
         self.assertAlmostEqual(flushed[0].t_start, 950.0 + 1.0 + 40.0)
 
     async def test_video_skip_reanchors_subsequent_cues(self) -> None:
@@ -789,8 +783,8 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
         anchor = MediaAnchor(clock=lambda: now[0], window=20, reset_threshold=5.0, reset_samples=3)
         pipeline = self.make_pipeline(anchor)
         self.feed_steady(anchor, now, 5, video_base=140.0)  # C = 140
-        first = await self.emit_final(pipeline, begin=1.0, end=3.0)
-        self.assertAlmostEqual(first[0].t_end, 950.0 + 3.0 + 140.0)
+        first = await self.emit_final(pipeline)
+        self.assertAlmostEqual(first[0].t_end, 950.0 + 2.0 + 140.0)
         # Video leg stalls then skips 30s of content: V jumps, audio leg
         # continues at 1x. The jump sample is rate-rejected; the following
         # steady samples trigger the fast reset.
@@ -807,8 +801,8 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
             anchor.add_sample(video_now, audio_now)
         self.assertTrue(anchor.ready)
         self.assertAlmostEqual(anchor.offset or 0, 170.0, places=6)
-        second = await self.emit_final(pipeline, begin=10.0, end=12.0, text="つぎ", item_id="b")
-        self.assertAlmostEqual(second[0].t_end, 950.0 + 12.0 + 170.0)
+        second = await self.emit_final(pipeline, begin=10.0, end=11.0, text="つぎ", item_id="b")
+        self.assertAlmostEqual(second[0].t_end, 950.0 + 11.0 + 170.0)
 
     async def test_status_reports_audio_leg_source_and_anchor_telemetry(self) -> None:
         from companion.media_anchor import MediaAnchor
@@ -835,15 +829,15 @@ class AudioLegAnchorTests(unittest.IsolatedAsyncioTestCase):
         pipeline = self.make_pipeline(anchor)
         pipeline.media_epoch = None  # override prime: epoch not yet known
         self.feed_steady(anchor, now, 4, video_base=40.0)  # C=40, ready
-        cues = await self.emit_final(pipeline, begin=1.0, end=3.0)
+        cues = await self.emit_final(pipeline)
         self.assertEqual(cues, [])
         self.assertEqual(len(pipeline._pending_finals), 1)
         pipeline.set_media_epoch(950.0)
         self.assertEqual(len(pipeline._pending_finals), 0)
         self.assertEqual(len(pipeline.store), 1)
         # A subsequent final materializes immediately through the anchor.
-        second = await self.emit_final(pipeline, begin=3.0, end=5.0, text="つぎ", item_id="b")
-        self.assertAlmostEqual(second[0].t_end, 950.0 + 5.0 + 40.0)
+        second = await self.emit_final(pipeline, begin=3.0, end=4.0, text="つぎ", item_id="b")
+        self.assertAlmostEqual(second[0].t_end, 950.0 + 4.0 + 40.0)
 
     async def test_audio_leg_input_uses_explicit_format_without_hls_flags(self) -> None:
         captured: dict[str, Any] = {}
@@ -1608,18 +1602,13 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         stream = _SonioxStream(provider, SourceLanguagePolicy.specified("ja"), 16000, [])
         stream._audio_bytes_sent = 5 * 32000
         pipeline = self.make_pipeline()
-        # Each raw piece carries at least ENDPOINT_PUBLISH_SPAN_SECONDS (1.2s) of
-        # audio: what this test pins is that Soniox's own pieces reach the store
-        # with their exact asr timing, speaker and order, and a piece shorter
-        # than that is deliberately held rather than published (see
-        # test_caption_chunker's endpoint test for that half).
         frames = [
-            [("私", 0, 500, "1"), ("は", 500, 900, "1"), ("。", 900, 1300, "1")],
+            [("私", 0, 200, "1"), ("は", 200, 400, "1"), ("。", 400, 400, "1")],
             [("<end>", None, None, None)],
-            [("はい", 1500, 2100, "2"), ("。", 2100, 2700, "2")],
+            [("はい", 500, 800, "2"), ("。", 800, 800, "2")],
             [("<end>", None, None, None)],
-            [("1", 2900, 3100, "1"), ("2", 3100, 3300, "1"),
-             ("個", 3300, 3700, "1"), ("買いました", 3700, 4400, "1"), ("。", 4400, 4600, "1")],
+            [("1", 900, 1000, "1"), ("2", 1000, 1100, "1"),
+             ("個", 1100, 1300, "1"), ("買いました", 1300, 2000, "1"), ("。", 2000, 2000, "1")],
             [("<end>", None, None, None)],
         ]
         for frame in frames:
@@ -1630,7 +1619,7 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cues = pipeline.store.query(after_seq=0)
         self.assertEqual([c.src for c in cues], ["私は。", "はい。", "12個買いました。"])
         self.assertEqual([c.speaker for c in cues], ["1", "2", "1"])
-        self.assertEqual([(c.t_start, c.t_end) for c in cues], [(950.0, 951.3), (951.5, 952.7), (952.9, 954.6)])
+        self.assertEqual([(c.t_start, c.t_end) for c in cues], [(950.0, 950.4), (950.5, 950.8), (950.9, 952.0)])
         self.assertEqual([c.timing_source for c in cues], ["asr"] * len(cues))
         self.assertEqual(pipeline._flush_caption_session(), [])
 
@@ -1718,10 +1707,9 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         The floor is 3.0s of audio (punctuation_boundaries.MIN_PUBLISH_SPAN_SECONDS),
         so this complete 1.6s sentence no longer publishes on the interim that
-        carries it. It is not lost: the utterance close is acted on by
-        CaptionChunker's ENDPOINT_PUBLISH_SPAN_SECONDS gate (1.2s), and anything
-        shorter than that is emitted by expire()'s residual grace or hard deadline
-        instead.
+        carries it. It is not lost: expire() and flush_utterance() bypass the floor,
+        so the utterance close -- the next provider event -- publishes it, and the
+        hard deadline covers a provider that never closes the item.
         """
         pipeline = self.make_pipeline()
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="soniox"))
@@ -1751,10 +1739,7 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ))
         cues = pipeline.store.query(after_seq=0)
         self.assertEqual([cue.src for cue in cues], ["Chat, listen to me."])
-        # The close publishes it: 1.6s is past the 1.2s the provider's endpoint
-        # may act on, so the chunk carries that provenance rather than a
-        # punctuation cut this engine never made.
-        self.assertEqual(cues[0].cut_reason, "utterance_endpoint")
+        self.assertEqual(cues[0].cut_reason, "terminal_punctuation")
 
     async def test_pcm_sender_frontier_never_forces_a_caption_commit(self) -> None:
         pipeline = self.make_pipeline()

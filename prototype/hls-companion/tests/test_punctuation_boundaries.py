@@ -24,21 +24,18 @@ class PunctuationBoundaryTests(unittest.TestCase):
         for lang,text in [('en','The conference participants, finally ready,'),('es','Los participantes de la conferencia, preparados,'),('pt-BR','Os participantes da conferência, preparados,'),('zh-Hans','今天的事情先讲到这里，'),('ko','오늘 이야기는 여기까지,')]:
             with self.subTest(lang=lang):self.assertEqual(select([text],[5],lang),[(0,'clause_boundary')])
 
-    def test_a_short_piece_waits_even_when_the_provider_marks_an_endpoint(self):
-        # The floor is universal now, and that includes the Provider's own
-        # endpoint. It used to be an exception here, which made this engine cut
-        # at any edge the Provider had flagged; measured live on 2026-09-18 22:39
-        # an endpoint landed mid-sentence and published でもDNA。 (0.96s) plus the
-        # 60ms stub では。 An endpoint means the speaker paused, so the one place
-        # that acts on it is CaptionChunker's ENDPOINT_PUBLISH_SPAN_SECONDS gate,
-        # where it still publishes at once -- but not below 1.2s of audio.
+    def test_a_short_piece_waits_unless_the_provider_marks_an_endpoint(self):
+        # The floor is universal now. It used to guard only weak marks, so with
+        # Soniox endpoint tuning on, terminal punctuation was publishing captions
+        # of about one second (chunkSpanP50 1.08-1.38s measured 2026-09-18).
         self.assertEqual(select(['Done.'],[.3]),[])
         self.assertEqual(select(['終わりました。'],[.3],'ja'),[])
-        self.assertEqual(select(['Done.'],[.3],endpoints=(0,)),[])
-        self.assertEqual(select(['終わりました。'],[.3],'ja',endpoints=(0,)),[])
-        # Three seconds of audio publishes with or without an endpoint.
+        # An endpoint publishes at once: the provider is stating the utterance
+        # itself ended, not that a fragment was cut out of it.
+        self.assertEqual(select(['Done.'],[.3],endpoints=(0,)),[(0,'terminal_punctuation')])
+        self.assertEqual(select(['終わりました。'],[.3],'ja',endpoints=(0,)),[(0,'terminal_punctuation')])
+        # Three seconds of audio publishes without any endpoint.
         self.assertEqual(select(['We finished it.'],[3]),[(0,'terminal_punctuation')])
-        self.assertEqual(select(['We finished it.'],[3],endpoints=(0,)),[(0,'terminal_punctuation')])
 
     def test_numeric_sequence_with_space_is_protected(self):
         out=select(['You send 3,',' 4 guys in middle,'],[5,7])
@@ -84,18 +81,15 @@ class PunctuationBoundaryTests(unittest.TestCase):
 
     def test_visible_tiny_tail_merges_but_future_tail_is_not_awaited(self):
         self.assertEqual(select(['We have finished this part,'],[5]),[(0,'clause_boundary')])
-        # The half-second tail stays below the floor, with or without an endpoint
-        # on it, so it merges into the next cut instead of becoming a caption of
-        # its own -- the Provider's endpoint is honoured by the chunker at 1.2s,
-        # not by this engine at any length.
+        # With the endpoint marked, the tiny visible tail still merges into the
+        # sentence it belongs to instead of being awaited as its own caption.
+        self.assertEqual(select(['We have finished this part,',' right?'],[5,5.5],endpoints=(1,)),[(1,'terminal_punctuation')])
+        # Without one, the half-second remainder is below the floor and waits to
+        # merge into the next cut; only the clause that had three seconds of
+        # audio publishes.
         self.assertEqual(select(['We have finished this part,',' right?'],[5,5.5]),[(0,'clause_boundary')])
-        self.assertEqual(select(['We have finished this part,',' right?'],[5,5.5],endpoints=(1,)),[(0,'clause_boundary')])
-        # A tail that is itself past the floor publishes as its own caption, so
-        # the endpoint makes no difference to what this engine selects.
-        self.assertEqual(select(['Done.',' Yes.'],[4,5]),[(0,'terminal_punctuation')])
-        self.assertEqual(select(['Done.',' Yes.'],[4,5],endpoints=(1,)),[(0,'terminal_punctuation')])
-        self.assertEqual(select(['Done.',' Yes.'],[4,7]),[(0,'terminal_punctuation'),(1,'terminal_punctuation')])
-        self.assertEqual(select(['Done.',' Yes.'],[4,7],endpoints=(1,)),[(0,'terminal_punctuation'),(1,'terminal_punctuation')])
+        # A tiny tail still publishes when the provider marks the endpoint.
+        self.assertEqual(select(['Done.',' Yes.'],[4,5],endpoints=(1,)),[(0,'terminal_punctuation'),(1,'terminal_punctuation')])
         self.assertEqual(select(['Done.',' Yes.'],[1,1.5]),[])
 
     def test_separately_arrived_closer_attaches(self):
