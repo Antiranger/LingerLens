@@ -27,8 +27,6 @@ from companion.providers.base import (
 import companion.subtitle_pipeline as pipeline_module
 from companion.media_anchor import MediaAnchor
 from companion.subtitle_pipeline import (
-    ASR_QUEUE_POLL_SECONDS,
-    ASR_QUEUE_WAIT_SECONDS,
     VIEWER_POSITION_TTL_SECONDS,
     SubtitlePipeline,
 )
@@ -38,9 +36,11 @@ from companion.subtitle_store import Cue, CueStore
 class FakeStream(ASRStream):
     def __init__(self) -> None:
         self.commits = 0
+        self.pcm: list[float] = []
 
     async def push_pcm(self, chunk: bytes, pcm_offset: float) -> None:
-        del chunk, pcm_offset
+        del chunk
+        self.pcm.append(pcm_offset)
 
     async def flush(self) -> None:
         return None
@@ -1194,78 +1194,55 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
-    async def test_the_audio_feed_stops_while_the_asr_is_behind(self) -> None:
-        """A realtime ASR queues what it is handed early; bound its queue, not the lead.
+    async def test_a_silent_provider_never_stalls_the_audio_feed(self) -> None:
+        """Evidence is speech-gated, so it cannot be a flow-control signal.
 
-        Measured 2026-09-18: the ASR's evidence lag behind the audio it had been
-        handed was P50 2.4-5.8s and P95 6.8-8.7s while the audio leg ran only
-        1-5s ahead of real time, so the tail is the ingest handing over a whole
-        segment at once. Pacing the feed to the playhead instead was measured and
-        rejected: it drained the queue but ate the caption's own margin, and
-        captions then arrived late (median 0.66s after their window start against
-        0.23s before, P90 3.37s against 0.74s).
+        Both flow-control attempts on 2026-09-18 were measured wrong. Pacing to the
+        renderer's playhead drained the ASR queue but ate the caption's own margin
+        (median 0.66s late against 0.23s). Bounding the queue by the provider's
+        confirmation was worse: during music or game audio nothing is confirmed,
+        the feed was held back, and the next sentence reached a starved provider.
+        Same Bilibili room, same 125s: 34 captions with the bound off against 3
+        with it on, asrAdapterDelay P50 1.3s against 6.4s.
+
+        So the sender hands over everything the queue gives it, and reports the
+        queue instead of acting on it.
         """
-        clock = [100.0]
         pipeline = SubtitlePipeline(
             asr_provider=FakeASR(),
             translation_provider=self.ControlledTranslation(),
             cue_store=CueStore(),
             meta=StreamMeta("title", "channel", "gaming", "en", "es"),
             translation_workers=1,
-            wall_clock=lambda: 1_000.0 + (clock[0] - 100.0),
-            monotonic=lambda: clock[0],
         )
+        stream = FakeStream()
+        pipeline._stream = stream
+        pipeline._pcm_queue = asyncio.Queue()
         pipeline._running = True
+        # The provider confirmed a position long ago and has said nothing since --
+        # the case that used to hold the feed back.
+        pipeline._asr_evidence_pcm = -30.0
+        data = b"\x00\x01" * (pipeline_module.PCM_CHUNK_BYTES // 2)
+        for index in range(6):
+            pipeline._pcm_queue.put_nowait((data, index * pipeline_module.PCM_CHUNK_SECONDS))
 
-        async def holds(pending_end_pcm: float, confirm_at: float | None = None) -> bool:
-            """True when the sender would keep the chunk back."""
-            holder = asyncio.ensure_future(pipeline._pace_for_asr(pending_end_pcm))
-            if confirm_at is not None:
-                async def confirm() -> None:
-                    await asyncio.sleep(ASR_QUEUE_POLL_SECONDS)
-                    pipeline._asr_evidence_pcm = confirm_at
-                asyncio.ensure_future(confirm())
-            try:
-                await asyncio.wait_for(asyncio.shield(holder), timeout=ASR_QUEUE_POLL_SECONDS * 8)
-                return False
-            except asyncio.TimeoutError:
-                holder.cancel()
-                return True
-
-        # Nothing confirmed yet: the queue is unknown, so nothing is held back.
-        self.assertFalse(await holds(300.0))
-
-        pipeline._asr_evidence_pcm = 290.0
-        # Ten seconds of audio in front of the provider: hold the chunk back.
-        self.assertTrue(await holds(300.0))
-        # Exactly at the limit: hand it over.
-        self.assertFalse(await holds(292.0))
-        # The provider confirms more while we wait, so the chunk goes out at once.
-        self.assertFalse(await holds(300.0, confirm_at=299.0))
-
-        # A provider that stops confirming must not freeze the feed forever: the
-        # wait is capped, and the sender then hands the chunk over and re-asserts
-        # the bound on the next one.
-        pipeline._asr_evidence_pcm = 250.0
-        started = clock[0]
-
-        async def run_clock() -> None:
-            while True:
-                await asyncio.sleep(0.01)
-                # Faster than real time on purpose: the loop's own timer
-                # granularity would otherwise make the cap take longer to reach
-                # than the assertion below allows for.
-                clock[0] += 0.05
-
-        ticker = asyncio.ensure_future(run_clock())
+        sender = asyncio.ensure_future(pipeline._pcm_sender())
         try:
-            released = not await asyncio.wait_for(pipeline._pace_for_asr(300.0),
-                                                  timeout=ASR_QUEUE_WAIT_SECONDS + 1.0)
+            for _ in range(200):
+                if len(stream.pcm) == 6:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(len(stream.pcm), 6, "a silent provider must not stall the feed")
+            self.assertAlmostEqual(pipeline._last_sent_pcm_offset, 6 * pipeline_module.PCM_CHUNK_SECONDS, places=6)
+            # The queue is still reported, so the measurement survives the removal.
+            self.assertEqual(
+                round(pipeline._last_sent_pcm_offset - pipeline._asr_evidence_pcm, 3),
+                round(6 * pipeline_module.PCM_CHUNK_SECONDS + 30.0, 3),
+            )
         finally:
-            ticker.cancel()
-        self.assertTrue(released, "the wait must end even if the provider never confirms")
-        self.assertGreaterEqual(clock[0] - started, ASR_QUEUE_WAIT_SECONDS)
-        pipeline._running = False
+            pipeline._running = False
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
 
     async def test_the_playhead_report_is_measurement_only(self) -> None:
         """The stated playhead is what the caption's margin can be read from.

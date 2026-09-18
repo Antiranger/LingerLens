@@ -48,37 +48,26 @@ PCM_BYTES_PER_SECOND = 16_000 * 2
 PCM_CHUNK_BYTES = 3_200
 PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
 
-# How much audio may be in front of the ASR's own confirmation.
+# Flow control on the audio handed to the ASR was attempted twice and both
+# signals were measured wrong on 2026-09-18, so the feed is deliberately not
+# throttled. What that cost, and why, is recorded here because the same two ideas
+# will look attractive again:
 #
-# A realtime provider consumes about 1x. Handing it a second of audio early does
-# not produce text a second earlier: it moves that second into the provider's
-# queue, and the caption is finalized later than the audio was handed over.
-# Measured on a 2.5h live session (1922 captions, 2026-09-18): the ASR's evidence
-# lag behind the audio it had already been handed was P50 2.4-5.8s, P95 6.8-8.7s,
-# while the audio leg itself ran only 1-5s ahead of real time and `pcm - uptime`
-# showed a sawtooth. The tail is the ingest handing over a whole segment at once
-# (71% of segments are 1s, 26% are 5s), so the fix is to stop feeding while the
-# provider is behind rather than to slow the feed down in general.
+#   * Pacing to the renderer's playhead (commit 49e8f8c) drained the ASR queue
+#     (asrAdapterDelay P50 2.4-5.8s -> 1.5s) but captions then arrived late, since
+#     the lead it removed IS the caption's margin: median 0.66s after the window
+#     start against 0.23s, P90 3.37s against 0.74s, 24 of 39 captions late
+#     against 4 of 16 and 10 of 34 before.
+#   * Bounding the queue by the provider's own confirmation (commit a27d08d) was
+#     worse, because evidence only advances while somebody is SPEAKING. During
+#     music or game audio the confirmation stops, the feed was held back, and the
+#     next sentence arrived at a starved provider. Same stream, same room, 125s:
+#     34 captions with the bound off against 3 with it on, and asrAdapterDelay P50
+#     1.3s against 6.4s. A silent provider is not a busy one.
 #
-# The bound is on the provider's own queue and NOT on the distance to the
-# viewer's playhead. Pacing to the playhead was measured on 2026-09-18 on a news
-# stream and rejected: it did drain the queue (P50 2.4-5.8s -> 1.5s) but the lead
-# it removed is the caption's own margin, and captions then arrived late (median
-# 0.66s after their window start instead of 0.23s, P90 3.37s instead of 0.74s,
-# 24 of 39 captions late against 4 of 16 and 10 of 34 before, and the share of
-# ticks showing source text only doubled in the compressed band).
-ASR_QUEUE_LIMIT_SECONDS = 2.0
-# The sender polls for the provider's confirmation instead of being woken by it:
-# one short sleep per chunk keeps the wait free of locks and events.
-ASR_QUEUE_POLL_SECONDS = 0.05
-# A provider that stops confirming must not freeze the feed outright -- the
-# pipeline's own queue, and the download behind it, would then stop draining too.
-ASR_QUEUE_WAIT_SECONDS = 2.0
-
-# The renderer states its playhead with the status poll it already sends once a
-# second (5s while its tab is hidden). That report is measurement only -- it feeds
-# `viewerLeadSeconds` in status -- and the bounds below decide when it is stale or
-# implausible enough to ignore.
+# The measurements that showed this are still reported: `viewerLeadSeconds` (how
+# far the audio runs ahead of the viewer) and `asrQueueSeconds` (how much has been
+# handed over that the provider has not confirmed).
 VIEWER_POSITION_TTL_SECONDS = 8.0
 # A stated playhead this far from our own clock is not a playhead (a reloaded
 # page, a stale tab, a wrong system clock). Reject it rather than report it.
@@ -1132,29 +1121,11 @@ class SubtitlePipeline:
             return None
         return self._last_sent_pcm_offset - position
 
-    async def _pace_for_asr(self, pending_end_pcm: float) -> None:
-        """Wait while the provider is already behind by more than the limit.
-
-        Nothing is handed over that the provider has not caught up with: a burst
-        from the ingest (a whole 5s segment arriving at once) then queues in front
-        of the *download*, which backpressures, instead of in front of the
-        sentence being transcribed.
-        """
-        confirmed = self._asr_evidence_pcm
-        if confirmed is None or pending_end_pcm - confirmed <= ASR_QUEUE_LIMIT_SECONDS:
-            return
-        deadline = self.monotonic() + ASR_QUEUE_WAIT_SECONDS
-        while self._running and self.monotonic() < deadline:
-            await asyncio.sleep(ASR_QUEUE_POLL_SECONDS)
-            if self._asr_evidence_pcm > confirmed:
-                return
-
     async def _pcm_sender(self) -> None:
         assert self._pcm_queue is not None
         while self._running:
             chunk, offset = await self._pcm_queue.get()
             chunk_seconds = len(chunk) / self.pcm_bytes_per_second
-            await self._pace_for_asr(offset + chunk_seconds)
             self._last_sent_pcm_offset = offset + chunk_seconds
             stream = self._stream
             if stream is None:
