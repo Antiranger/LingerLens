@@ -315,23 +315,53 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 | `bc91c8b` | 本文件 | 更正三处证据不实的说法（stage lag 的采样人群、item 与 lane 的区别、P95 例子的索引与那组未落盘的数字、0.060 秒的来源） |
 | `7966c12` | `web-player/subtitle-scheduler.js`、`player.js`、`style.css`、`tests/test_cue_scheduler.js`、`tests/test_web_assets.js` | 原文兜底：把"这条字幕能不能显示"的规则收进一个函数 `subtitleLines(cue)`（只有 `done` 才算译文，其余状态保留原文；两者都没有 ⇒ 不显示），调度器的准入、浮层渲染、历史面板过滤都改用同一规则；浮层的译文行/原文行身份不变，没有译文的行打上 `data-source-only`，由 CSS 让原文行在"仅译文"模式下顶到主行；历史面板按 `seq/revision` 就地重写行正文，译文到达时同一条 DOM 行从原文升级为译文 |
 | `49e8f8c` | `companion/subtitle_pipeline.py`、`companion/server.py`、`web-player/player.js`、3 个测试文件 | 第一次流控：渲染端把 `mediaClock.playingWallTime()` 作为 `?playhead=` 挂在它本来就每秒发一次的 `/api/status` 上，后台换算成音频腿 PCM 位置并**把领先观众的秒数压在 8 秒**。**这次控制量选错了，见下节对照数据**；播放头上报本身保留下来做测量 |
-| `a27d08d` | `companion/subtitle_pipeline.py`、`tests/test_subtitle_pipeline.py` | 第二次流控（当前生效）：控制量改为**provider 自己的确认位置**。`_asr_evidence_pcm` 记录 `_evidence_times` 里最远的已确认位置（该队列本来就在记，元素已由 `_server_to_pipeline` 映射进音频腿 PCM），发送端在"即将交出的位置 − 已确认位置 > `ASR_QUEUE_LIMIT_SECONDS`（2.0 秒）"时**按住这个 chunk**，每 `ASR_QUEUE_POLL_SECONDS`（0.05 秒）查一次确认是否前进，总等待上限 `ASR_QUEUE_WAIT_SECONDS`（2.0 秒，防止 provider 不响应时把整条馈送冻住）。状态新增 `asrQueueSeconds`（实时队列深度）与 `viewerLeadSeconds`（实时领先观众秒数） |
+| `a27d08d` | `companion/subtitle_pipeline.py`、`tests/test_subtitle_pipeline.py` | 第二次流控：控制量改为 **provider 自己的确认位置**（`_asr_evidence_pcm`，取 `_evidence_times` 里最远的已确认位置），发送端在"即将交出的位置 − 已确认位置 > 2 秒"时按住这个 chunk。**这次也被实测否掉了，见下节数据** |
+| `fae9256` | `companion/subtitle_pipeline.py`、`tests/test_subtitle_pipeline.py` | **当前生效**：拆掉上面那条规则（发送端不再等待），保留两个测量字段 `asrQueueSeconds` / `viewerLeadSeconds`；新增回归测试"provider 长期不确认时，送端仍把队列里的音频全部送出" |
 
-#### 两次流控的对照数据（同一台机器、同一套仪器）
+#### 两次流控都被实测否掉：数据与机理
 
-第一次（按领先观众量压）在 TBS NEWS DIG 新闻直播上实测 200 秒、39 条字幕；对照组是同一天改动前的两次录像（ANN）：
+第一次（按领先观众量压，`49e8f8c`）在 TBS NEWS DIG 新闻直播上实测 200 秒、39 条字幕；对照组是同一天改动前的两次 ANN 录像：
 
 | 指标 | 改动前 R-a（16 条） | 改动前 R-b（34 条） | 压领先量（39 条） |
 |---|---|---|---|
 | 字幕首次出现比窗口起点晚：P50 / P90 / 最大 | 0.23 / 0.81 / 0.91 秒 | 0.26 / 0.74 / 1.39 秒 | **0.66 / 3.37 / 5.45 秒** |
 | 晚于窗口起点 0.5 秒以上的条数 | 4/16 | 10/34 | **24/39** |
 | 首次出现时只有原文的条数 | 2/16 | 2/34 | **9/39** |
-| 晚于本句结束的条数 | 0 | 0 | 0 |
 | `asrAdapterDelay` P50（队列） | 2.4–5.8 秒 | 2.4–5.8 秒 | **1.5 秒** |
 
-- 结论：**队列确实被压下去了（2.4–5.8 → 1.5 秒），但字幕整体变晚**——因为"领先观众量"本身就是这条字幕的安全余量（要先喂进 ASR、再翻完，观众才走到那句话）。
-- 同一场录像内部也印证因果：领先量已被压到 10–14 秒的那 19 个采样里，"只有原文"的可见 tick 占 **17.6%**；领先量 >14 秒的 180 个采样里只占 **6.9%**。`viewerLeadSeconds` 从 21.124 单调衰减到 8.19（约 0.18 秒/秒，因为发送端被压到 ≈1× 而播放头在 1.09×）。
-- 第二次（按 provider 队列压）的**实测尚未完成**：Youtube 在 19:5x 开始对本机 yt-dlp 返回 `Sign in to confirm you're not a bot`（换 FNN 直播同样失败 ⇒ IP 级），而桌面端 `desktop/companion_entry.py:47` 写死 `cookies_from_browser=None`，只有浏览器扩展能喂 Cookie。**在有人声直播上的实测数据待补。**
+- 第一次的结论：**队列确实被压下去了，但字幕整体变晚**——"领先观众量"本身就是这条字幕的安全余量（要先喂进 ASR、再翻完，观众才走到那句话）。同一场录像内部也印证：领先量被压到 10–14 秒的那 19 个采样里"只有原文"占 17.6%，>14 秒的 180 个采样里只占 6.9%；`viewerLeadSeconds` 从 21.124 单调衰减到 8.19。
+
+第二次（按 provider 确认位置压，`a27d08d`）在 B 站 `live.bilibili.com/7734200` 上同流对照（同一房间、同一时间窗、都是会话头 125 秒左右）：
+
+| 指标 | 上界＝2 秒 | 上界＝关闭（`fae9256`） |
+|---|---|---|
+| 字幕条数 | **3** | **34 → 27**（第二次复测 100 秒 27 条） |
+| `asrSeconds` / uptime（音频消费速率） | **0.16×** | **0.97×** |
+| `asrAdapterDelay` P50 / P95 | 6.4 / 10.4（更早一次 31.3 / 72.5） | **2.4 / 8.4** |
+| `readyLag` P50 | 7.6 | 4.9 |
+| `chunkSpan` P50 / P95 | **0.24 / 1.92 秒**（碎片） | **2.76 / 4.92 秒** |
+| 字幕正文 | "但这"、"容。" | "看到机不可失,终于有机会杀一个人…" |
+
+- **机理（这是根子上的错误）**：`evidence` 是**只在有人说话时才前进**的信号。解说一停（音乐/团战音效），provider 什么都不确认 ⇒ 发送端按住馈送 ⇒ 解说再开口时 provider 已被饿住 ⇒ **字幕更少、延迟更高**，与意图完全相反。也就是说 **provider 的"确认"不能当作"消费量"来测量**；用静音门控的信号做流控是自锁。
+- 因此当前生效的行为是：**不做任何馈送限流**，只保留 `viewerLeadSeconds` / `asrQueueSeconds` 两个测量字段（这次实验正是靠它们判定的）。为什么两次都错，已写进 `subtitle_pipeline.py` 里 `VIEWER_POSITION_TTL_SECONDS` 上方的注释。
+- 附带发现（同一轮 B 站排查）：桌面端 `desktop/companion_entry.py` 的参数缺 `host`/`port`，导致**任何需要重新打包的直播（B 站即其一）字幕流水线根本不启动**（`startError: AttributeError: 'Namespace' object has no attribute 'host'`），已修（`a3d5eb2`）；B 站这条私有 HLS 没有 PDT，所以客户端报不出播放头（`viewerLeadSeconds: null`，测量字段在该平台不可用，但不影响字幕）；`_apply_request_proxy` 只写环境变量、永不清除（一次设过代理后，后端进程内所有 yt-dlp 都带 `--proxy`，直到重启）；以及用户 Windows 环境里本身有 `ALL_PROXY=127.0.0.1:7890`，所有 yt-dlp 都会走 Clash（±代理 A/B 因 yt-dlp 拒收 fmp4 格式而未能测出下载速率差异，此项**未定论**）。
+
+#### 修掉上面两个 bug 之后，B 站的真实状态（2026-09-18 20:2x，`live.bilibili.com/7734200`，中文→英文）
+
+| 现场读数 | 值 | 判读 |
+|---|---|---|
+| `state` / `lastError` | `running` / null | 没有崩溃 |
+| `captionChunks` / `translationAttempts` / `failures` / `expired` | 94 / 94 / 0 / 0 | 字幕在正常产出与翻译 |
+| `asrSeconds` / uptime | 276.9 / 279.3 | 音频消费 **0.99×**（上界拆除后不再饿死） |
+| 页面 `#subtitleLayer` | `display: grid`、`visibility: visible`、1522×261、`.subtitle-content` 有文字 | **屏幕上确实在显示** |
+| 屏幕上当时的内容 | `and also, JunJia, as you just mentioned earlier, maybe your overall form through` | 译文行 |
+| `asrAdapterDelayP50 / P95` | 3.391 / **16.016** | 中位数正常，**长尾 16 秒** |
+| `sourceReadyLagP95` / `totalReadyDelayP50 / P95` | 17.941 / 5.172 / **20.032** | 因此会有十几秒的"空窗" |
+| `mediaAnchor` 及全部 anchor 字段 | **null** | 该平台用 `timelineSource: "private-hls"` + `timelineEpoch`（= `pdtEpoch`）直接给 cue 打时间戳，**不建音频→视频锚点** ⇒ `viewerLeadSeconds` 在该平台结构上不可用（不是上报丢了） |
+| `timingSourceCounts` | `{asr: 94}` | 时间戳全部来自 ASR 自身 |
+
+- 因此"好多字幕 ASR 根本没输出"的实测解释是：**中位数 3.4 秒没问题，P95 16–20 秒的空窗才是看到的"没输出"**——即最初那条"队列长尾"问题，两次流控都没能解决（都已拆除）。
+- 复现：`py -3.10 .scratch\l2-session-api.py start https://live.bilibili.com/7734200 15 source=zh-Hans target=en`（走接口驱动，绕开 P11 的页面卡死），再用 `__lingerlensSoakProbe()`（`player.js:2659`）读屏幕真实内容——注意浮层元素是 `#subtitleLayer`（**不是** `subtitleOverlay`；写错 id 会得到 `null` 并误判成"屏幕空白"，本执行者踩过这个坑）。
 - 已完成的验证：`py -3.10 scripts/run-hls-tests.py` → `PASS=55 | tests run=695`；`node scripts/run-hls-js-tests.js` → 176 项全绿（含新增"状态轮询是否带上播放头"一项）；`npm run check:js` 通过。
 - 复现仪器（均在 `.scratch/`，未入库）：`l2-probe-streams.py`（先确认直播有人声）、`l2-session-api.py start|stop|state`（走 `/api/probe` + `/api/start` 驱动会话，绕开 P11 的页面卡死）、`l2-watch-live.py`（只读采样，记录 cue 窗口与 `shown`）、`l2-phase-analysis.py`（按 `viewerLeadSeconds` 分段统计字幕准点率）、`l2-start-session.py`（走 UI 的旧路径，遇到 P11 会静默失败）。
 
