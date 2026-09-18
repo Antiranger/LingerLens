@@ -62,7 +62,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual([x.text for x in result],['Correct sentence.'])
     def test_final_word_snapshot_deduplicates(self):
         c=CaptionChunker(realtime=True)
-        tokens=(RecognitionToken('Hello.',0,1,True,language='en'),RecognitionToken('draft',1,2,False,language='en'))
+        # Timings past the 3.0s cut floor (punctuation_boundaries), so this stays a
+        # test about deduplication rather than about the floor.
+        tokens=(RecognitionToken('Hello.',0,3.2,True,language='en'),RecognitionToken('draft',3.2,4.0,False,language='en'))
         first=c.observe(CaptionObservation('token_snapshot',1,'a',tokens=tokens)).chunks
         second=c.observe(CaptionObservation('token_snapshot',1,'a',tokens=tokens)).chunks
         self.assertEqual([x.text for x in first],['Hello.']);self.assertFalse(second)

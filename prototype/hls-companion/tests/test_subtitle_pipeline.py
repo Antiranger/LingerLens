@@ -1702,7 +1702,15 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([cue.chunk_order for cue in cues], list(range(1, len(cues) + 1)))
         self.assertEqual(pipeline.status()["captionChunks"], len(cues))
 
-    async def test_complete_stable_sentence_does_not_wait_for_utterance_final(self) -> None:
+    async def test_a_short_stable_sentence_waits_for_the_utterance_close(self) -> None:
+        """Below the cut floor a sentence is held, then published when the item closes.
+
+        The floor is 3.0s of audio (punctuation_boundaries.MIN_PUBLISH_SPAN_SECONDS),
+        so this complete 1.6s sentence no longer publishes on the interim that
+        carries it. It is not lost: expire() and flush_utterance() bypass the floor,
+        so the utterance close -- the next provider event -- publishes it, and the
+        hard deadline covers a provider that never closes the item.
+        """
         pipeline = self.make_pipeline()
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="soniox"))
         await pipeline._handle_asr_event(ASREvent(
@@ -1721,7 +1729,7 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await pipeline._handle_asr_event(ASREvent(
             "speech_stopped", end_pcm=1.6, item_id="soniox",
         ))
-        self.assertEqual([c.src for c in pipeline.store.query(after_seq=0)], ["Chat, listen to me."])
+        self.assertEqual([c.src for c in pipeline.store.query(after_seq=0)], [])
         await pipeline._handle_asr_event(ASREvent(
             "final", text="Chat, listen to me.", item_id="soniox", language="en",
             caption_observation=CaptionObservation(

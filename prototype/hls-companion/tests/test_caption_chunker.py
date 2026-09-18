@@ -365,10 +365,11 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertEqual(held.observe(stable(token("防災。", 0.0, 1.0, language="ja"))).chunks, ())
 
         # A genuine sentence end is unaffected: Japanese sentences end in an auxiliary,
-        # a verb or an adjective, not a noun, so it still cuts immediately.
+        # a verb or an adjective, not a noun, so it still cuts -- once the piece has
+        # the three seconds of audio the span floor asks for.
         verb_end = CaptionChunker(realtime=True)
         verb_end.open_item("u1", 0.0)
-        decision = verb_end.observe(stable(token("終わりました。", 0.0, 1.0, language="ja")))
+        decision = verb_end.observe(stable(token("終わりました。", 0.0, 3.0, language="ja")))
         self.assertEqual([chunk.text for chunk in decision.chunks], ["終わりました。"])
         self.assertEqual([chunk.cut_reason for chunk in decision.chunks], ["terminal_punctuation"])
 
