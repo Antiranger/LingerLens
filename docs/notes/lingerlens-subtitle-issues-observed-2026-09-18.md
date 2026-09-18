@@ -171,6 +171,8 @@ R7 的时长直方图（`tEnd − tStart`）：`<1s` 21、`1-2s` 17、`2-3s` 12�
 - R5 那一条的具体记录：`src = "消防によりますと、午後2時過ぎ。"`，`state = "failed"`，`zh = None`；计数显示它发生在会话头 ~90 秒内。
 - R6 的 7 条：已逐条确认的 6 条位于 `＋1.86s` `＋8.46s` `＋16.38s` `＋22.32s` `＋53.46s` `＋53.82s`，全部 `state=failed`、`zh=None`；该次抓取覆盖到 `＋78s`，`＋62s` 之后抓到的都正常。R6 的 `translationAttempts = 18`，`25 − 18 = 7` ⇒ 这 7 条从未进入 provider。
 
+**状态更新（2026-09-18 晚，`7966c12` 之后）**：本页描述的"没有译文 ⇒ 该字幕完全不显示"**已在工作树中修复**（改法与实测见 §4 的"已落地的改动"）。上面这些历史计数仍然有效——它们记录的是修复前每次运行丢了多少条可读原文。
+
 **复现**：`node .scratch/cdp-api-dump.js` 取 `/api/subtitles?afterSeq=0`，筛 `state != "done" or not zh`。
 
 ---
@@ -285,6 +287,22 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 **回退前后的两次全量测试**：改动后 `PASS=55 | tests run=696`、`npm run ci` 退出 0；回退后同样全绿。
 
 **未改动的部分**：`a577b6c`（名词+助词否决）与 `acb35bb`（名词后句号先按住）在回退后仍留在分支上，即当前工作树包含这两条规则。
+
+### 已落地的改动（在树内，未回退）
+
+| 提交 | 文件 | 行为 |
+|---|---|---|
+| `bc91c8b` | 本文件 | 更正三处证据不实的说法（stage lag 的采样人群、item 与 lane 的区别、P95 例子的索引与那组未落盘的数字、0.060 秒的来源） |
+| `7966c12` | `web-player/subtitle-scheduler.js`、`player.js`、`style.css`、`tests/test_cue_scheduler.js`、`tests/test_web_assets.js` | 原文兜底：把"这条字幕能不能显示"的规则收进一个函数 `subtitleLines(cue)`（只有 `done` 才算译文，其余状态保留原文；两者都没有 ⇒ 不显示），调度器的准入、浮层渲染、历史面板过滤都改用同一规则；浮层的译文行/原文行身份不变，没有译文的行打上 `data-source-only`，由 CSS 让原文行在"仅译文"模式下顶到主行；历史面板按 `seq/revision` 就地重写行正文，译文到达时同一条 DOM 行从原文升级为译文 |
+
+- **明确没动**：字幕锚点、目标延迟、6 秒翻译预算、切分规则、迟到/丢弃策略。超过 `maxLateSeconds` 的 cue 仍被丢弃，且不会因为后来有了译文或原文被重新拉回屏幕；`failed` 仍是后端终态；没有任何地方把原文写进 `zh`。
+- **验证（JS）**：`node scripts/run-hls-js-tests.js` → 201 项全绿；`npm run check:js` 通过。
+- **验证（真机，页面内测试缝）**：三种显示模式、同一条行就地升级、无文字 cue 不渲染；用页面里留下的真实 cue（`state=failed`、`zh=None`）渲染并截图。
+- **验证（真机，实时会话 2 次）**：
+  - 第一次 300 秒（从会话头开始观测）：第 43–47 个采样 tick 上，`id=4`（`state=failed`、`zh=null`、原文「インフレ率、それからトレンドインフレ率、合成予想物価上昇率も2%近づいている中で、」）**连续约 2 秒显示在屏幕上**，`data-source-only=1`、原文行 `display:block`；诊断条同时给出这条为什么没有译文：`translation failed, showing source text only: RuntimeError: all translation providers failed: deepseek; TimeoutError: gemini-3.5-flash-low: not called (not called: 0.01s left does not cover the 2.0s fallback reserve)`。
+  - 第二次会话：第一次采样就抓到 `id=5`（`state=failed`、`zh=null`、原文「よろしくお願いいたします。」）在屏幕上，并截图；截图里同时可见左侧历史面板把这一条列为当前行、只有原文没有译文。
+  - 现场文件（均未入库）：`.scratch/l2-head-watch.jsonl`（762 条采样）、`.scratch/evidence-live-source-only-failed.png`、`.scratch/evidence-source-fallback.png`。
+- **这两次会话同时也是碎片现状的基线（本改动没有碰切分）**：第二次会话 `asrSeconds = 304.9` 时 `captionChunks = 83`、`chunkCutReasons = {clause_boundary 13, terminal_punctuation 52, utterance_endpoint 18}`、`chunkSpanP50 = 2.46`、`attempts = 80`、`expired = 1`、`sourceOnly = 1`。
 
 ---
 
