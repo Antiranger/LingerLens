@@ -112,10 +112,16 @@ def select_boundaries(text, edges, begins, ends, language, endpoints):
         # and chunkSpanP50 fell to 1.08-1.38s -- a median caption of about one
         # second. The floor is 3.0s rather than 4.0s so that a genuinely short
         # finished sentence waits about three seconds of audio instead of the
-        # seven the hard deadline allows, and an endpoint stays an exception:
-        # there the provider is stating the utterance itself ended, which is a
-        # sentence boundary rather than a fragment being cut.
-        if (begin is None or end is None or end - begin < MIN_PUBLISH_SPAN_SECONDS - 1e-9) and edge not in endpoints:
+        # seven the hard deadline allows.
+        #
+        # This used to exempt an edge the Provider had marked as an endpoint, on
+        # the theory that the Provider was stating the utterance itself ended.
+        # It does not: measured live on 2026-09-18 22:39, an endpoint landed in
+        # the middle of でもDNA。では。ない気がする。 and published でもDNA。
+        # (0.96s) followed by the 60ms stub では。. An endpoint means the speaker
+        # paused, so the one place that acts on it -- CaptionChunker's
+        # ENDPOINT_PUBLISH_SPAN_SECONDS gate -- is where it is honoured now.
+        if begin is None or end is None or end - begin < MIN_PUBLISH_SPAN_SECONDS - 1e-9:
             continue
         reason = None
         word = unicodedata.normalize('NFKC',prefix.split()[-1])

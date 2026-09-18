@@ -31,6 +31,16 @@ SOFT_TARGET_SPAN = 6.0
 # reaches the screen. Deliberately longer than SOFT_TARGET_SPAN, which only
 # counts an overshoot; this is the point at which waiting stops paying.
 HARD_DEADLINE_SECONDS = 7.0
+# The floor a Provider's own endpoint may publish at, and the reason it is not
+# zero. An endpoint says the speaker PAUSED -- Soniox's maxEndpointDelayMs is 700
+# -- and it places 。 mid-phrase, so it is not a sentence boundary. Measured live
+# on 2026-09-18 22:39 (YouTube, ja, diarization on): an endpoint right after
+# でもDNA。 published that 0.96s piece as its own caption and the 60ms particle
+# stub では。 followed it, while the same sentence without the endpoint came out
+# whole. So the Provider's word may publish early, but never a stub: below this
+# the text stays in its lane and merges into the next cut, and the residual grace
+# or the hard deadline still emits it.
+ENDPOINT_PUBLISH_SPAN_SECONDS = 1.2
 _CONTINUATION_GAP = 1.2
 # Arrival replay: <=0.6s recovered no cross-final continuations; 1.2s
 # recovered several, including a Japanese topic + predicate, at lower wait
@@ -273,9 +283,14 @@ class CaptionChunker:
             chunks.extend(self._drain_ready(caption))
             # An endpoint releases only evidence already stable. It does not
             # close the item: e.g. VAD stop can precede final transcription.
+            # It is also not a licence to publish a stub: the endpoint means the
+            # speaker paused, so below ENDPOINT_PUBLISH_SPAN_SECONDS the text
+            # stays in its lane and merges into the next cut.
             if self.realtime and caption.units and observation.kind in {"endpoint", "utterance_final"}:
                 if all(u.item_id == observation.item_id for u in caption.units):
-                    chunks.append(self._emit(caption, len(caption.units) - 1, "utterance_endpoint"))
+                    opened, closed = _chunk_times(caption.units, caption)
+                    if closed - opened >= ENDPOINT_PUBLISH_SPAN_SECONDS:
+                        chunks.append(self._emit(caption, len(caption.units) - 1, "utterance_endpoint"))
             if caption.units and all(
                 self._items[u.item_id].closed for u in caption.units if u.item_id in self._items
             ):

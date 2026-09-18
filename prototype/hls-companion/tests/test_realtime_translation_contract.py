@@ -52,13 +52,20 @@ class EvidenceTests(unittest.TestCase):
         c.observe(CaptionObservation('stable_token_delta',1,'a',tokens=(RecognitionToken('first',0,1,True,language='en'),)))
         a=c.observe(CaptionObservation('endpoint',1,'a',end_pcm=1)).chunks
         b=c.observe(CaptionObservation('utterance_final',1,'a',tokens=(RecognitionToken('first',0,1,True,language='en'),RecognitionToken('second',1,2,True,language='en')),stable_text='first second')).chunks
-        self.assertEqual([x.text for x in a+b],['first','second'])
+        # 'first' is one second, below the 1.2s a provider endpoint may publish
+        # at, so the endpoint releases nothing and the later final carries both
+        # words out in one caption. Either way the later evidence is not
+        # discarded, which is what this pins.
+        self.assertFalse(a)
+        self.assertEqual([x.text for x in a+b],['first second'])
         self.assertIsNone(c.next_deadline)
     def test_mutable_snapshots_never_claim_stability(self):
         c=CaptionChunker(realtime=True)
         for _ in range(4):
             self.assertFalse(c.observe(CaptionObservation('text_snapshot',1,'a',tentative_text='Wrong sentence.',begin_pcm=0,end_pcm=1)).chunks)
-        result=c.observe(CaptionObservation('utterance_final',1,'a',stable_text='Correct sentence.',begin_pcm=0,end_pcm=1)).chunks
+        # 1.4s so the final is past the provider-endpoint floor and this stays a
+        # test about tentative text never claiming stability.
+        result=c.observe(CaptionObservation('utterance_final',1,'a',stable_text='Correct sentence.',begin_pcm=0,end_pcm=1.4)).chunks
         self.assertEqual([x.text for x in result],['Correct sentence.'])
     def test_final_word_snapshot_deduplicates(self):
         c=CaptionChunker(realtime=True)

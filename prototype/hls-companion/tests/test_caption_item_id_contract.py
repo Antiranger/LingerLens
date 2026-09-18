@@ -103,10 +103,11 @@ class NoneItemIdIsToleratedTests(unittest.IsolatedAsyncioTestCase):
         chunker = CaptionChunker(realtime=True)
         chunker.reset(1)
         # The chunker itself is only reachable with a normalized id, so assert
-        # the normalized form works and produces the expected single cue.
+        # the normalized form works and produces the expected single cue. 1.4s of
+        # audio so the cue is past the provider-endpoint floor (1.2s).
         decision = chunker.observe(
             CaptionObservation("utterance_final", 1, "0", stable_text="こんにちは。",
-                               begin_pcm=0.0, end_pcm=1.0, language="ja"),
+                               begin_pcm=0.0, end_pcm=1.4, language="ja"),
             now=1_000.0,
         )
         self.assertEqual([c.text for c in decision.chunks], ["こんにちは。"])
