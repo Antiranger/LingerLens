@@ -209,7 +209,7 @@ function pendingRequests() {
     return call.promise;
   };
   request.calls = calls;
-  request.forPath = (requestPath) => calls.filter((call) => call.path === requestPath);
+  request.forPath = (requestPath) => calls.filter((call) => call.path.split("?")[0] === requestPath);
   return request;
 }
 
@@ -288,6 +288,9 @@ function sessionGlobals(overrides = {}) {
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     stage: stubElement(),
     video: stubElement(),
+    // refreshStatus() states the playhead with its poll. Null here means "the
+    // clock is not available", which is the path that reports no playhead.
+    mediaClock: null,
     hls: null,
     targetSelector: { value: "zh-Hans" },
     diagnosticsBar: { push: spy() },

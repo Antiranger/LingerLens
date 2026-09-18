@@ -320,8 +320,14 @@ class CompanionApplication:
         headers = {"Cache-Control": "no-store, max-age=0"} if name.endswith(".m3u8") else {"Cache-Control": "private, max-age=30"}
         return web.FileResponse(path, headers=headers)
 
-    async def status(self, _: web.Request) -> web.Response:
+    async def status(self, request: web.Request) -> web.Response:
         status = self.session.status()
+        # The renderer states its playhead with this poll, once a second. It is
+        # the only trustworthy source for it: hls.js fetches segments 6-15s ahead
+        # of the playhead (measured 2026-09-18), so request paths cannot stand in
+        # for it. A poll without the parameter leaves the last value in place.
+        if self.subtitle_pipeline is not None:
+            self.subtitle_pipeline.set_viewer_wall_time(request.query.get("playhead"))
         ingest_snapshot = self.source_ingest.snapshot() if self.source_ingest else None
         status["sourceDelaySeconds"] = 0.0
         # The content position the subtitle anchor samples for the video side,

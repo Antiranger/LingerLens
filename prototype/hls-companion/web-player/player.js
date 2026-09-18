@@ -975,7 +975,14 @@
   async function refreshStatus() {
     const claim = uiGeneration;
     try {
-      const data = await request("/api/status");
+      // State where the playhead is on the poll the backend already receives once
+      // a second. The backend feeds a realtime ASR and has to know how far ahead
+      // of the viewer it is running; it cannot derive that from HLS requests,
+      // because hls.js fetches 6-15s ahead of the playhead (measured 2026-09-18).
+      const playhead = mediaClock?.playingWallTime?.();
+      const data = await request(Number.isFinite(playhead)
+        ? `/api/status?playhead=${playhead.toFixed(3)}`
+        : "/api/status");
       // A response already in flight when the user pressed Stop or Start
       // describes a world this page has left. Acting on it is exactly how a
       // stopped picture came back, and how a stale running sample reverted the

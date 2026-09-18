@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import math
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
@@ -46,6 +47,28 @@ from .translation_budget import TranslationBudget, TranslationBudgetPolicy
 PCM_BYTES_PER_SECOND = 16_000 * 2
 PCM_CHUNK_BYTES = 3_200
 PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
+
+# How far ahead of the viewer's own playhead the audio handed to the ASR may run.
+#
+# A realtime provider consumes about 1x. Handing it a second of audio early does
+# not produce text a second earlier: it moves that second into the provider's
+# queue, and the caption is finalized later than the audio was handed over.
+# Measured on a 2.5h live session (1922 captions, 2026-09-18): the ASR's evidence
+# lag behind the audio it had already been handed was P50 2.4-5.8s, P95 6.8-8.7s,
+# while the audio leg itself ran only 1-5s ahead of real time and `pcm - uptime`
+# showed a sawtooth. The tail is the ingest handing over a whole segment at once
+# (71% of segments are 1s, 26% are 5s). Spreading a burst over the time the
+# viewer's playhead needs to reach it keeps that queue shallow, and the reference
+# is the playhead because the caption only has to exist before the viewer arrives
+# -- not before the audio does.
+VIEWER_LEAD_SECONDS = 8.0
+# The renderer states its playhead with the status poll it already sends once a
+# second (5s while its tab is hidden). Past this age the reference is dropped and
+# nothing is throttled, which is the behaviour that had no flow control at all.
+VIEWER_POSITION_TTL_SECONDS = 8.0
+# A stated playhead this far from our own clock is not a playhead (a reloaded
+# page, a stale tab, a wrong system clock). Reject it rather than pace against it.
+VIEWER_POSITION_SANITY_SECONDS = 600.0
 
 # Finals held while the media timeline is unavailable. The count bound protects
 # memory; the grace lets a slightly late cue still be published once the
@@ -384,6 +407,10 @@ class SubtitlePipeline:
         self._stopping = False
         self._pcm_offset = 0.0
         self._last_sent_pcm_offset = 0.0
+        # The renderer's playhead, on the caption timeline, as last stated with
+        # its status poll. None means "no reference": the feed is not throttled.
+        self._viewer_wall_time: float | None = None
+        self._viewer_wall_time_at = 0.0
         # Stage-backlog correction the anchor adds to its window median, plus
         # the rolling minima it is derived from. Exposed in status so the
         # correction is visible instead of implicit.
@@ -1041,11 +1068,72 @@ class SubtitlePipeline:
             pushed, offset = candidate_pushed, candidate_offset
         return offset + (server_seconds - pushed)
 
+    def set_viewer_wall_time(self, wall_time: float | str | None) -> None:
+        """Record where the renderer's playhead is, on the caption timeline.
+
+        The renderer states this with the status poll it already sends once a
+        second, and the value is the same playing wall clock the caption
+        scheduler compares cue windows against. Deriving it from HLS requests
+        instead is not possible: measured 2026-09-18, hls.js is 6-15s ahead of
+        the playhead when it fetches (median 11.9s), so a request only bounds the
+        playhead to a nine-second window.
+        """
+        if wall_time is None:
+            return
+        try:
+            value = float(wall_time)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(value) or value <= 0.0:
+            return
+        if abs(value - self.wall_clock()) > VIEWER_POSITION_SANITY_SECONDS:
+            return
+        self._viewer_wall_time = value
+        self._viewer_wall_time_at = self.monotonic()
+
+    def _viewer_pcm_position(self) -> float | None:
+        """The viewer's playhead on the audio leg's PCM timeline, or None.
+
+        None (never stated, stale, or no mapper ready yet) means "do not
+        throttle" -- exactly the behaviour that had no flow control at all, so a
+        missing or untrustworthy reference can only ever be conservative.
+        """
+        if self._viewer_wall_time is None:
+            return None
+        if self.monotonic() - self._viewer_wall_time_at > VIEWER_POSITION_TTL_SECONDS:
+            return None
+        epoch = self.media_epoch
+        anchor = self.media_anchor
+        if epoch is None or anchor is None or anchor.offset is None:
+            return None
+        return (self._viewer_wall_time - epoch) - anchor.offset
+
+    def viewer_lead_seconds(self) -> float | None:
+        """How far the audio handed to the ASR runs ahead of the viewer."""
+        position = self._viewer_pcm_position()
+        if position is None:
+            return None
+        return self._last_sent_pcm_offset - position
+
+    async def _pace_for_viewer(self, pending_end_pcm: float, chunk_seconds: float) -> None:
+        """Wait before handing the ASR audio the viewer is nowhere near yet."""
+        position = self._viewer_pcm_position()
+        if position is None:
+            return
+        ahead = pending_end_pcm - position
+        if ahead <= VIEWER_LEAD_SECONDS:
+            return
+        # Never wait longer than one chunk, so a viewer who rewound cannot stop
+        # the feed outright: the bound re-asserts itself on the next chunk while
+        # the playhead (or a recovery seek) moves the reference forward again.
+        await asyncio.sleep(min(ahead - VIEWER_LEAD_SECONDS, chunk_seconds))
+
     async def _pcm_sender(self) -> None:
         assert self._pcm_queue is not None
         while self._running:
             chunk, offset = await self._pcm_queue.get()
             chunk_seconds = len(chunk) / self.pcm_bytes_per_second
+            await self._pace_for_viewer(offset + chunk_seconds, chunk_seconds)
             self._last_sent_pcm_offset = offset + chunk_seconds
             stream = self._stream
             if stream is None:
@@ -2011,6 +2099,12 @@ class SubtitlePipeline:
             "pendingFinalsDropped": self.stats.pending_finals_dropped,
             "pcmOffset": round(self._pcm_offset, 3),
             "asrSeconds": round(self._pcm_offset, 3),
+            # How far the audio handed to the ASR runs ahead of the renderer's
+            # playhead, and therefore whether the feed is being throttled. Null
+            # means no usable playhead was stated and nothing is throttled.
+            "viewerLeadSeconds": (
+                round(lead, 3) if (lead := self.viewer_lead_seconds()) is not None else None
+            ),
             # The stage backlog the anchor adds back to its median, and the two
             # rolling minima it comes from. `offset - windowOffset` is the
             # correction actually in force.
