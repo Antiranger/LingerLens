@@ -48,7 +48,7 @@ PCM_BYTES_PER_SECOND = 16_000 * 2
 PCM_CHUNK_BYTES = 3_200
 PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
 
-# How far ahead of the viewer's own playhead the audio handed to the ASR may run.
+# How much audio may be in front of the ASR's own confirmation.
 #
 # A realtime provider consumes about 1x. Handing it a second of audio early does
 # not produce text a second earlier: it moves that second into the provider's
@@ -57,17 +57,31 @@ PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
 # lag behind the audio it had already been handed was P50 2.4-5.8s, P95 6.8-8.7s,
 # while the audio leg itself ran only 1-5s ahead of real time and `pcm - uptime`
 # showed a sawtooth. The tail is the ingest handing over a whole segment at once
-# (71% of segments are 1s, 26% are 5s). Spreading a burst over the time the
-# viewer's playhead needs to reach it keeps that queue shallow, and the reference
-# is the playhead because the caption only has to exist before the viewer arrives
-# -- not before the audio does.
-VIEWER_LEAD_SECONDS = 8.0
+# (71% of segments are 1s, 26% are 5s), so the fix is to stop feeding while the
+# provider is behind rather than to slow the feed down in general.
+#
+# The bound is on the provider's own queue and NOT on the distance to the
+# viewer's playhead. Pacing to the playhead was measured on 2026-09-18 on a news
+# stream and rejected: it did drain the queue (P50 2.4-5.8s -> 1.5s) but the lead
+# it removed is the caption's own margin, and captions then arrived late (median
+# 0.66s after their window start instead of 0.23s, P90 3.37s instead of 0.74s,
+# 24 of 39 captions late against 4 of 16 and 10 of 34 before, and the share of
+# ticks showing source text only doubled in the compressed band).
+ASR_QUEUE_LIMIT_SECONDS = 2.0
+# The sender polls for the provider's confirmation instead of being woken by it:
+# one short sleep per chunk keeps the wait free of locks and events.
+ASR_QUEUE_POLL_SECONDS = 0.05
+# A provider that stops confirming must not freeze the feed outright -- the
+# pipeline's own queue, and the download behind it, would then stop draining too.
+ASR_QUEUE_WAIT_SECONDS = 2.0
+
 # The renderer states its playhead with the status poll it already sends once a
-# second (5s while its tab is hidden). Past this age the reference is dropped and
-# nothing is throttled, which is the behaviour that had no flow control at all.
+# second (5s while its tab is hidden). That report is measurement only -- it feeds
+# `viewerLeadSeconds` in status -- and the bounds below decide when it is stale or
+# implausible enough to ignore.
 VIEWER_POSITION_TTL_SECONDS = 8.0
 # A stated playhead this far from our own clock is not a playhead (a reloaded
-# page, a stale tab, a wrong system clock). Reject it rather than pace against it.
+# page, a stale tab, a wrong system clock). Reject it rather than report it.
 VIEWER_POSITION_SANITY_SECONDS = 600.0
 
 # Finals held while the media timeline is unavailable. The count bound protects
@@ -408,9 +422,12 @@ class SubtitlePipeline:
         self._pcm_offset = 0.0
         self._last_sent_pcm_offset = 0.0
         # The renderer's playhead, on the caption timeline, as last stated with
-        # its status poll. None means "no reference": the feed is not throttled.
+        # its status poll. Measurement only: see ASR_QUEUE_LIMIT_SECONDS.
         self._viewer_wall_time: float | None = None
         self._viewer_wall_time_at = 0.0
+        # The furthest position the ASR has confirmed. The sender compares the
+        # audio it is about to hand over against it.
+        self._asr_evidence_pcm: float | None = None
         # Stage-backlog correction the anchor adds to its window median, plus
         # the rolling minima it is derived from. Exposed in status so the
         # correction is visible instead of implicit.
@@ -1115,25 +1132,29 @@ class SubtitlePipeline:
             return None
         return self._last_sent_pcm_offset - position
 
-    async def _pace_for_viewer(self, pending_end_pcm: float, chunk_seconds: float) -> None:
-        """Wait before handing the ASR audio the viewer is nowhere near yet."""
-        position = self._viewer_pcm_position()
-        if position is None:
+    async def _pace_for_asr(self, pending_end_pcm: float) -> None:
+        """Wait while the provider is already behind by more than the limit.
+
+        Nothing is handed over that the provider has not caught up with: a burst
+        from the ingest (a whole 5s segment arriving at once) then queues in front
+        of the *download*, which backpressures, instead of in front of the
+        sentence being transcribed.
+        """
+        confirmed = self._asr_evidence_pcm
+        if confirmed is None or pending_end_pcm - confirmed <= ASR_QUEUE_LIMIT_SECONDS:
             return
-        ahead = pending_end_pcm - position
-        if ahead <= VIEWER_LEAD_SECONDS:
-            return
-        # Never wait longer than one chunk, so a viewer who rewound cannot stop
-        # the feed outright: the bound re-asserts itself on the next chunk while
-        # the playhead (or a recovery seek) moves the reference forward again.
-        await asyncio.sleep(min(ahead - VIEWER_LEAD_SECONDS, chunk_seconds))
+        deadline = self.monotonic() + ASR_QUEUE_WAIT_SECONDS
+        while self._running and self.monotonic() < deadline:
+            await asyncio.sleep(ASR_QUEUE_POLL_SECONDS)
+            if self._asr_evidence_pcm > confirmed:
+                return
 
     async def _pcm_sender(self) -> None:
         assert self._pcm_queue is not None
         while self._running:
             chunk, offset = await self._pcm_queue.get()
             chunk_seconds = len(chunk) / self.pcm_bytes_per_second
-            await self._pace_for_viewer(offset + chunk_seconds, chunk_seconds)
+            await self._pace_for_asr(offset + chunk_seconds)
             self._last_sent_pcm_offset = offset + chunk_seconds
             stream = self._stream
             if stream is None:
@@ -1352,7 +1373,12 @@ class SubtitlePipeline:
         if mapped.end_pcm is not None and mapped.kind in {"utterance_final", "stable_prefix_snapshot"}:
             evidence_positions.append(float(mapped.end_pcm))
         if evidence_positions:
-            self._evidence_times.append((max(evidence_positions), self.monotonic()))
+            confirmed = max(evidence_positions)
+            self._evidence_times.append((confirmed, self.monotonic()))
+            # How far the provider has actually listened. The sender keeps its
+            # queue in front of this instead of in front of the playhead.
+            if self._asr_evidence_pcm is None or confirmed > self._asr_evidence_pcm:
+                self._asr_evidence_pcm = confirmed
         decision = self.caption_chunker.observe(mapped, now=self.monotonic())
         self._materialize_caption_decision(decision, event, exact_timing=exact_timing)
         self._caption_deadline_changed.set()
@@ -2099,9 +2125,17 @@ class SubtitlePipeline:
             "pendingFinalsDropped": self.stats.pending_finals_dropped,
             "pcmOffset": round(self._pcm_offset, 3),
             "asrSeconds": round(self._pcm_offset, 3),
+            # Audio handed over that the ASR has not confirmed yet: the quantity
+            # the sender holds at ASR_QUEUE_LIMIT_SECONDS. Null until the first
+            # confirmation arrives.
+            "asrQueueSeconds": (
+                round(self._last_sent_pcm_offset - self._asr_evidence_pcm, 3)
+                if self._asr_evidence_pcm is not None
+                else None
+            ),
             # How far the audio handed to the ASR runs ahead of the renderer's
-            # playhead, and therefore whether the feed is being throttled. Null
-            # means no usable playhead was stated and nothing is throttled.
+            # playhead. Measurement only, and the margin a caption is published
+            # with. Null means no usable playhead was stated.
             "viewerLeadSeconds": (
                 round(lead, 3) if (lead := self.viewer_lead_seconds()) is not None else None
             ),

@@ -26,7 +26,12 @@ from companion.providers.base import (
 )
 import companion.subtitle_pipeline as pipeline_module
 from companion.media_anchor import MediaAnchor
-from companion.subtitle_pipeline import VIEWER_POSITION_TTL_SECONDS, SubtitlePipeline
+from companion.subtitle_pipeline import (
+    ASR_QUEUE_POLL_SECONDS,
+    ASR_QUEUE_WAIT_SECONDS,
+    VIEWER_POSITION_TTL_SECONDS,
+    SubtitlePipeline,
+)
 from companion.subtitle_store import Cue, CueStore
 
 
@@ -1189,14 +1194,84 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
-    async def test_the_audio_feed_never_runs_far_ahead_of_the_viewer(self) -> None:
-        """A realtime ASR queues what it is handed early; the viewer sets the pace.
+    async def test_the_audio_feed_stops_while_the_asr_is_behind(self) -> None:
+        """A realtime ASR queues what it is handed early; bound its queue, not the lead.
 
         Measured 2026-09-18: the ASR's evidence lag behind the audio it had been
         handed was P50 2.4-5.8s and P95 6.8-8.7s while the audio leg ran only
         1-5s ahead of real time, so the tail is the ingest handing over a whole
-        segment at once. The playhead is the reference, because a caption only
-        has to exist before the viewer reaches it.
+        segment at once. Pacing the feed to the playhead instead was measured and
+        rejected: it drained the queue but ate the caption's own margin, and
+        captions then arrived late (median 0.66s after their window start against
+        0.23s before, P90 3.37s against 0.74s).
+        """
+        clock = [100.0]
+        pipeline = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_provider=self.ControlledTranslation(),
+            cue_store=CueStore(),
+            meta=StreamMeta("title", "channel", "gaming", "en", "es"),
+            translation_workers=1,
+            wall_clock=lambda: 1_000.0 + (clock[0] - 100.0),
+            monotonic=lambda: clock[0],
+        )
+        pipeline._running = True
+
+        async def holds(pending_end_pcm: float, confirm_at: float | None = None) -> bool:
+            """True when the sender would keep the chunk back."""
+            holder = asyncio.ensure_future(pipeline._pace_for_asr(pending_end_pcm))
+            if confirm_at is not None:
+                async def confirm() -> None:
+                    await asyncio.sleep(ASR_QUEUE_POLL_SECONDS)
+                    pipeline._asr_evidence_pcm = confirm_at
+                asyncio.ensure_future(confirm())
+            try:
+                await asyncio.wait_for(asyncio.shield(holder), timeout=ASR_QUEUE_POLL_SECONDS * 8)
+                return False
+            except asyncio.TimeoutError:
+                holder.cancel()
+                return True
+
+        # Nothing confirmed yet: the queue is unknown, so nothing is held back.
+        self.assertFalse(await holds(300.0))
+
+        pipeline._asr_evidence_pcm = 290.0
+        # Ten seconds of audio in front of the provider: hold the chunk back.
+        self.assertTrue(await holds(300.0))
+        # Exactly at the limit: hand it over.
+        self.assertFalse(await holds(292.0))
+        # The provider confirms more while we wait, so the chunk goes out at once.
+        self.assertFalse(await holds(300.0, confirm_at=299.0))
+
+        # A provider that stops confirming must not freeze the feed forever: the
+        # wait is capped, and the sender then hands the chunk over and re-asserts
+        # the bound on the next one.
+        pipeline._asr_evidence_pcm = 250.0
+        started = clock[0]
+
+        async def run_clock() -> None:
+            while True:
+                await asyncio.sleep(0.01)
+                # Faster than real time on purpose: the loop's own timer
+                # granularity would otherwise make the cap take longer to reach
+                # than the assertion below allows for.
+                clock[0] += 0.05
+
+        ticker = asyncio.ensure_future(run_clock())
+        try:
+            released = not await asyncio.wait_for(pipeline._pace_for_asr(300.0),
+                                                  timeout=ASR_QUEUE_WAIT_SECONDS + 1.0)
+        finally:
+            ticker.cancel()
+        self.assertTrue(released, "the wait must end even if the provider never confirms")
+        self.assertGreaterEqual(clock[0] - started, ASR_QUEUE_WAIT_SECONDS)
+        pipeline._running = False
+
+    async def test_the_playhead_report_is_measurement_only(self) -> None:
+        """The stated playhead is what the caption's margin can be read from.
+
+        It arrives with the status poll the page already sends once a second, and
+        it throttles nothing: the feed's bound is the ASR's own queue.
         """
         clock = [100.0]
         pipeline = SubtitlePipeline(
@@ -1214,43 +1289,28 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
         # Audio handed over to 300s of the PCM timeline == 1305s of wall clock.
         pipeline._last_sent_pcm_offset = 300.0
 
-        async def paces(wall_time: float | None) -> bool:
-            """True when the sender would wait before handing over the next chunk."""
-            pipeline.set_viewer_wall_time(wall_time)
-            try:
-                await asyncio.wait_for(pipeline._pace_for_viewer(300.0, 0.1), timeout=0.05)
-                return False
-            except asyncio.TimeoutError:
-                return True
-
-        # Playhead (wall 1180 -> PCM 175) is 125s behind the feed: wait.
-        self.assertTrue(await paces(1_180.0))
-        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
-        # Playhead (wall 1296 -> PCM 291) is 9s behind: past the 8s lead, wait.
-        self.assertTrue(await paces(1_296.0))
-        # Playhead (wall 1297 -> PCM 292) is exactly 8s behind: the bound holds.
-        self.assertFalse(await paces(1_297.0))
-        # Playhead ahead of the feed: never a reason to wait.
-        self.assertFalse(await paces(1_325.0))
-
-        # A stale statement is not a reference: the feed reverts to unthrottled
-        # rather than pacing against a playhead from eight seconds ago.
+        # Playhead wall 1180 -> PCM 175: the feed leads the viewer by 125s.
         pipeline.set_viewer_wall_time(1_180.0)
+        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
+
+        # A stale statement is not a reference: reporting reverts to "unknown"
+        # rather than describing a playhead from eight seconds ago.
         clock[0] += VIEWER_POSITION_TTL_SECONDS + 0.1
         self.assertIsNone(pipeline.viewer_lead_seconds())
-        self.assertFalse(await paces(None))
 
         # Garbage does not replace a trustworthy statement ...
+        clock[0] += 1.0
         pipeline.set_viewer_wall_time(1_180.0)
-        self.assertTrue(await paces("not a number"))
-        self.assertTrue(await paces(float("nan")))
+        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
+        pipeline.set_viewer_wall_time("not a number")
+        pipeline.set_viewer_wall_time(float("nan"))
+        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
 
         # ... and with nothing trustworthy on record, a wildly wrong clock is
         # refused instead of becoming the reference (a reloaded page, a stale tab).
         clock[0] += VIEWER_POSITION_TTL_SECONDS + 1.0
         pipeline.set_viewer_wall_time(1_000.0 + 5_000.0)
         self.assertIsNone(pipeline.viewer_lead_seconds())
-        self.assertFalse(await paces(None))
 
     async def test_a_cue_past_its_estimated_window_still_reaches_the_provider(self) -> None:
         """The backend estimates lateness; only the renderer can know it.
