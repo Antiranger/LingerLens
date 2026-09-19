@@ -72,6 +72,11 @@ VIEWER_POSITION_TTL_SECONDS = 8.0
 # A stated playhead this far from our own clock is not a playhead (a reloaded
 # page, a stale tab, a wrong system clock). Reject it rather than report it.
 VIEWER_POSITION_SANITY_SECONDS = 600.0
+# Recognized audio a session must have in hand before the picture may open.
+# Translation-ready captions trail pushed audio by 3s (p50) to 6s (p95), and the
+# display window adds its own tail on top, so 8s is what makes the first
+# captions of a session as safe as the steady state's. See captions_ready_for.
+CAPTION_START_LEAD_SECONDS = 8.0
 
 # Finals held while the media timeline is unavailable. The count bound protects
 # memory; the grace lets a slightly late cue still be published once the
@@ -1120,6 +1125,24 @@ class SubtitlePipeline:
         if position is None:
             return None
         return self._last_sent_pcm_offset - position
+
+    def captions_ready_for(self, viewer_start_seconds: float) -> bool:
+        """Whether captions for the media second the viewer starts at exist.
+
+        A session may open its picture as soon as it has buffered media, but a
+        caption cannot be shown until its audio has been recognized, cut, and
+        translated. Opening the picture earlier than that spends the head of the
+        session on captions with no margin -- measured at 15s buffered against a
+        recogniser 9s behind the frontier, the first caption arrived after its
+        window had closed. ``viewer_start_seconds`` is on the same media timeline
+        as ``pcmOffset``; the lead required is the measured push-to-ready path
+        (3s p50 / 6s p95) plus a little room, so the head runs with the margin
+        the steady state has.
+        """
+        position = self._asr_evidence_pcm
+        if position is None:
+            return False
+        return position >= viewer_start_seconds + CAPTION_START_LEAD_SECONDS
 
     async def _pcm_sender(self) -> None:
         assert self._pcm_queue is not None

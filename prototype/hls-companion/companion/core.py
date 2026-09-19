@@ -843,6 +843,8 @@ class DelayedPlaylistPublisher:
         window_seconds: float = 180,
         startup_buffer_seconds: float = 12,
         capture_clock: CaptureClock | None = None,
+        startup_caption_gate: Callable[[float], bool] | None = None,
+        startup_caption_timeout_seconds: float = 10.0,
     ):
         self.private_dir = private_dir
         self.public_dir = public_dir
@@ -856,6 +858,17 @@ class DelayedPlaylistPublisher:
         # Without this gate a 15s target starts around 3–5s and never corrects
         # itself, because a count-based live edge cannot seek before sequence 0.
         self.startup_buffer_seconds = startup_buffer_seconds
+        # Buffered media is only half of ready to start. The other half is
+        # whether captions for the media the viewer starts at already exist:
+        # measured at a session head, this gate's media half opened with 15s
+        # buffered while the recogniser was still ~9s behind that frontier, so
+        # the first captions ran with ~1s of margin instead of the steady
+        # state's ~13s and the very first one could only arrive late. The
+        # predicate answers that question on the media timeline of the second
+        # the viewer will start at; see _captions_caught_up for the bound.
+        self.startup_caption_gate = startup_caption_gate
+        self.startup_caption_timeout_seconds = startup_caption_timeout_seconds
+        self._caption_gate_since: float | None = None
         self.pending: dict[str, Segment] = {}
         self.published: deque[Segment] = deque()
         self.seen_names: set[str] = set()
@@ -973,8 +986,37 @@ class DelayedPlaylistPublisher:
             self._trim_window()
             published_duration = sum(segment.duration for segment in self.published)
             playlist_exists = (self.public_dir / "live.m3u8").exists()
-            if playlist_exists or published_duration >= self.startup_buffer_seconds:
+            if playlist_exists or (
+                published_duration >= self.startup_buffer_seconds
+                and self._captions_caught_up(published_duration)
+            ):
                 self._write_public_playlist()
+
+    def _captions_caught_up(self, published_duration: float) -> bool:
+        """Whether the caption pipeline is ready for the media about to be shown.
+
+        hls.js starts ``publish_delay`` behind the public edge and cannot seek
+        before sequence 0, so the media the viewer will actually start at is what
+        the gate is asked about. Waiting is bounded: a recogniser that is slow,
+        silent, or broken delays the picture by at most
+        ``startup_caption_timeout_seconds``, because an unready pipeline is a
+        reason to wait a moment longer, never a reason to fail the session.
+        """
+        if self.startup_caption_gate is None:
+            return True
+        now = time.monotonic()
+        if self._caption_gate_since is None:
+            self._caption_gate_since = now
+        try:
+            ready = bool(self.startup_caption_gate(max(0.0, published_duration - self.publish_delay)))
+        except Exception as error:
+            logbook.record(
+                "warn",
+                "media",
+                f"startup caption gate failed, starting anyway: {type(error).__name__}: {error}",
+            )
+            return True
+        return ready or (now - self._caption_gate_since) >= self.startup_caption_timeout_seconds
 
     def _trim_window(self) -> None:
         duration = sum(segment.duration for segment in self.published)
@@ -1092,6 +1134,7 @@ class LiveSession:
         ingests: list[Any] | None = None,
         source_process: subprocess.Popen[bytes] | None = None,
         capture_clock: CaptureClock | None = None,
+        startup_caption_gate: Callable[[float], bool] | None = None,
     ) -> None:
         previous_source = self.source_process
         if source_process is previous_source:
@@ -1138,6 +1181,7 @@ class LiveSession:
             self.public_dir,
             publish_delay,
             capture_clock=self.capture_clock,
+            startup_caption_gate=startup_caption_gate,
         )
         self.publisher.start()
         self.ingests = ingests or []
