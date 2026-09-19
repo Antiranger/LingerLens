@@ -963,13 +963,28 @@ class DelayedPlaylistPublisher:
         # Keep roughly publish_delay seconds of completed media private. This
         # uses media duration rather than wall-clock file age, so startup and
         # bursty playlist refreshes preserve the intended delay budget.
+        #
+        # Before the first playlist exists the released edge is also what the
+        # viewer's start is measured from, because the player starts
+        # publish_delay behind that edge however late it is handed a playlist.
+        # Holding the playlist back therefore buys the captions nothing: the
+        # edge runs on while the wait lasts and the playhead starts further into
+        # the media, past the very captions the wait was for. Measured that way,
+        # a 12s wait moved the start from media 5s to media 20s and left the
+        # first captions skipped entirely. So the hold belongs here, on the
+        # release itself, and only until the session has started.
         ordered_pending = sorted(self.pending.values(), key=lambda segment: segment.name)
         hidden_duration = sum(segment.duration for segment in ordered_pending)
+        started = (self.public_dir / "live.m3u8").exists()
+        released_duration = sum(segment.duration for segment in self.published)
         releasable: list[Segment] = []
         for segment in ordered_pending:
             if hidden_duration - segment.duration < self.publish_delay:
                 break
+            if not started and not self._captions_caught_up(released_duration + segment.duration):
+                break
             releasable.append(segment)
+            released_duration += segment.duration
             hidden_duration -= segment.duration
         changed = False
         for segment in releasable:
@@ -985,20 +1000,16 @@ class DelayedPlaylistPublisher:
         if changed:
             self._trim_window()
             published_duration = sum(segment.duration for segment in self.published)
-            playlist_exists = (self.public_dir / "live.m3u8").exists()
-            if playlist_exists or (
-                published_duration >= self.startup_buffer_seconds
-                and self._captions_caught_up(published_duration)
-            ):
+            if started or published_duration >= self.startup_buffer_seconds:
                 self._write_public_playlist()
 
-    def _captions_caught_up(self, published_duration: float) -> bool:
-        """Whether the caption pipeline is ready for the media about to be shown.
+    def _captions_caught_up(self, released_duration: float) -> bool:
+        """Whether the caption pipeline is ready for media about to be released.
 
-        hls.js starts ``publish_delay`` behind the public edge and cannot seek
-        before sequence 0, so the media the viewer will actually start at is what
-        the gate is asked about. Waiting is bounded: a recogniser that is slow,
-        silent, or broken delays the picture by at most
+        ``released_duration`` is the public edge this release would create; the
+        viewer starts ``publish_delay`` before it, and never before sequence 0,
+        so that is the second the gate is asked about. Waiting is bounded: a
+        recogniser that is slow, silent, or broken delays the picture by at most
         ``startup_caption_timeout_seconds``, because an unready pipeline is a
         reason to wait a moment longer, never a reason to fail the session.
         """
@@ -1008,7 +1019,7 @@ class DelayedPlaylistPublisher:
         if self._caption_gate_since is None:
             self._caption_gate_since = now
         try:
-            ready = bool(self.startup_caption_gate(max(0.0, published_duration - self.publish_delay)))
+            ready = bool(self.startup_caption_gate(max(0.0, released_duration - self.publish_delay)))
         except Exception as error:
             logbook.record(
                 "warn",

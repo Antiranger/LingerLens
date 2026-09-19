@@ -566,12 +566,15 @@ class PlaylistPublisherTests(unittest.TestCase):
             self.assertEqual(playlist.count("#EXTINF:"), 12)
             self.assertEqual(publisher.snapshot()["hiddenMediaSeconds"], 3.0)
 
-    def test_initial_playlist_waits_for_the_captions_too(self) -> None:
-        """Buffered media is only half of ready: the head also needs captions.
+    def test_release_waits_for_the_captions_until_the_session_starts(self) -> None:
+        """Buffered media is only half of ready: the released edge waits too.
 
-        The gate is asked about the media the viewer will start at, which is
-        ``publish_delay`` behind the public edge and never negative, because
-        hls.js cannot seek before sequence 0.
+        The player starts ``publish_delay`` behind the released edge, so holding
+        the playlist back instead would let the edge run on and start the
+        playhead further into the media, past the very captions the wait was for
+        (measured: a 12s wait moved the start from media 5s to media 20s). The
+        hold therefore belongs on the release, and only until the session has
+        started.
         """
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -594,21 +597,27 @@ class PlaylistPublisherTests(unittest.TestCase):
                 startup_caption_gate=gate,
             )
 
-            self._write_segments(private, 14)
-            publisher._tick()
-            self.assertFalse((public / "live.m3u8").exists())
-
             self._write_segments(private, 15)
             publisher._tick()
-            # The media half is satisfied and the caption half still refuses:
-            # 12s published minus the 3s the viewer sits behind the edge.
+            # Nothing is released while the captions are behind, and the gate is
+            # asked about the second the viewer would start at: the first
+            # release would put the edge at 1s with 3s of it still private, so
+            # the start clamps to 0 (hls.js cannot seek before sequence 0).
+            self.assertEqual([segment.name for segment in publisher.published], [])
             self.assertFalse((public / "live.m3u8").exists())
-            self.assertEqual(asked[-1], 9.0)
+            self.assertEqual(asked, [0.0])
 
             ready[0] = True
+            publisher._tick()
+            playlist = (public / "live.m3u8").read_text(encoding="utf-8")
+            self.assertEqual(playlist.count("#EXTINF:"), 12)
+
+            # Once the session has started the hold is over: the delay budget
+            # must not drift for the rest of the run.
+            ready[0] = False
             self._write_segments(private, 16)
             publisher._tick()
-            self.assertTrue((public / "live.m3u8").exists())
+            self.assertEqual(publisher.published[-1].name, "seg_000000012.m4s")
 
     def test_caption_gate_wait_is_bounded(self) -> None:
         """A recogniser that never reports ready delays the picture, not the session."""
