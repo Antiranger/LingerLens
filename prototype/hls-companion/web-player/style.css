@@ -1331,13 +1331,15 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   transition: opacity var(--t-med) ease, transform var(--t-med) ease;
   z-index: 6;
 }
-.stage:hover .stage-controls,
+/* 全屏时指针必然落在舞台上，:hover 会一直为真，控制条就再也收不回去。所以这条
+   只对窗口模式生效；全屏下靠 player.js 的 pointermove -> controls-visible 走。 */
+.stage:not(:fullscreen):hover .stage-controls,
 .stage-controls:focus-within { opacity: 1; transform: translateY(0); }
-/* player.js 契约：controls-visible / is-paused / fullscreen 都要露出控制条，
-   并且 1.6 秒无操作后由脚本收回。这一段没有原型对应物，是纯行为规则。 */
+/* player.js 契约：controls-visible / is-paused 露出控制条，1.6 秒无操作后由脚本
+   收回。全屏不在这里常驻露出 —— fullscreenchange 时脚本已经先亮一次，常驻会把
+   全屏下的控制条钉死在屏幕上。这一段没有原型对应物，是纯行为规则。 */
 .player-stage.controls-visible .player-controls,
-.player-stage.is-paused .player-controls,
-.player-stage:fullscreen .player-controls { opacity: 1; transform: translateY(0); }
+.player-stage.is-paused .player-controls { opacity: 1; transform: translateY(0); }
 .seek-row {
   display: flex;
   align-items: center;
@@ -1433,7 +1435,9 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   letter-spacing: .06em;
   color: var(--ink-70);
 }
-.vol-pop { min-width: 0; }
+/* 音量按钮是控制行里最靠左的一个，弹层若沿用 .ctl-pop 的右对齐，216px 的小板会
+   从按钮左边缘继续往左伸，直接压到播放器外面去。改成与按钮左边缘对齐。 */
+.vol-pop { min-width: 0; left: 0; right: auto; }
 .vol-pop-row { display: flex; align-items: center; gap: var(--s2); }
 .vol-pop-row input[type="range"] { width: 132px; height: 32px; flex: none; }
 .vol-pop-row b { font-size: 12px; min-width: 44px; text-align: right; }
