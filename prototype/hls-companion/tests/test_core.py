@@ -29,6 +29,108 @@ selected_inputs = CORE.selected_inputs
 validate_page_url = CORE.validate_page_url
 
 
+def _project(info: dict) -> str:
+    """What yt-dlp prints for the probe's two --print projections.
+
+    yt-dlp keeps every field named by the template and drops everything else, so
+    projecting a full document here is how the tests reproduce its output.
+    """
+    top = {name: info[name] for name in CORE.PROBE_INFO_FIELDS if name in info}
+    formats = [
+        {name: item[name] for name in CORE.PROBE_FORMAT_FIELDS if name in item}
+        for item in info.get("formats") or []
+    ]
+    return json.dumps(top, ensure_ascii=False) + "\n" + json.dumps(formats, ensure_ascii=False)
+
+
+def _fragments(prefix: str, count: int = 3) -> list[dict]:
+    return [{"url": f"https://f.invalid/{prefix}/{index}.ts", "duration": 1.0} for index in range(count)]
+
+
+# A full yt-dlp info document, shaped like the ones a live YouTube probe returns:
+# the formats carry fragment lists that grow with the broadcast, and the document
+# carries top-level keys the app never reads. Everything the app does read is
+# present, so a projection that drops one of those fields changes the menu that
+# ProbePayloadTests compares.
+FULL_LIVE_INFO = {
+    "id": "test",
+    "title": "【Star Fox Adventures】MY CHILDHOOD",
+    "channel": "Takanashi Kiara Ch. hololive",
+    "uploader": "Takanashi Kiara Ch. hololive",
+    "categories": ["Gaming"],
+    "is_live": True,
+    "live_status": "is_live",
+    "extractor": "youtube",
+    "extractor_key": "Youtube",
+    "webpage_url": "https://www.youtube.com/watch?v=test",
+    "duration": None,
+    "http_headers": {"User-Agent": "Mozilla/5.0", "Referer": "https://www.youtube.com/"},
+    "thumbnails": [{"url": "https://i.invalid/1.jpg", "width": 336}],
+    "automatic_captions": {"en": [{"url": "https://c.invalid/en.json3"}]},
+    "formats": [
+        {
+            "format_id": "233", "url": "https://m.invalid/audio.m3u8", "ext": "mp4",
+            "protocol": "m3u8_native", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128,
+            "fragments": _fragments("audio"), "manifest_url": "https://m.invalid/audio.m3u8",
+        },
+        {
+            "format_id": "301", "url": "https://m.invalid/1080.m3u8", "ext": "mp4",
+            "protocol": "m3u8_native", "vcodec": "avc1.64002a", "acodec": "none",
+            "height": 1080, "width": 1920, "fps": 60, "tbr": 6000,
+            "fragments": _fragments("video"), "manifest_url": "https://m.invalid/1080.m3u8",
+        },
+    ],
+}
+
+FULL_BILILIVE_INFO = {
+    "id": "22637261",
+    "title": "B站直播",
+    "channel": "主播",
+    "uploader": "主播",
+    "categories": ["live"],
+    "is_live": True,
+    "live_status": "is_live",
+    "extractor": "bililive",
+    "extractor_key": "BiliLive",
+    "webpage_url": "https://live.bilibili.com/22637261",
+    "http_headers": {"User-Agent": "Mozilla/5.0"},
+    "formats": [
+        {
+            "format_id": "avc-hls-a", "quality": 10000, "format_note": "原画",
+            "url": "https://a.invalid/live.m3u8", "ext": "fmp4", "protocol": "m3u8_native",
+            "vcodec": "avc1", "acodec": None, "height": 1080, "width": 1920, "fps": 60, "tbr": 5000,
+            "fragments": _fragments("bili"), "manifest_url": "https://a.invalid/live.m3u8",
+        },
+    ],
+}
+
+FULL_TWITCH_INFO = {
+    "id": "example_channel",
+    "title": "Twitch 直播",
+    "channel": "example_channel",
+    "uploader": "example_channel",
+    "categories": ["Just Chatting"],
+    "is_live": True,
+    "live_status": "is_live",
+    "extractor": "twitch",
+    "extractor_key": "TwitchStream",
+    "webpage_url": "https://www.twitch.tv/example_channel",
+    "http_headers": {"User-Agent": "Mozilla/5.0"},
+    "formats": [
+        {
+            "format_id": "source", "format_note": "Source", "url": "https://usher.invalid/source.m3u8",
+            "ext": "mp4", "protocol": "m3u8_native", "vcodec": "avc1", "acodec": None,
+            "height": 1080, "width": 1920, "fps": 60, "tbr": 6000, "fragments": _fragments("src"),
+        },
+        {
+            "format_id": "720p60", "format_note": "720p60", "url": "https://usher.invalid/720.m3u8",
+            "ext": "mp4", "protocol": "m3u8_native", "vcodec": "avc1", "acodec": "mp4a.40.2",
+            "height": 720, "width": 1280, "fps": 60, "tbr": 3500,
+        },
+    ],
+}
+
+
 class ProbeExecutableTests(unittest.TestCase):
     def test_probe_uses_vendored_yt_dlp_when_path_has_none(self) -> None:
         vendored = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
@@ -63,6 +165,101 @@ class ProbeExecutableTests(unittest.TestCase):
         with patch.object(CORE.subprocess, "run", return_value=completed) as run:
             probe.extract("https://www.youtube.com/watch?v=test")
         self.assertIs(run.call_args.kwargs["stdin"], CORE.subprocess.DEVNULL)
+
+
+class ProbePayloadTests(unittest.TestCase):
+    """The probe asks for the fields this codebase reads, and nothing else.
+
+    It used to ask for the whole info document. On a DVR live stream that
+    document carries every media fragment since the broadcast started: 88,456
+    fragments / 153MB / 16.2s on a two-hour stream (2026-09-19) against a hard
+    15s deadline that the same stream still met at twenty minutes old. Nothing
+    here reads ``fragments``, so that payload was carried across the pipe and
+    thrown away.
+    """
+
+    # Every key the consumers read, listed here so the projection cannot drift
+    # away from them: build_quality_options (height, width, fps, vcodec, acodec,
+    # tbr, abr, format_id, protocol, ext, quality, format_note),
+    # _build_muxed_live_quality_options (the same, plus quality/format_note for
+    # BiliLive's dedupe key), best_aac_audio (abr, tbr, protocol, format_id),
+    # selected_inputs (format_id, url, http_headers) and server.py (title,
+    # channel, uploader, is_live, categories, extractor_key).
+    FORMAT_KEYS = {
+        "format_id", "url", "ext", "protocol", "vcodec", "acodec", "height", "width", "fps",
+        "tbr", "abr", "vbr", "audio_channels", "quality", "format_note", "filesize", "http_headers",
+    }
+    INFO_KEYS = {
+        "id", "title", "channel", "uploader", "categories", "is_live", "live_status",
+        "extractor", "extractor_key", "webpage_url", "duration", "http_headers",
+    }
+
+    def extract(self, stdout: str, url: str = "https://www.youtube.com/watch?v=test"):
+        probe = CORE.YtDlpProbe("yt-dlp")
+        completed = type("Completed", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+        with patch.object(CORE.subprocess, "run", return_value=completed) as run:
+            info = probe.extract(url)
+        return info, run.call_args.args[0]
+
+    def test_probe_never_asks_yt_dlp_for_fragment_lists(self) -> None:
+        _, command = self.extract(_project(FULL_LIVE_INFO))
+        self.assertNotIn("-J", command)
+        self.assertNotIn("fragments", " ".join(str(part) for part in command))
+        formats_template = next(part for part in command if part.startswith("%(formats.:."))
+        info_template = next(
+            part for part in command if part.startswith("%(.{") and part != formats_template
+        )
+        self.assertEqual(self.FORMAT_KEYS, set(CORE.PROBE_FORMAT_FIELDS))
+        self.assertEqual(self.INFO_KEYS, set(CORE.PROBE_INFO_FIELDS))
+        for name in sorted(self.FORMAT_KEYS):
+            self.assertIn(name, formats_template)
+        for name in sorted(self.INFO_KEYS):
+            self.assertIn(name, info_template)
+
+    def test_probe_merges_the_two_projected_lines_into_one_info_dict(self) -> None:
+        info, _ = self.extract(_project(FULL_LIVE_INFO))
+        self.assertIs(info["is_live"], True)
+        self.assertEqual(info["title"], FULL_LIVE_INFO["title"])
+        self.assertEqual([item["format_id"] for item in info["formats"]], ["233", "301"])
+        self.assertEqual(info["formats"][1]["url"], "https://m.invalid/1080.m3u8")
+
+    def test_probe_still_accepts_one_full_info_document(self) -> None:
+        # An older invocation (or a future change back to -J) must keep working.
+        info, _ = self.extract(json.dumps(FULL_LIVE_INFO))
+        self.assertIs(info["is_live"], True)
+        self.assertEqual(len(info["formats"]), 2)
+
+    def test_the_projected_payload_builds_the_same_menu_as_the_full_one(self) -> None:
+        cases = (
+            ("youtube separate audio", "https://www.youtube.com/watch?v=test", FULL_LIVE_INFO),
+            ("bililive muxed", "https://live.bilibili.com/22637261", FULL_BILILIVE_INFO),
+            ("twitch source", "https://www.twitch.tv/example_channel", FULL_TWITCH_INFO),
+        )
+        for label, url, payload in cases:
+            with self.subTest(stream=label):
+                full = build_quality_options(payload)
+                trimmed, _ = self.extract(_project(payload), url)
+                projected = build_quality_options(trimmed)
+                self.assertEqual([option.qualityId for option in projected], [option.qualityId for option in full])
+                # Labels carry format_note/quality through, so a field dropped
+                # from the projection shows up here as "未知清晰度".
+                self.assertEqual([option.label for option in projected], [option.label for option in full])
+                chosen, reference = select_quality(projected, "auto"), select_quality(full, "auto")
+                self.assertEqual(chosen.qualityId, reference.qualityId)
+                self.assertEqual(chosen.label, reference.label)
+                self.assertEqual(
+                    selected_inputs(trimmed, chosen).video_url,
+                    selected_inputs(payload, reference).video_url,
+                )
+                self.assertEqual(
+                    selected_inputs(trimmed, chosen).video_headers,
+                    selected_inputs(payload, reference).video_headers,
+                )
+
+    def test_a_fragment_list_in_the_document_never_reaches_the_projection(self) -> None:
+        projected = _project(FULL_LIVE_INFO)
+        self.assertNotIn("fragments", projected)
+        self.assertLess(len(projected), len(json.dumps(FULL_LIVE_INFO)))
 
 
 class FormatSelectionTests(unittest.TestCase):

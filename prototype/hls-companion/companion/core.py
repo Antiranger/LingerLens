@@ -392,6 +392,64 @@ def normalize_imported_cookies(cookies: list[dict[str, Any]]) -> list[dict[str, 
     return accepted
 
 
+# The probe asks yt-dlp for these fields and nothing else. It used to ask for the
+# whole info document, which on a DVR live stream carries every media fragment
+# since the broadcast started: 88,456 fragments / 153MB / 16.2s on a two-hour
+# stream (2026-09-19), against a hard 15s deadline that the same stream still met
+# at twenty minutes old. No code here reads `fragments`, so that payload was
+# carried across the pipe only to be discarded. Everything below is read:
+# build_quality_options and _build_muxed_live_quality_options (height, width, fps,
+# vcodec, acodec, tbr, abr, format_id, protocol, ext, quality, format_note),
+# best_aac_audio (abr, tbr, protocol, format_id), selected_inputs (format_id, url,
+# http_headers), ProbeInfoSnapshot (extractor_key, formats[].ext), server.py
+# (title, channel, uploader, categories, is_live) and the live gate below
+# (is_live, live_status).
+PROBE_INFO_FIELDS = (
+    "id", "title", "channel", "uploader", "categories", "is_live", "live_status",
+    "extractor", "extractor_key", "webpage_url", "duration", "http_headers",
+)
+PROBE_FORMAT_FIELDS = (
+    "format_id", "url", "ext", "protocol", "vcodec", "acodec", "height", "width",
+    "fps", "tbr", "abr", "vbr", "audio_channels", "quality", "format_note",
+    "filesize", "http_headers",
+)
+
+
+def _projection(fields: tuple[str, ...], prefix: str = "") -> str:
+    """An output template that prints exactly `fields` as one JSON value."""
+    return "%(" + prefix + ".{" + ",".join(fields) + "})j"
+
+
+def parse_probe_output(text: str) -> dict[str, Any]:
+    """The info dict from the probe's two projected JSON lines.
+
+    yt-dlp prints one line per requested projection, so the metadata object comes
+    first and the format list second. A single full document is still accepted,
+    which keeps an older invocation working.
+    """
+    top: dict[str, Any] | None = None
+    formats: list[dict[str, Any]] | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            if "formats" in value:
+                return value
+            top = top or value
+        elif isinstance(value, list) and formats is None:
+            formats = value
+    if top is None:
+        raise RuntimeError("yt-dlp returned invalid JSON")
+    # A missing format list is not an error here: the caller gates on `is_live`
+    # first, and an empty list already fails as "no compatible quality".
+    return {**top, "formats": formats or []}
+
+
 class YtDlpProbe:
     def __init__(self, yt_dlp: str | None = None):
         if yt_dlp:
@@ -416,7 +474,10 @@ class YtDlpProbe:
             "1",
             "--extractor-retries",
             "1",
-            "-J",
+            "--print",
+            _projection(PROBE_INFO_FIELDS),
+            "--print",
+            _projection(PROBE_FORMAT_FIELDS, "formats.:"),
             *([] if auth is None else auth.yt_dlp_args()),
             page_url,
         ]
@@ -429,14 +490,13 @@ class YtDlpProbe:
                 errors="replace", timeout=15, check=False,
             )
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError("读取直播信息超时：网络或代理未能连接 YouTube。请检查系统代理是否已启动。") from error
+            # yt-dlp exceeding 15s says nothing about the proxy in particular:
+            # it is the slowest thing on this path, so name the timeout itself.
+            raise RuntimeError("读取直播信息超时：yt-dlp 15 秒内没有返回。请重试，或检查网络与系统代理。") from error
         if completed.returncode != 0:
             tail = "\n".join(completed.stderr.strip().splitlines()[-8:])
             raise RuntimeError(f"yt-dlp format probe failed (exit {completed.returncode}): {tail or 'no diagnostic'}")
-        try:
-            info = json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("yt-dlp returned invalid JSON") from error
+        info = parse_probe_output(completed.stdout)
         if info.get("is_live") is not True and info.get("live_status") != "is_live":
             raise RuntimeError("仅支持正在进行的直播 / Only currently ongoing live streams are supported")
         return info
