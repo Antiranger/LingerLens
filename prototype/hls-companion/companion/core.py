@@ -843,8 +843,6 @@ class DelayedPlaylistPublisher:
         window_seconds: float = 180,
         startup_buffer_seconds: float = 12,
         capture_clock: CaptureClock | None = None,
-        startup_caption_gate: Callable[[float], bool] | None = None,
-        startup_caption_timeout_seconds: float = 10.0,
     ):
         self.private_dir = private_dir
         self.public_dir = public_dir
@@ -858,17 +856,6 @@ class DelayedPlaylistPublisher:
         # Without this gate a 15s target starts around 3–5s and never corrects
         # itself, because a count-based live edge cannot seek before sequence 0.
         self.startup_buffer_seconds = startup_buffer_seconds
-        # Buffered media is only half of ready to start. The other half is
-        # whether captions for the media the viewer starts at already exist:
-        # measured at a session head, this gate's media half opened with 15s
-        # buffered while the recogniser was still ~9s behind that frontier, so
-        # the first captions ran with ~1s of margin instead of the steady
-        # state's ~13s and the very first one could only arrive late. The
-        # predicate answers that question on the media timeline of the second
-        # the viewer will start at; see _captions_caught_up for the bound.
-        self.startup_caption_gate = startup_caption_gate
-        self.startup_caption_timeout_seconds = startup_caption_timeout_seconds
-        self._caption_gate_since: float | None = None
         self.pending: dict[str, Segment] = {}
         self.published: deque[Segment] = deque()
         self.seen_names: set[str] = set()
@@ -963,28 +950,13 @@ class DelayedPlaylistPublisher:
         # Keep roughly publish_delay seconds of completed media private. This
         # uses media duration rather than wall-clock file age, so startup and
         # bursty playlist refreshes preserve the intended delay budget.
-        #
-        # Before the first playlist exists the released edge is also what the
-        # viewer's start is measured from, because the player starts
-        # publish_delay behind that edge however late it is handed a playlist.
-        # Holding the playlist back therefore buys the captions nothing: the
-        # edge runs on while the wait lasts and the playhead starts further into
-        # the media, past the very captions the wait was for. Measured that way,
-        # a 12s wait moved the start from media 5s to media 20s and left the
-        # first captions skipped entirely. So the hold belongs here, on the
-        # release itself, and only until the session has started.
         ordered_pending = sorted(self.pending.values(), key=lambda segment: segment.name)
         hidden_duration = sum(segment.duration for segment in ordered_pending)
-        started = (self.public_dir / "live.m3u8").exists()
-        released_duration = sum(segment.duration for segment in self.published)
         releasable: list[Segment] = []
         for segment in ordered_pending:
             if hidden_duration - segment.duration < self.publish_delay:
                 break
-            if not started and not self._captions_caught_up(released_duration + segment.duration):
-                break
             releasable.append(segment)
-            released_duration += segment.duration
             hidden_duration -= segment.duration
         changed = False
         for segment in releasable:
@@ -1000,34 +972,9 @@ class DelayedPlaylistPublisher:
         if changed:
             self._trim_window()
             published_duration = sum(segment.duration for segment in self.published)
-            if started or published_duration >= self.startup_buffer_seconds:
+            playlist_exists = (self.public_dir / "live.m3u8").exists()
+            if playlist_exists or published_duration >= self.startup_buffer_seconds:
                 self._write_public_playlist()
-
-    def _captions_caught_up(self, released_duration: float) -> bool:
-        """Whether the caption pipeline is ready for media about to be released.
-
-        ``released_duration`` is the public edge this release would create; the
-        viewer starts ``publish_delay`` before it, and never before sequence 0,
-        so that is the second the gate is asked about. Waiting is bounded: a
-        recogniser that is slow, silent, or broken delays the picture by at most
-        ``startup_caption_timeout_seconds``, because an unready pipeline is a
-        reason to wait a moment longer, never a reason to fail the session.
-        """
-        if self.startup_caption_gate is None:
-            return True
-        now = time.monotonic()
-        if self._caption_gate_since is None:
-            self._caption_gate_since = now
-        try:
-            ready = bool(self.startup_caption_gate(max(0.0, released_duration - self.publish_delay)))
-        except Exception as error:
-            logbook.record(
-                "warn",
-                "media",
-                f"startup caption gate failed, starting anyway: {type(error).__name__}: {error}",
-            )
-            return True
-        return ready or (now - self._caption_gate_since) >= self.startup_caption_timeout_seconds
 
     def _trim_window(self) -> None:
         duration = sum(segment.duration for segment in self.published)
@@ -1145,7 +1092,6 @@ class LiveSession:
         ingests: list[Any] | None = None,
         source_process: subprocess.Popen[bytes] | None = None,
         capture_clock: CaptureClock | None = None,
-        startup_caption_gate: Callable[[float], bool] | None = None,
     ) -> None:
         previous_source = self.source_process
         if source_process is previous_source:
@@ -1192,7 +1138,6 @@ class LiveSession:
             self.public_dir,
             publish_delay,
             capture_clock=self.capture_clock,
-            startup_caption_gate=startup_caption_gate,
         )
         self.publisher.start()
         self.ingests = ingests or []

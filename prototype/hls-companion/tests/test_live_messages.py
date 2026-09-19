@@ -419,10 +419,7 @@ class LiveMessageApiTests(AioHTTPTestCase):
             def tee_snapshot(self): return {"teeDropped": 0}
             def detach_audio_tee(self): return None
 
-        def fake_session_start(_url, _inputs, _delay, _command, *, capture_clock=None,
-                               startup_caption_gate=None):
-            # Live messages without a subtitle request: nothing to wait for.
-            self.assertIsNone(startup_caption_gate)
+        def fake_session_start(_url, _inputs, _delay, _command, *, capture_clock=None):
             companion.session.capture_clock = capture_clock
             companion.session.publisher = type("Publisher", (), {
                 "capture_clock": capture_clock,
@@ -543,10 +540,7 @@ class LiveMessageApiTests(AioHTTPTestCase):
             async def stop(self): pass
             def status(self): return {"state":"running","connected":True,"running":True,"platform":"twitch"}
 
-        def fake_session_start(_url, _inputs, _delay, _command, *, capture_clock=None,
-                               startup_caption_gate=None):
-            # Live messages without a subtitle request: nothing to wait for.
-            self.assertIsNone(startup_caption_gate)
+        def fake_session_start(_url, _inputs, _delay, _command, *, capture_clock=None):
             companion.session.capture_clock = capture_clock
             companion.session.publisher = type("Publisher", (), {
                 "capture_clock": capture_clock, "pdt_epoch": None,
@@ -606,10 +600,7 @@ class LiveMessageApiTests(AioHTTPTestCase):
             async def stop(self): return None
             def status(self): return {"state": "running", "platform": "youtube", "running": True, "connected": True, "reconnects": 0}
 
-        def fake_session_start(_url, _inputs, _delay, _command, *, capture_clock=None,
-                               startup_caption_gate=None):
-            # Live messages without a subtitle request: nothing to wait for.
-            self.assertIsNone(startup_caption_gate)
+        def fake_session_start(_url, _inputs, _delay, _command, *, capture_clock=None):
             companion.session.capture_clock = capture_clock
             companion.session.publisher = type("Publisher", (), {
                 "capture_clock": capture_clock,

@@ -27,7 +27,6 @@ from companion.providers.base import (
 import companion.subtitle_pipeline as pipeline_module
 from companion.media_anchor import MediaAnchor
 from companion.subtitle_pipeline import (
-    CAPTION_START_LEAD_SECONDS,
     VIEWER_POSITION_TTL_SECONDS,
     SubtitlePipeline,
 )
@@ -1289,33 +1288,6 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
         clock[0] += VIEWER_POSITION_TTL_SECONDS + 1.0
         pipeline.set_viewer_wall_time(1_000.0 + 5_000.0)
         self.assertIsNone(pipeline.viewer_lead_seconds())
-
-    async def test_the_start_gate_asks_the_recogniser_not_the_clock(self) -> None:
-        """A session opens its picture only once its own captions cover it.
-
-        The gate is a fact about recognized audio on the media timeline rather
-        than a wall-clock wait: a fast recogniser opens the picture at once, and
-        a slow one makes the publisher wait, bounded by its own timeout.
-        """
-        pipeline = SubtitlePipeline(
-            asr_provider=FakeASR(),
-            translation_provider=self.ControlledTranslation(),
-            cue_store=CueStore(),
-            meta=StreamMeta("title", "channel", "gaming", "en", "es"),
-            translation_workers=1,
-        )
-        # Nothing recognized yet: there is nothing to show, so the picture waits.
-        self.assertFalse(pipeline.captions_ready_for(0.0))
-
-        # Evidence covering the lead opens it, and nothing short of that does.
-        pipeline._asr_evidence_pcm = CAPTION_START_LEAD_SECONDS
-        self.assertTrue(pipeline.captions_ready_for(0.0))
-        self.assertFalse(pipeline.captions_ready_for(0.1))
-
-        # A viewer starting later in the timeline needs later evidence.
-        pipeline._asr_evidence_pcm = CAPTION_START_LEAD_SECONDS + 12.0
-        self.assertTrue(pipeline.captions_ready_for(12.0))
-        self.assertFalse(pipeline.captions_ready_for(12.1))
 
     async def test_a_cue_past_its_estimated_window_still_reaches_the_provider(self) -> None:
         """The backend estimates lateness; only the renderer can know it.

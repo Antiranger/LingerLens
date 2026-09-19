@@ -422,10 +422,6 @@ class FfmpegCommandTests(unittest.TestCase):
         publisher = CORE.DelayedPlaylistPublisher(Path("private"), Path("public"), 7)
         self.assertEqual(publisher.window_seconds, 180)
         self.assertEqual(publisher.startup_buffer_seconds, 12)
-        # A publisher built without a caption pipeline keeps the media-only
-        # gate, which is what every video-only session and every older caller
-        # gets.
-        self.assertIsNone(publisher.startup_caption_gate)
         self.assertIn("1:a:0", rendered)
         self.assertIn("aac_adtstoasc", rendered)
         # Timestamp-continuity filters guard the MSE timeline against source
@@ -565,115 +561,6 @@ class PlaylistPublisherTests(unittest.TestCase):
             playlist = (public / "live.m3u8").read_text(encoding="utf-8")
             self.assertEqual(playlist.count("#EXTINF:"), 12)
             self.assertEqual(publisher.snapshot()["hiddenMediaSeconds"], 3.0)
-
-    def test_release_waits_for_the_captions_until_the_session_starts(self) -> None:
-        """Buffered media is only half of ready: the released edge waits too.
-
-        The player starts ``publish_delay`` behind the released edge, so holding
-        the playlist back instead would let the edge run on and start the
-        playhead further into the media, past the very captions the wait was for
-        (measured: a 12s wait moved the start from media 5s to media 20s). The
-        hold therefore belongs on the release, and only until the session has
-        started.
-        """
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            private = root / "private"
-            public = root / "public"
-            private.mkdir()
-            public.mkdir()
-            asked: list[float] = []
-            ready = [False]
-
-            def gate(position: float) -> bool:
-                asked.append(position)
-                return ready[0]
-
-            publisher = DelayedPlaylistPublisher(
-                private,
-                public,
-                publish_delay=3,
-                startup_buffer_seconds=12,
-                startup_caption_gate=gate,
-            )
-
-            self._write_segments(private, 15)
-            publisher._tick()
-            # Nothing is released while the captions are behind, and the gate is
-            # asked about the second the viewer would start at: the first
-            # release would put the edge at 1s with 3s of it still private, so
-            # the start clamps to 0 (hls.js cannot seek before sequence 0).
-            self.assertEqual([segment.name for segment in publisher.published], [])
-            self.assertFalse((public / "live.m3u8").exists())
-            self.assertEqual(asked, [0.0])
-
-            ready[0] = True
-            publisher._tick()
-            playlist = (public / "live.m3u8").read_text(encoding="utf-8")
-            self.assertEqual(playlist.count("#EXTINF:"), 12)
-
-            # Once the session has started the hold is over: the delay budget
-            # must not drift for the rest of the run.
-            ready[0] = False
-            self._write_segments(private, 16)
-            publisher._tick()
-            self.assertEqual(publisher.published[-1].name, "seg_000000012.m4s")
-
-    def test_caption_gate_wait_is_bounded(self) -> None:
-        """A recogniser that never reports ready delays the picture, not the session."""
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            private = root / "private"
-            public = root / "public"
-            private.mkdir()
-            public.mkdir()
-            publisher = DelayedPlaylistPublisher(
-                private,
-                public,
-                publish_delay=0,
-                startup_buffer_seconds=0,
-                startup_caption_gate=lambda position: False,
-                startup_caption_timeout_seconds=5.0,
-            )
-
-            self._write_segments(private, 1)
-            with patch("time.monotonic", return_value=1000.0):
-                publisher._tick()
-            self.assertFalse((public / "live.m3u8").exists())
-
-            self._write_segments(private, 2)
-            with patch("time.monotonic", return_value=1004.9):
-                publisher._tick()
-            self.assertFalse((public / "live.m3u8").exists())
-
-            self._write_segments(private, 3)
-            with patch("time.monotonic", return_value=1005.0):
-                publisher._tick()
-            self.assertTrue((public / "live.m3u8").exists())
-
-    def test_a_failing_caption_gate_never_holds_the_picture(self) -> None:
-        """Readiness is a reason to wait a moment, never a reason to fail."""
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            private = root / "private"
-            public = root / "public"
-            private.mkdir()
-            public.mkdir()
-
-            def gate(position: float) -> bool:
-                raise RuntimeError("pipeline is not answering")
-
-            publisher = DelayedPlaylistPublisher(
-                private,
-                public,
-                publish_delay=0,
-                startup_buffer_seconds=0,
-                startup_caption_gate=gate,
-            )
-
-            self._write_segments(private, 1)
-            publisher._tick()
-            self.assertTrue((public / "live.m3u8").exists())
 
     def test_delays_publication_and_trims_ring(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

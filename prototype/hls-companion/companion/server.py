@@ -807,14 +807,6 @@ class CompanionApplication:
                     publish_delay,
                     command,
                     capture_clock=capture_clock,
-                    # Only a session that asked for subtitles waits for them: a
-                    # video-only run has no caption pipeline to consult, and the
-                    # publisher owns the bound on how long the wait may last.
-                    startup_caption_gate=(
-                        pending_subtitle_pipeline.captions_ready_for
-                        if pending_subtitle_pipeline is not None
-                        else None
-                    ),
                 )
                 self.target_delay_seconds = target_delay
             except Exception:
