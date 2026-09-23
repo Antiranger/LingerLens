@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -275,6 +276,34 @@ class SourceClockOffsetTests(unittest.TestCase):
         self.assertIsNotNone(first)
         self.assertAlmostEqual(self.companion._source_clock_offset(), first, places=9)
         self.assertTrue(self.companion._sampled_fallback_allowed())
+
+
+class ProxyModeTests(unittest.TestCase):
+    def test_direct_clears_manual_proxy_and_system_restores_startup_values(self) -> None:
+        names = server_module._PROXY_ENV_NAMES
+        saved = {name: os.environ.get(name) for name in names}
+        try:
+            for name in names:
+                os.environ.pop(name, None)
+            CompanionApplication._apply_request_proxy("http://127.0.0.1:7890", "manual")
+            self.assertEqual(os.environ["HTTPS_PROXY"], "http://127.0.0.1:7890")
+            CompanionApplication._apply_request_proxy(None, "direct")
+            self.assertTrue(all(name not in os.environ for name in names))
+            CompanionApplication._apply_request_proxy(None, "system")
+            for name in names:
+                self.assertEqual(os.environ.get(name), server_module._INITIAL_PROXY_ENV.get(name))
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    def test_manual_proxy_rejects_credentials_and_unknown_modes(self) -> None:
+        with self.assertRaises(ValueError):
+            CompanionApplication._apply_request_proxy("http://user:pass@127.0.0.1:7890", "manual")
+        with self.assertRaises(ValueError):
+            CompanionApplication._apply_request_proxy(None, "unknown")
 
 
 class ProviderApiTests(AioHTTPTestCase):
@@ -746,6 +775,36 @@ class ProviderApiTests(AioHTTPTestCase):
             self.assertIsNotNone(pipeline.media_anchor)
             await companion._stop_subtitles()
 
+    async def test_live_translate_turn_detection_shape_cannot_crash_subtitle_start(self) -> None:
+        """Native LiveTranslate profiles may store a protocol string here.
+
+        The shared chunker accepts the dictionary shape used by OpenAI-style
+        VAD settings, but a Qwen LiveTranslate profile uses a provider-specific
+        string. Startup must keep the shared fallback instead of calling
+        ``.get`` on that string.
+        """
+        companion = self.app["companion"]
+        catalog = await (await self.client.get("/api/model-settings")).json()
+        live = {
+            "id": "qwen-live-test",
+            "label": "Qwen LiveTranslate",
+            "kind": "dashscope-livetranslate-realtime",
+            "model": "qwen3.8-livetranslate-flash-realtime",
+            "baseUrl": "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+            "apiKey": "live-secret",
+            "options": {"turnDetection": "speaker_detection"},
+        }
+        catalog["asr"]["providers"].append(live)
+        catalog["asr"]["active"] = live["id"]
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
+
+        pipeline = await companion._prepare_subtitles(
+            {}, {"enabled": True, "sourceLanguage": {"mode": "specified", "tag": "ja"}}
+        )
+        self.assertEqual(pipeline.silence_duration_seconds, 0.4)
+        await companion._stop_subtitles()
+
     async def test_cookie_import_filters_domains_and_returns_token(self) -> None:
         lines = (
             "Name\tValue\n"
@@ -763,6 +822,8 @@ class ProviderApiTests(AioHTTPTestCase):
         stored = companion.auth_snapshots[payload["authToken"]]
         self.assertEqual(stored[0]["name"], "SID")
         self.assertEqual(stored[0]["value"], "secret-value")
+        self.assertEqual(stored[0]["domain"], ".youtube.com")
+        self.assertEqual(stored[0]["path"], "/")
         # The regenerated Netscape row must stay exactly 7 tab-separated fields.
         snapshot = companion._authentication({"authToken": payload["authToken"]}, consume=False)
         try:
@@ -770,6 +831,22 @@ class ProviderApiTests(AioHTTPTestCase):
             self.assertEqual(len(row.split("\t")), 7)
         finally:
             snapshot.close()
+
+        # A full DevTools row must keep its original domain. Google login
+        # cookies are needed by YouTube and must not be rewritten as
+        # youtube.com merely because that was the selected platform.
+        google_lines = (
+            "Name\tValue\tDomain\tPath\tExpires\tSize\tHttpOnly\tSecure\n"
+            "SAPISID\tgoogle-secret\t.google.com\t/\t2027-10-02T08:29:22.479Z\t32\t\tSecure\n"
+        )
+        response = await self.client.post(
+            "/api/auth-cookies", json={"lines": google_lines, "domain": ".youtube.com"}
+        )
+        self.assertEqual(response.status, 200)
+        google_payload = await response.json()
+        google_cookie = self.app["companion"].auth_snapshots[google_payload["authToken"]][0]
+        self.assertEqual(google_cookie["domain"], ".google.com")
+        self.assertGreater(google_cookie["expirationDate"], 0)
 
         netscape = (
             "# Netscape HTTP Cookie File\n"
@@ -1136,6 +1213,8 @@ class ProviderApiTests(AioHTTPTestCase):
         self.assertEqual(payload["cues"][0]["tEnd"], cue_end)
         self.assertEqual(payload["cues"][0]["seq"], 1)
         self.assertEqual(payload["maxSeq"], 1)
+        self.assertIn("draft", payload)
+        self.assertIsNone(payload["draft"], "no held text, and a missing pipeline must not break the poll")
         self.assertIn("asrUsage", payload["stats"])
         self.assertIn("asrEstimatedCostCny", payload["stats"])
         self.assertIn("translationUsage", payload["stats"])
@@ -1187,6 +1266,94 @@ class ProviderApiTests(AioHTTPTestCase):
         main_status = await (await self.client.get("/api/status")).json()
         self.assertIn("mediaClock", main_status)
         self.assertIn("liveMessages", main_status)
+
+    async def test_a_translating_asr_profile_replaces_the_translation_model(self) -> None:
+        """Soniox/Qwen LiveTranslate: same session, no second model.
+
+        The bus is the seam -- it is handed to the pipeline so the Adapter can
+        write its utterance translations into it, and the pipeline's translation
+        Provider is the session-backed one rather than the configured LLM.
+        """
+        companion = self.app["companion"]
+        catalog = await (await self.client.get("/api/model-settings")).json()
+        catalog["asr"]["providers"].append({
+            "id": "soniox-bilingual",
+            "label": "Soniox 双语",
+            "kind": "soniox-realtime",
+            "model": "stt-rt-v5",
+            "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
+            "apiKey": "snx-secret",
+            "options": {"translationType": "one_way"},
+        })
+        catalog["asr"]["active"] = "soniox-bilingual"
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
+
+        subtitle = {"enabled": True, "sourceLanguage": {"mode": "specified", "tag": "ja"}}
+        pipeline = await companion._prepare_subtitles({}, subtitle)
+
+        self.assertIsInstance(pipeline.translation_provider, server_module.NativeSessionTranslation)
+        self.assertIsNotNone(pipeline.native_translation_bus)
+        self.assertIs(
+            pipeline.translation_provider.bus, pipeline.native_translation_bus,
+            "the Provider must resolve against the bus the pipeline feeds",
+        )
+
+    async def test_a_plain_transcription_profile_still_uses_the_translation_model(self) -> None:
+        """The same protocol with translation off must not bypass the LLM."""
+        companion = self.app["companion"]
+        catalog = await (await self.client.get("/api/model-settings")).json()
+        catalog["asr"]["providers"].append({
+            "id": "soniox-plain",
+            "label": "Soniox 仅识别",
+            "kind": "soniox-realtime",
+            "model": "stt-rt-v5",
+            "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
+            "apiKey": "snx-secret",
+            "options": {},
+        })
+        catalog["asr"]["active"] = "soniox-plain"
+        response = await self.client.post("/api/model-settings", json=catalog)
+        self.assertEqual(response.status, 200, await response.text())
+
+        pipeline = await companion._prepare_subtitles({}, {
+            "enabled": True, "sourceLanguage": {"mode": "specified", "tag": "ja"},
+        })
+        self.assertIsNone(pipeline.native_translation_bus)
+        self.assertFalse(
+            isinstance(pipeline.translation_provider, server_module.NativeSessionTranslation)
+        )
+
+    async def test_the_recommended_bilingual_profiles_lead_the_catalog(self) -> None:
+        """One star, on one profile, and that profile leads the catalog.
+
+        The name carries neither the star nor the word: the player draws the star
+        next to the name, so a name that also said it rendered two.
+        """
+        from companion.providers.config import BUILTIN_ASR_PROVIDERS
+
+        recommended = [item for item in BUILTIN_ASR_PROVIDERS if item.get("recommended")]
+        self.assertEqual(
+            [item["kind"] for item in recommended],
+            ["soniox-realtime"],
+            "'recommended' is one mark, not a badge for every bilingual profile",
+        )
+        self.assertEqual(
+            [item["id"] for item in BUILTIN_ASR_PROVIDERS[:1]],
+            [item["id"] for item in recommended],
+            "a recommended profile that is not first is not 'ranked first'",
+        )
+        self.assertEqual(
+            [item["id"] for item in BUILTIN_ASR_PROVIDERS[:2]],
+            ["soniox-stt-rt-v5", "bailian-qwen38-livetranslate"],
+            "the other end-to-end bilingual profile stays second, unmarked",
+        )
+        starred = [
+            item["id"]
+            for item in BUILTIN_ASR_PROVIDERS
+            if "⭐" in item["label"] or "推荐" in item["label"]
+        ]
+        self.assertEqual(starred, [], "the interface adds the star; the name must not")
 
 
 if __name__ == "__main__":

@@ -130,7 +130,7 @@ const FROZEN_BESIDE = [
 
 function checkFrozen(notices, findings) {
   if (!fs.existsSync(FREEZE)) {
-    console.log(`licence: freeze not built, skipping the frozen inventory (${path.relative(REPO_ROOT, FREEZE)})`);
+    findings.push(`frozen inventory requested but not built: ${path.relative(REPO_ROOT, FREEZE)}`);
     return false;
   }
   let seen = 0;

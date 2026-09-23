@@ -77,6 +77,8 @@ class _TcpPump:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._source: Any = None
+        self._connection: socket.socket | None = None
+        self._connection_lock = threading.Lock()
         self.forwarded_chunks = 0
         self.forwarded_bytes = 0
         # When this leg last received MEDIA. The leg's health signal is built
@@ -117,6 +119,11 @@ class _TcpPump:
                 continue
             except OSError:
                 return
+            with self._connection_lock:
+                if self._stop.is_set():
+                    conn.close()
+                    return
+                self._connection = conn
             try:
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 while not self._stop.is_set():
@@ -158,6 +165,9 @@ class _TcpPump:
                 # ffmpeg went away; wait for the next connection.
                 pass
             finally:
+                with self._connection_lock:
+                    if self._connection is conn:
+                        self._connection = None
                 try:
                     conn.close()
                 except OSError:
@@ -172,6 +182,16 @@ class _TcpPump:
         add that timeout to every Stop.
         """
         self._stop.set()
+        # Closing the listener only interrupts accept(). A connected decoder
+        # that stopped reading can leave sendall() blocked indefinitely.
+        with self._connection_lock:
+            conn = self._connection
+            if conn is not None:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                conn.close()
         try:
             self.listener.close()
         except OSError:
@@ -419,18 +439,22 @@ class YtDlpLiveIngest:
             )
             for index, label in enumerate(("video", "audio")[: len(self.selectors)])
         ]
-        for index, (selector, pump) in enumerate(zip(self.selectors, self.pumps)):
-            process = self._spawn(self.command(selector))
-            self.processes.append(process)
-            log_thread = threading.Thread(
-                target=self._read_log,
-                args=(process, index),
-                name=f"yt-dlp-live-log-{index}",
-                daemon=True,
-            )
-            self._log_threads.append(log_thread)
-            log_thread.start()
-            pump.start(process.stdout)
+        try:
+            for index, (selector, pump) in enumerate(zip(self.selectors, self.pumps)):
+                process = self._spawn(self.command(selector))
+                self.processes.append(process)
+                log_thread = threading.Thread(
+                    target=self._read_log,
+                    args=(process, index),
+                    name=f"yt-dlp-live-log-{index}",
+                    daemon=True,
+                )
+                self._log_threads.append(log_thread)
+                log_thread.start()
+                pump.start(process.stdout)
+        except Exception:
+            self.stop()
+            raise
         # One line per ingest object, not per leg: the legs are restarted
         # together and the UI only needs to know acquisition began.
         log_record("info", "media", f"yt-dlp {self.leg_role} ingest started ({len(self.pumps)} leg(s))")
@@ -614,7 +638,8 @@ class YtDlpLiveIngest:
         reported instead of reading as "0 seconds idle".
         """
         now = time.monotonic()
-        idles = [now - pump.last_byte_at for pump in self.pumps if pump.last_byte_at is not None]
+        idles = [now - (pump.last_byte_at if pump.last_byte_at is not None else self.started_at)
+                 for pump in self.pumps if pump.last_byte_at is not None or self.started_at is not None]
         if idles:
             return round(max(idles), 1)
         return round(now - self.started_at, 1) if self.started_at else None

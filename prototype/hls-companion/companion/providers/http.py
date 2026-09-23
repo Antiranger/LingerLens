@@ -12,14 +12,16 @@ classes (spec §5.4) in exactly one place:
 * timeout            -> ``asyncio.TimeoutError``    (existing deadline semantics)
 
 ``asyncio.TimeoutError`` passes through untouched so the pipeline deadline
-keeps meaning "translation deadline expired", and every session is closed by
-its ``async with`` block before the error propagates.
+keeps meaning "translation deadline expired". Each response is released when
+its request ends; the reusable session closes when its worker scope exits.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import aiohttp
@@ -31,6 +33,30 @@ from .base import (
     ProviderUnavailableError,
 )
 from .base import TranslationRequest
+
+
+_session: ContextVar[aiohttp.ClientSession | None] = ContextVar("translation_http_session", default=None)
+
+
+@asynccontextmanager
+async def translation_session():
+    """Reuse connections for one worker; release them on stop/cancellation.
+
+    Task-local ownership also covers fallbacks and profile changes without
+    retaining provider objects. Credentials stay on each request, and cookies
+    are disabled so switching accounts cannot replay a previous response cookie.
+    Standalone probes use the same scope for a single call.
+    """
+    existing = _session.get()
+    if existing is not None and not existing.closed:
+        yield existing
+        return
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
+        token = _session.set(session)
+        try:
+            yield session
+        finally:
+            _session.reset(token)
 
 
 def require_api_key(provider_id: str, api_key: str) -> None:
@@ -66,16 +92,21 @@ async def post_json(
     timeout: float,
 ) -> dict[str, Any]:
     """POST one JSON body and return the parsed object, with normalized errors."""
+    session = _session.get()
+    if session is None or session.closed:
+        async with translation_session():
+            return await post_json(url, headers=headers, payload=payload, timeout=timeout)
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                status = response.status
-                retry_after = getattr(response, "headers", {}).get("Retry-After")
-                try:
-                    data = await response.json(content_type=None)
-                except Exception:
-                    # A non-JSON body still carries the authoritative status code.
-                    data = {}
+        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+            status = response.status
+            retry_after = getattr(response, "headers", {}).get("Retry-After")
+            try:
+                data = await response.json(content_type=None)
+            except (asyncio.TimeoutError, aiohttp.ClientError):
+                raise
+            except ValueError:
+                # A non-JSON body still carries the authoritative status code.
+                data = {}
     except (asyncio.TimeoutError, TimeoutError):
         raise
     except aiohttp.ClientError as exc:

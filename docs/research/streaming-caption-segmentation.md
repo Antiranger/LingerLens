@@ -197,6 +197,8 @@ def on_soniox_result(result):
 
 LingerLens's built-in Soniox profile currently uses `maxEndpointDelayMs=700` and `endpointSensitivity=0.3`. The 700 ms setting is close to Soniox's allowed minimum of 500 ms and limits delay **after an actual end of speech**; it does not cut a continuously spoken 20–35 s turn.[S5]
 
+Measured against the live service on 2026-09-21 (`.scratch/bilingual-turn-deadline/`, 60 s of real Japanese with every pause excised so no silence-based trigger existed): `stt-rt-v5` nevertheless closed **all 15 turns**, the longest spanning 4.20 s, each within 1.67 s of the last sample of that turn. The same content with its pauses intact gave 4.56 s as the longest span and 1.72 s as the longest close lag. Soniox's endpointer is therefore model-driven, not silence-driven, and on this content it bounds a lane far inside the release budget by itself. That is an observation, not a contract — the local hard deadline stays, and the same probe run against Qwen3.8 LiveTranslate on recorded Japanese gave spans of 15.7 s and 36.4 s.
+
 Recommended experiment order:
 
 1. Keep endpoint detection enabled and keep sensitivity near **0.3** while introducing local final-token chunking.
@@ -391,6 +393,6 @@ All links below are primary/first-party unless marked otherwise.
 ## 11. Evidence gaps and stopping point
 
 - The arXiv API endpoint failed repeatedly; canonical arXiv/ACL/ISCA paper pages and PDFs were retrieved through web fetch instead.
-- Soniox documentation search exposed an error string for `max_non_final_tokens_duration_ms`, but no authoritative field description/range was found in the official SDK type model. This note therefore does **not** recommend relying on that field.
+- Soniox documentation search exposed an error string for `max_non_final_tokens_duration_ms`, but no authoritative field description/range was found in the official SDK type model. Resolved against the live service on 2026-09-21: the field **is** accepted, and the server rejects values below 360 ms (`Field max_non_final_tokens_duration_ms cannot be less than 360.`). It still has no documented semantics, it finalizes non-final tokens rather than emitting `<end>`, and at 5000 ms it never bound a session where the model's own endpoints were already inside 4.6 s — so this note continues to recommend not relying on it.
 - BBC's page is very large and focused fetches returned broad page content; exact 37-character and 160–180 wpm statements were separately recovered from the same official page's search index. DCMP provides the firmer numeric duration limit.
 - The concrete LingerLens thresholds above are starting policies derived from the cited mechanisms plus LingerLens's measured delay/latency distribution. They require live replay evaluation across languages, speech rates, and translation providers before being treated as production defaults.

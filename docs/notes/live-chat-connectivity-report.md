@@ -45,3 +45,14 @@
 - 前端重复 startPolling 原来可重复启动；现增加运行标记和轮次号，停止前的未完成请求不会重启旧循环。默认 500 ms 请求本地服务，afterSeq 增量获取，DOM 和缓存最多 500 条。
 - 专项测试：Twitch 2 项、B 站鉴权/退避 3 项、前端 7 项通过。
 - 这不是长时间全平台 CPU 压测结论，正式播放器代理贯通仍待验证。
+
+## 2026-09-20 WBI 修复及三平台复测
+
+- 根因确认：B 站当前网页播放器对 `getDanmuInfo` 请求加入 `web_location=0.0` 和 WBI 参数 `w_rid`、`wts`。原接收器只发送 `id`、`type`，所以服务端返回 HTTP 200 / 业务码 `-352`。
+- 修复位置：`prototype/hls-companion/companion/bilibili_danmaku_ingest.py`。接收器现在按网页端规则签名请求；Cookie 仍只作为可选的 HTTP/WebSocket 会话信息，不需要为了公开房间硬编码或索取用户 Cookie。
+- 回归测试：新增 `test_danmu_info_uses_wbi_signature_and_web_location`，与原 B 站鉴权测试共 5 项全部通过；BilibiliSourceTests 1 项通过。
+- 真实 B 站房间 `https://live.bilibili.com/6`：15 秒内 `connected=true`、`state=running`、重连 0、正常停止并清理。该房间这段观测期没有产生新的弹幕，因此不能把 0 条写成“弹幕接口失败”；它证明 WBI 请求和 WebSocket 鉴权已通过。
+- 真实 Twitch 频道 `twitchplayspokemon`：20 秒内保持 `connected=true`、重连 0、收到 8 条，正常停止。
+- 真实 YouTube 直播 `https://www.youtube.com/watch?v=kxinVW3goKc`（HTTP 代理 `127.0.0.1:7890`）：35 秒内保持 `connected=true`、重连 0、收到 4,838 条，正常停止，拥有的 yt-dlp 子进程树已回收。
+- 三个平台的真实测试均未调用翻译或 ASR；B 站这次验证重点是 `-352` 的鉴权链路，弹幕数量受房间当时活跃度影响。
+- 修复后重新构建了安装包和免安装版；打包版依赖检查、桌面测试 25 项和桌面 Python 测试 6 项通过。随后用打包版反复探测 B 站时，出口 IP 触发了 B 站 `-412 request was banned`，所以没有把这次被限流后的打包版探测写成通过；源代码版在触发限流前已完成 WebSocket 鉴权成功的真实复测。

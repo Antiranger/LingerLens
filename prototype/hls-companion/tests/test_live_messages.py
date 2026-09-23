@@ -208,7 +208,15 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         translator.enqueue(first)
         translator.enqueue(second)
         translator.enqueue(third)
-        await asyncio.sleep(0.15)
+        # Switch off only once nothing is in flight. A request that has already
+        # been paid for cannot be un-spent when translation is turned off mid
+        # call, so a fixed sleep here measured the machine's scheduling instead
+        # of the rule this assertion is about: no provider call goes to waste.
+        for _ in range(200):
+            settled = {row["id"]: row["translationState"] for row in store.query(after_seq=0)}
+            if settled.get("youtube:b") != "pending" and settled.get("youtube:c") != "pending":
+                break
+            await asyncio.sleep(0.01)
         translator.set_enabled(False)
         await translator.stop()
 

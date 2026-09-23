@@ -6,11 +6,13 @@ from datetime import datetime, timedelta, timezone
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import re
 import struct
 import time
 import zlib
+from urllib.parse import quote
 from typing import Any, Callable
 
 import aiohttp
@@ -30,6 +32,39 @@ OP_HEARTBEAT_REPLY = 3
 OP_MESSAGE = 5
 OP_ENTER_ROOM = 7
 OP_ENTER_ROOM_REPLY = 8
+
+# Bilibili's live page signs getDanmuInfo with the same WBI request scheme
+# used by its web client. These are the page bundle's current fallback keys;
+# keeping the signing code local avoids a dependency on a browser session.
+_WBI_IMG_KEY = "c458435a75b1419ca98ab6d88b4c60d4"
+_WBI_SUB_KEY = "446140f6859f439e9dd83f7ef858d1cd"
+_WBI_MIXIN_KEY_ENC_TAB = (
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+)
+_WBI_MIXIN_KEY = "".join(
+    (_WBI_IMG_KEY + _WBI_SUB_KEY)[index] for index in _WBI_MIXIN_KEY_ENC_TAB
+)[:32]
+
+
+def _wbi_signed_params(params: dict[str, Any], *, timestamp: int | None = None) -> dict[str, Any]:
+    """Return the query parameters required by Bilibili's WBI gate."""
+    signed = dict(params)
+    wts = int(time.time()) if timestamp is None else int(timestamp)
+    signed["wts"] = wts
+    pairs = []
+    for key in sorted(signed):
+        value = signed[key]
+        if isinstance(value, str):
+            value = re.sub(r"[!'()*]", "", value)
+        if value is not None:
+            pairs.append(f"{quote(str(key), safe='-_.~')}={quote(str(value), safe='-_.~')}")
+    query = "&".join(pairs)
+    signed["w_rid"] = hashlib.md5((query + _WBI_MIXIN_KEY).encode("utf-8")).hexdigest()
+    signed["wts"] = str(wts)
+    return signed
 
 
 def encode_packet(op: int = 0, body: bytes = b"", protover: int = 1, seq: int = 1, action: int | None = None) -> bytes:
@@ -315,10 +350,12 @@ class BilibiliDanmakuIngest:
             response.raise_for_status()
             data = await response.json()
         self.room_id = int(data.get("data", {}).get("room_id") or self.room_id)
-        # Use GET with type=0 for getDanmuInfo; fallback gracefully if blocked
+        # The current web client adds web_location and a WBI signature. Without
+        # both values the endpoint returns HTTP 200 with business code -352.
         config = {}
         try:
-            async with self._session.get(self.DANMU_INFO_URL, params={"id": self.room_id, "type": 0}, headers=headers) as response:
+            params = _wbi_signed_params({"id": self.room_id, "type": 0, "web_location": "0.0"})
+            async with self._session.get(self.DANMU_INFO_URL, params=params, headers=headers) as response:
                 response.raise_for_status()
                 resp_data = await response.json()
                 if resp_data.get("code") == 0:

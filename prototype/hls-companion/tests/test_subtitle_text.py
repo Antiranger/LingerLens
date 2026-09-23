@@ -30,6 +30,23 @@ class SubtitleTextTests(unittest.TestCase):
                 self.assertIsNone(MODULE.clean_subtitle_text(text))
         self.assertEqual(MODULE.clean_subtitle_text("はい、行きます"), "はい、行きます")
 
+    def test_match_key_drops_spacing_the_caption_never_keeps(self) -> None:
+        # DashScope writes a space between Japanese words mid-utterance; the
+        # chunker deletes it when it joins the turn, so the two forms must still
+        # match or the cue keeps its source and loses its translation.
+        self.assertEqual(
+            MODULE.subtitle_match_key("あれ 撮り終わった 後に"),
+            MODULE.subtitle_match_key("あれ撮り終わった後に"),
+        )
+        self.assertEqual(
+            MODULE.subtitle_match_key("　ＡＢＣ　　です　"),
+            MODULE.subtitle_match_key("ABCです"),
+        )
+
+    def test_match_key_keeps_a_key_for_text_too_short_for_a_subtitle(self) -> None:
+        self.assertEqual(MODULE.subtitle_match_key("啊"), "啊")
+        self.assertEqual(MODULE.subtitle_match_key(None), "")
+
     def test_deduplicates_exact_and_near_prefix_resends(self) -> None:
         self.assertTrue(MODULE.is_duplicate_final("こんにちは", "こんにちは"))
         self.assertTrue(MODULE.is_duplicate_final("こんにち", "こんにちは"))

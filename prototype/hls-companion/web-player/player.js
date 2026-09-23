@@ -6,7 +6,6 @@
   const liveChip = el("liveChip");
   let hls = null;
   let lastPlaylistUrl = null;
-  let browserLatency = null;
   const initialParams = new URLSearchParams(location.search);
   let authToken = initialParams.get("authToken");
   let controlsBusy = false;
@@ -51,12 +50,24 @@
   // them is indistinguishable from "the video keeps stuttering".
   let mseRecoveryAttempts = 0;
   let mseRecoveryProgressAt = 0;
+  let mseRecoveryTimer = null;
+  let mseRecoveryProgressWall = null;
+  let mseRecoveryPlayed = 0;
   let subtitleCues = new Map();
+  let subtitleCueOrderDirty = true;
+  let subtitleDraft = null;
+  let sortedSubtitleCues = [];
+  let lastSubtitlePaintKey = null;
+  const subtitleReadiness = new Map();
   let subtitleAfterSeq = 0;
   let subtitleMaxKnownEnd = 0;
   // Advance by one 100ms render tick plus the measured 50ms median residual.
   // This centers normal cue onset without increasing timer or polling work.
   const SUBTITLE_RENDER_ADVANCE_SECONDS = 0.15;
+  // A draft is cut at the playhead the backend was told about, which the status
+  // poll refreshes once a second. This absorbs that gap, and hides the line when
+  // a seek or a stalled poll leaves it behind.
+  const SUBTITLE_DRAFT_STALE_SECONDS = 2.5;
   let providerCatalog = null;
   let roleCatalog = null;
   let editingSection = "asr";
@@ -159,7 +170,7 @@
       }
       if (data.sessionId) diagnosticsLog.setSessionId(data.sessionId);
       if (data.missed > 0) {
-        diagnosticsBar?.push("warn", "backend", `后端日志环形缓冲已覆盖 ${data.missed} 条较早记录`);
+        diagnosticsBar?.push("warn", "backend", updateLabel("diag.devlog.overwritten", "后端日志环形缓冲已覆盖 {n} 条较早记录", { n: data.missed }));
       }
       diagnosticsLog.merge(data.records);
       diagnosticsBar?.render();
@@ -174,6 +185,13 @@
      只有主进程能写文件（渲染进程在沙箱里），所以记录经 lingerlens:// 交给它。
      没配日志文件时 status() 回来的 enabled 是 false，之后一条都不发。 */
   const devLogClient = window.LingerLensDiagnostics?.createDevLogClient() || null;
+  const playbackProbe = window.LingerLensDiagnostics?.createPlaybackProbe({
+    video,
+    enabled: () => Boolean(devLogClient?.get()?.enabled),
+    hidden: () => document.hidden,
+    // One aggregate every five seconds, flushed by the existing log poller.
+    emit: data => diagnosticsBar?.push("info", "playback-perf", JSON.stringify(data)),
+  });
   /* 游标用插入序 order，不用数组下标也不用时间戳：环形缓冲会淘汰旧记录，而且
      后端记录的时间戳可能落在已经交出去的记录之前，两者都会漏。 */
   let devLogCursor = 0;
@@ -276,6 +294,17 @@
     window.I18N?.t(key, vars, fallback) || Object.entries(vars || {})
       .reduce((text, [name, value]) => text.replace(`{${name}}`, value), fallback);
 
+  /** A catalog entry's display name. The built-ins are named in Chinese by the
+   *  backend, so one that still carries the shipped name resolves through
+   *  `profile.<id>`. A record the viewer renamed is theirs: translating it back
+   *  into the catalog's wording would rename something they named on purpose. */
+  function profileText(id, fallback) {
+    const plain = fallback || id || "";
+    const shipped = window.I18N?.catalogName?.(id);
+    if (!shipped || plain !== shipped) return plain;
+    return updateLabel(`profile.${id}`, plain);
+  }
+
   let lastUpdateSignature = null;
   let updateProgressTimer = null;
 
@@ -284,7 +313,7 @@
     updateProgressTimer = null;
   }
 
-  function renderUpdate(state) {
+  function renderUpdate(state, forceLabelRefresh = false) {
     const identity = describeBuild(state);
     if (identity) {
       buildIdentity = identity;
@@ -297,9 +326,15 @@
     const update = state?.update || {};
     const version = update.update?.version || "";
     const signature = `${update.status}:${version}:${update.error || ""}`;
-    const button = el("diagUpdate");
+    const button = el("appUpdateButton");
     if (!button) return;
-    if (signature === lastUpdateSignature) {
+    // Source/browser mode has no installer to run. Keep the product action
+    // visible only in the packaged desktop build where it can work.
+    if (state?.packaged !== true) {
+      button.hidden = true;
+      return;
+    }
+    if (signature === lastUpdateSignature && !forceLabelRefresh) {
       // Progress changes far more often than status; only the label moves.
       if (update.status === "downloading" && update.progress) {
         const percent = Math.min(99, Math.round((update.progress.received / Math.max(1, update.progress.total)) * 100));
@@ -315,7 +350,7 @@
     if (update.status === "available") {
       button.textContent = updateLabel("diag.update.download", "下载更新 {version}", { version });
       // 模板串里不能写 ${current}：那是 JS 插值，不是 updateLabel 的占位符。
-      diagnosticsBar?.push("info", "update",
+      if (!forceLabelRefresh) diagnosticsBar?.push("info", "update",
         updateLabel("diag.update.found", "发现新版本 {version}（当前 {current}）",
           { version, current: state?.version || "" }));
     } else if (update.status === "downloading") {
@@ -325,11 +360,11 @@
     } else if (update.status === "ready" || update.status === "installing") {
       button.disabled = true;
       button.textContent = updateLabel("diag.update.restarting", "正在重启并安装…");
-      diagnosticsBar?.push("info", "update", updateLabel("diag.update.ready", "更新已下载并校验通过，即将重启安装"));
+      if (!forceLabelRefresh) diagnosticsBar?.push("info", "update", updateLabel("diag.update.ready", "更新已下载并校验通过，即将重启安装"));
     } else if (update.status === "failed") {
       button.textContent = updateLabel("diag.update.retry", "重试检查更新");
       // 检查失败（离线、公司网络、还没有 release）是常态，不该刷屏。
-      if (update.error && update.error !== "no fetch available") {
+      if (!forceLabelRefresh && update.error && update.error !== "no fetch available") {
         diagnosticsBar?.push("warn", "update", updateLabel("diag.update.failed", "检查更新失败：{error}", { error: update.error }));
       }
     } else if (update.status === "current") {
@@ -340,7 +375,7 @@
   }
 
   updateClient = window.LingerLensDiagnostics?.createUpdateClient({ onUpdate: renderUpdate }) || null;
-  el("diagUpdate")?.addEventListener("click", async () => {
+  el("appUpdateButton")?.addEventListener("click", async () => {
     const status = updateClient?.get()?.update?.status;
     if (status === "available") await updateClient.install();
     else await updateClient.check();
@@ -353,12 +388,14 @@
   el("diagLogOpen")?.addEventListener("click", () => { void devLogClient?.reveal(); });
   /* 按钮标签是 JS 按状态拼的，语言切换时 i18n 那套反向查表管不到它。 */
   document.addEventListener("i18n:changed", () => {
+    renderUpdate(updateClient?.get(), true);
     renderDevLogState(devLogClient?.get());
     // 模型设置/登录 Cookie 两个弹窗里的字段是拼出来的 HTML，不重新渲染就会
     // 停在切换前那门语言。未保存的编辑都在 providerCatalog 里（输入即写入），
     // 所以重渲染不会丢。
     renderProviderProfiles();
     updateCookiePlatformHelp();
+    renderRoleModeHint();
   });
   function providerHasCredential(provider) {
     return provider?.apiKeyConfigured === true
@@ -366,16 +403,57 @@
   }
 
   function providerOption(provider, selected = false) {
-    const label = provider.label || provider.model || provider.id;
+    const label = profileText(provider.id, provider.label || provider.model || provider.id);
     const detail = provider.model && !String(provider.label || "").includes(provider.model)
       ? ` · ${provider.model}`
       : "";
-    return `<option value="${escapeHtml(provider.id)}"${selected ? " selected" : ""}>${escapeHtml(label)}${escapeHtml(detail)}</option>`;
+    // The star is the interface's to draw, not the name's: the catalog labels
+    // carry no star, so this is the one and only one a line can show.
+    const mark = isRecommended(provider) ? "⭐ " : "";
+    return `<option value="${escapeHtml(provider.id)}"${selected ? " selected" : ""}>${escapeHtml(mark + label)}${escapeHtml(detail)}</option>`;
   }
 
   function roleProviders(group, references = []) {
     const referenced = new Set(references.filter(Boolean));
-    return (group?.providers || []).filter((provider) => providerHasCredential(provider) || referenced.has(provider.id));
+    return recommendedFirst(
+      (group?.providers || []).filter(
+        (provider) => providerHasCredential(provider) || referenced.has(provider.id),
+      ),
+    );
+  }
+
+  /*
+   * 推荐档位只有一个：Soniox。它在同一条会话里直接出双语字幕，不需要再配翻译
+   * 模型，所以排在列表最前面、带星标和「推荐」徽标。千问 LiveTranslate 走的是
+   * 同一类端到端协议，但星只给一颗——两个标记并列时用户读到的不是「更推荐」，
+   * 而是「这俩一样」，那还不如不标。
+   *
+   * 判据是「协议」而不是目录里的 recommended 字段：用户自己新建的 Soniox 配置
+   * 和内置预设是同一个档位，只认持久化字段会让它掉到列表底部。
+   */
+  const RECOMMENDED_KINDS = new Set(["soniox-realtime"]);
+
+  /*
+   * 目录里存过的 recommended 是旧意见的快照：在这条规则改之前添加的千问
+   * LiveTranslate 记录里就写着 true，而它已经不带星了。所以对应用已经表过态的
+   * 协议，一律按协议判断；这个字段只对应用没有看法的记录（比如翻译预设）算数。
+   */
+  const RECOMMENDATION_DECIDED_KINDS = new Set(["soniox-realtime", "dashscope-livetranslate-realtime"]);
+
+  function isRecommended(provider) {
+    if (RECOMMENDATION_DECIDED_KINDS.has(provider?.kind)) return RECOMMENDED_KINDS.has(provider?.kind);
+    return provider?.recommended === true;
+  }
+
+  function recommendedFirst(providers) {
+    // Array.prototype.sort 在现代引擎里是稳定的，同档位内保持目录原有顺序。
+    return providers.slice().sort((a, b) => Number(isRecommended(b)) - Number(isRecommended(a)));
+  }
+
+  function recommendedBadge(provider) {
+    return isRecommended(provider)
+      ? `<span class="recommended-badge" title="${escapeHtml(updateLabel("dlg.model.recommendedHint", "同一会话直接生成双语字幕，无需另配翻译模型"))}">⭐ ${escapeHtml(updateLabel("dlg.model.recommended", "推荐"))}</span>`
+      : "";
   }
 
   function renderRoleSelectors(config) {
@@ -391,6 +469,37 @@
     for (const [id, group, active, references] of definitions) {
       el(id).innerHTML = roleProviders(group, references).map((provider) => providerOption(provider, provider.id === active)).join("");
     }
+    // Soniox/Qwen LiveTranslate can translate on the ASR session itself. In
+    // that mode the ordinary subtitle translator and its fallback remain in
+    // the saved catalog for when the user switches back, but they are not
+    // called for the current stream. Disable both selectors so the UI says
+    // exactly what will happen instead of suggesting a second model is active.
+    const nativeTranslation = Boolean(languageState.translation?.native);
+    for (const id of ["roleSubtitle", "roleFallback"]) {
+      const select = el(id);
+      const status = el(id === "roleSubtitle" ? "roleSubtitleStatus" : "roleFallbackStatus");
+      if (!select) continue;
+      select.disabled = nativeTranslation;
+      if (nativeTranslation) {
+        select.title = updateLabel(
+          "msg.nativeTranslationRoleDisabled",
+          "当前使用识别 Provider 的内置翻译；此处的独立字幕翻译不会被调用。",
+        );
+        select.setAttribute("aria-describedby", "roleModeHint");
+      } else {
+        select.removeAttribute("title");
+        select.removeAttribute("aria-describedby");
+      }
+      if (status) {
+        status.hidden = !nativeTranslation;
+        status.textContent = nativeTranslation
+          ? updateLabel(
+            "msg.nativeTranslationRoleUnavailable",
+            "不可用：已由识别 Provider 的内置翻译接管",
+          )
+          : "";
+      }
+    }
     const fallbackSelect = el("roleFallback");
     if (fallbackSelect) {
       const fallbackActive = fallback.find((id) => id !== translation.active) || "";
@@ -398,8 +507,9 @@
       // Provider 滤掉，于是只配了一个翻译 Provider 时兜底永远是空的——那不像
       // 「没得选」，更像坏掉了。
       const fallbackProviders = roleProviders(translation, [fallbackActive, translation.active]);
-      fallbackSelect.innerHTML = `<option value="">不选</option>${fallbackProviders.map((provider) => providerOption(provider, provider.id === fallbackActive)).join("")}`;
+      fallbackSelect.innerHTML = `<option value="">${updateLabel("opt.none", "不选")}</option>${fallbackProviders.map((provider) => providerOption(provider, provider.id === fallbackActive)).join("")}`;
     }
+    renderRoleModeHint();
   }
   async function selectRole(id, section) {
     const controls = ["roleAsr", "roleSubtitle", "roleFallback", "roleChat"].map(el);
@@ -412,6 +522,7 @@
         : { [section]: { active: value } };
       const data = await request("/api/providers", patch);
       renderRoleSelectors(data);
+      if (section === "asr") await refreshLanguageCapabilities();
       el("roleFeedback").textContent = section === "asr"
         ? updateLabel("msg.saved", "已保存")
         : section === "translationFallback"
@@ -428,6 +539,27 @@
   let sourceSelector = null;
   let targetSelector = null;
   let candidateSelector = null;
+
+  function renderRoleModeHint() {
+    const node = el("roleModeHint");
+    if (!node) return;
+    if (languageState.translation?.native) {
+      node.textContent = updateLabel(
+        "msg.nativeBilingualMode",
+        "当前字幕模式：识别 Provider 内置双语；不调用独立翻译模型。画面是否显示两行，由“字幕显示”中的“显示”决定。",
+      );
+      node.dataset.tone = "native";
+    } else if (languageState.translation) {
+      node.textContent = updateLabel(
+        "msg.separateTranslationMode",
+        "当前字幕模式：语音识别 + 独立翻译。这里的“字幕翻译” Provider 会接收识别结果；画面是否显示两行，由“字幕显示”中的“显示”决定。",
+      );
+      node.dataset.tone = "separate";
+    } else {
+      node.textContent = "";
+      delete node.dataset.tone;
+    }
+  }
   const subtitleScheduler = window.createSubtitleScheduler
     ? window.createSubtitleScheduler({ minDwell: 1.2, maxLateSeconds: 2.0, bridgeGap: 0.3 })
     : null;
@@ -545,7 +677,7 @@
     : null;
 
   let timelineRenderTimer = null;
-  const subtitleBudget = { lowSince: null, suggested: null };
+  const subtitleBudget = { lowSince: null, suggested: null, primed: false };
   const savedTargetDelay = Number(localStorage.getItem("lingerlens.targetDelaySeconds") || 15);
   const chatTranslatePreference = localStorage.getItem("lingerlens.liveMessages.translate") === "true";
   el("chatTranslateToggle").checked = chatTranslatePreference;
@@ -567,6 +699,22 @@
   };
   if (initialParams.get("url")) el("url").value = initialParams.get("url");
   if (el("proxy")) el("proxy").value = localStorage.getItem("lingerlens.proxy") || "";
+  if (el("proxyMode")) {
+    const savedProxyMode = localStorage.getItem("lingerlens.proxy.mode");
+    el("proxyMode").value = ["direct", "system", "manual"].includes(savedProxyMode)
+      ? savedProxyMode
+      : (el("proxy").value ? "manual" : "system");
+  }
+
+  function updateProxyModeUi() {
+    const mode = el("proxyMode")?.value || "system";
+    const manual = mode === "manual";
+    const field = el("proxyManualField");
+    if (field) field.hidden = !manual;
+    if (!manual && el("proxy")) el("proxy").setCustomValidity("");
+    if (el("proxyMode")) localStorage.setItem("lingerlens.proxy.mode", mode);
+  }
+  updateProxyModeUi();
   el("targetDelay").value = String(savedTargetDelay > 10 && savedTargetDelay <= 60 ? savedTargetDelay : 15);
 
   const setState = (text, tone = "idle") => {
@@ -660,8 +808,16 @@
 
   function commonBody() {
     const body = { url: el("url").value.trim() };
-    const proxy = el("proxy")?.value.trim() || "";
-    if (proxy) { body.proxy = proxy; localStorage.setItem("lingerlens.proxy", proxy); }
+    const mode = el("proxyMode")?.value || "system";
+    body.proxyMode = mode;
+    if (mode === "manual") {
+      const proxy = el("proxy")?.value.trim() || "";
+      if (!proxy) throw new Error("请选择代理地址，或把网络连接方式改为直连/系统代理。");
+      body.proxy = proxy;
+      localStorage.setItem("lingerlens.proxy", proxy);
+    } else if (mode === "direct") {
+      localStorage.removeItem("lingerlens.proxy");
+    }
     if (authToken) body.authToken = authToken;
     return body;
   }
@@ -684,7 +840,7 @@
     try {
       const data = await request("/api/probe", commonBody());
       const select = el("quality");
-      select.innerHTML = '<option value="auto">自动（最高兼容）</option>';
+      select.innerHTML = `<option value="auto">${updateLabel("quality.autoBest", "自动（最高兼容）")}</option>`;
       for (const quality of data.qualities) {
         const option = document.createElement("option");
         option.value = quality.qualityId;
@@ -794,7 +950,7 @@
     setMediaLoading(false);
     stage.classList.remove("has-media");
     el("quality").disabled = true;
-    el("quality").innerHTML = '<option value="auto">自动（最高兼容）</option>';
+    el("quality").innerHTML = `<option value="auto">${updateLabel("quality.autoBest", "自动（最高兼容）")}</option>`;
     el("start").disabled = true;
     el("setupPlayback").hidden = true;
     el("setupFeedback").textContent = "已停止。可以重新解析，或粘贴另一场直播的链接。";
@@ -856,7 +1012,7 @@
         .catch((error) => {
           // 本地已经停止；这里只留诊断痕迹，不打扰用户。A timeout is NOT the
           // server saying it stopped, so the barrier stays up.
-          diagnosticsBar?.push("warn", "ui", `停止清理未确认：${error.message || error}`);
+          diagnosticsBar?.push("warn", "ui", updateLabel("err.stopCleanupUnconfirmed", "停止清理未确认：{error}", { error: error.message || error }));
         })
         .finally(() => { pendingStop = null; });
     }
@@ -897,13 +1053,12 @@
       hls.on(Hls.Events.MANIFEST_PARSED, () => attemptAutoplay());
       hls.on(Hls.Events.LEVEL_UPDATED, (_, data) => {
         latestLevelDetails = data?.details || null;
-        const edge = data?.details?.edge;
-        browserLatency = Number.isFinite(edge) && Number.isFinite(video.currentTime) ? Math.max(0, edge - video.currentTime) : null;
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal) return;
         // Ignore errors from a player instance this session has already replaced.
         if (hls !== player) return;
+        if (mseRecoveryTimer !== null) return;
         const errorType = data.type === Hls.ErrorTypes.NETWORK_ERROR ? "network"
           : data.type === Hls.ErrorTypes.MEDIA_ERROR ? "media"
           : null;
@@ -916,16 +1071,21 @@
           attemptsInWindow: mseRecoveryAttempts,
         });
         if (decision.action === "give-up") {
-          showError(new Error(`播放无法恢复：${decision.reason}（${data.details}）`));
+          showError(new Error(updateLabel("err.playUnrecoverable", "播放无法恢复：{reason}（{details}）", { reason: decision.reason, details: data.details })));
           return;
         }
         mseRecoveryAttempts += 1;
+        mseRecoveryPlayed = 0;
         // Rebuild/reload always costs a rebuffer, so space attempts out instead
         // of re-entering the failure immediately.
-        window.setTimeout(() => {
+        mseRecoveryTimer = window.setTimeout(() => {
+          mseRecoveryTimer = null;
           if (!hls || hls !== player) return;
           if (decision.action === "recover-media") hls.recoverMediaError();
-          else if (decision.action === "swap-codec") hls.swapAudioCodec();
+          else if (decision.action === "swap-codec") {
+            hls.swapAudioCodec();
+            hls.recoverMediaError();
+          }
           else hls.startLoad();
         }, decision.delayMs);
       });
@@ -936,6 +1096,29 @@
       showError(new Error("此浏览器不支持 MSE/HLS"));
     }
     stage.classList.add("has-media");
+  }
+
+  function notePlaybackProgress() {
+    const position = Number(video.currentTime);
+    const now = performance.now();
+    const advance = position - mseRecoveryProgressAt;
+    const elapsed = mseRecoveryProgressWall === null ? 0 : (now - mseRecoveryProgressWall) / 1000;
+    mseRecoveryProgressAt = position;
+    mseRecoveryProgressWall = now;
+    const plausible = elapsed > 0 && advance > 0
+      && advance <= elapsed * Math.max(1, video.playbackRate || 1) * 1.5 + 0.25;
+    if (!video.paused && !video.seeking && video.readyState >= 2 && plausible) {
+      mseRecoveryPlayed += Math.min(advance, elapsed);
+      if (mseRecoveryPlayed >= 0.5 && mseRecoveryTimer !== null) {
+        window.clearTimeout(mseRecoveryTimer);
+        mseRecoveryTimer = null;
+      }
+      // A seek is not a recovery, and one short decoded burst must not grant
+      // an unlimited number of rebuilds to a repeatedly failing stream.
+      if (mseRecoveryPlayed >= 2) mseRecoveryAttempts = 0;
+    } else {
+      mseRecoveryPlayed = 0;
+    }
   }
 
   function attemptAutoplay() {
@@ -949,17 +1132,23 @@
   }
 
   function destroyPlayer() {
+    if (mseRecoveryTimer !== null) window.clearTimeout(mseRecoveryTimer);
+    mseRecoveryTimer = null;
     if (hls) hls.destroy();
     hls = null;
     lastPlaylistUrl = null;
-    browserLatency = null;
     latestLevelDetails = null;
     sourceWasStalled = false;
     lastRecoverySeekAt = -Infinity;
     mseRecoveryAttempts = 0;
     mseRecoveryProgressAt = 0;
+    mseRecoveryProgressWall = null;
+    mseRecoveryPlayed = 0;
     video.playbackRate = 1;
     subtitleCues.clear();
+    subtitleCueOrderDirty = true;
+    subtitleDraft = null;
+    resetSubtitleBudget();
     subtitleAfterSeq = 0;
     subtitleMaxKnownEnd = 0;
     if (subtitleScheduler) subtitleScheduler.reset();
@@ -1025,7 +1214,24 @@
         stoppedMediaSessionId = null;
         stopUnconfirmedLogged = false;
       }
+      if (observedMediaSessionId !== null && mediaSessionId !== observedMediaSessionId
+          && sessionAction !== "starting") {
+        ++uiGeneration;
+        destroyPlayer();
+      }
       observedMediaSessionId = mediaSessionId;
+      const recovery = data.sessionRecovery || {};
+      if (recovery.state === "reconnecting") {
+        // The backend tears down the old clock before it re-probes the source.
+        // Keep the page in a waiting state during that short gap instead of
+        // showing a terminal FFmpeg error or resetting the setup form. A later
+        // poll sees the new mediaSessionId and attaches the fresh timeline.
+        resetSubtitleBudget();
+        setMediaLoading(true, "正在自动恢复直播…");
+        setState("正在自动恢复", "waiting");
+        el("message").textContent = updateLabel("msg.reconnectingAttempt", "直播暂时中断，正在重新连接（第 {n} 次）…", { n: Number(recovery.attempts || 0) });
+        return;
+      }
       // While this page is starting a session the server still describes the
       // previous one, so attaching from it would reconnect the playlist being
       // replaced. The first poll after start() settles attaches normally.
@@ -1035,6 +1241,7 @@
         // The error branch throws, so the shared updateStallOverlay() call near
         // the end of this function never runs. Show the error banner here
         // rather than relying on a second, unexplained call at the top.
+        resetSubtitleBudget();
         updateStallOverlay(data);
         setMediaLoading(false);
         throw new Error(data.error || "FFmpeg failed");
@@ -1047,10 +1254,15 @@
         }
       }
       if (data.state === "idle" && (hls || video.src) && sessionAction !== "stopping") resetStoppedUi();
-      el("hiddenDelay").textContent = seconds(Number(data.hiddenMediaSeconds));
-      const playerBehind = Number.isFinite(browserLatency) ? browserLatency : estimateVideoLatency();
+      el("hiddenDelay").textContent = seconds(data.hiddenMediaSeconds);
+      const playerBehind = estimateVideoLatency();
       el("playerDelay").textContent = seconds(playerBehind);
-      const measuredDelay = Number(data.sourceDelaySeconds || 0) + Number(data.hiddenMediaSeconds || 0) + (playerBehind || 0);
+      // Both positions are on the local HLS media clock. Adding withheld
+      // seconds to a browser edge from a different playlist refresh races them.
+      const currentWall = mediaClock?.playingWallTime?.();
+      const measuredDelay = data.state === "running" && Number.isFinite(data.privateEdgeWallTime)
+        && Number.isFinite(currentWall) && data.privateEdgeWallTime >= currentWall
+        ? data.privateEdgeWallTime - currentWall : null;
       el("totalDelay").textContent = seconds(measuredDelay);
       updateStallOverlay(data);
       if (data.state === "running" && Number(data.targetDelaySeconds) > 10) {
@@ -1059,12 +1271,12 @@
       }
       const ahead = bufferAhead();
       el("buffer").textContent = seconds(ahead);
-      updatePlaybackRecovery(data, playerBehind, ahead);
+      updatePlaybackRecovery(data, playerBehind, ahead, measuredDelay);
       el("uptime").textContent = seconds(Number(data.uptimeSeconds));
       const subtitles = data.subtitles || {};
       el("subtitleProviderStatus").innerHTML = subtitles.asrProviderId
-        ? `<span><small>ASR</small>${escapeHtml(subtitles.asrProviderLabel || subtitles.asrProviderId)}</span><span><small>${updateLabel("cost.translation", "翻译")}</small>${escapeHtml(subtitles.translationProviderLabel || subtitles.translationProviderId || updateLabel("cost.originalOnly", "仅原文"))}</span>`
-        : "<span class=\"usage-empty\">未运行</span>";
+        ? `<span><small>ASR</small>${escapeHtml(profileText(subtitles.asrProviderId, subtitles.asrProviderLabel || subtitles.asrProviderId))}</span><span><small>${updateLabel("cost.translation", "翻译")}</small>${escapeHtml(profileText(subtitles.translationProviderId, subtitles.translationProviderLabel || subtitles.translationProviderId) || updateLabel("cost.originalOnly", "仅原文"))}</span>`
+        : `<span class="usage-empty">${updateLabel("state.notRunning", "未运行")}</span>`;
       const asrUsage = subtitles.asrUsage || { seconds: subtitles.asrSeconds || 0 };
       const translationUsage = subtitles.translationUsage || {};
       el("asrUsageCost").innerHTML = `<span><small>${updateLabel("cost.audio", "音频")}</small>${Number(asrUsage.seconds || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${updateLabel("unit.seconds", "秒")}</span><span><small>${updateLabel("cost.costLabel", "费用")}</small>${costText(subtitles.asrEstimatedCostCny, subtitles.asrCostCurrency)}</span>`;
@@ -1080,15 +1292,18 @@
         if (node) node.title = reason || "";
       }
       const latency = subtitles.avgTranslationLatencyMs;
-      el("translationLatency").textContent = Number.isFinite(Number(latency)) ? `${(Number(latency) / 1000).toFixed(2)} ${updateLabel("unit.seconds", "秒")}` : "—";
+      el("translationLatency").textContent = Number.isFinite(latency) ? `${(Number(latency) / 1000).toFixed(2)} ${updateLabel("unit.seconds", "秒")}` : "—";
       updateSubtitleBudget(subtitles, measuredDelay, Number(data.targetDelaySeconds));
       if (data.quality) el("resolution").textContent = `${data.quality.width || "?"}×${data.quality.height || "?"}${data.quality.fps ? ` @ ${data.quality.fps}fps` : ""}`;
     } catch (error) {
+      if (claim !== uiGeneration) return;
+      resetSubtitleBudget();
+      for (const id of ["totalDelay", "hiddenDelay", "playerDelay", "buffer", "translationLatency", "subtitleReadyLag"]) el(id).textContent = "—";
       if (!String(error.message).includes("Failed to fetch")) showError(error);
     }
   }
 
-  function updatePlaybackRecovery(data, playerBehind, ahead) {
+  function updatePlaybackRecovery(data, playerBehind, ahead, measuredDelay = null) {
     if (!video) return;
     if (data?.state !== "running") {
       video.playbackRate = 1;
@@ -1119,10 +1334,14 @@
     // question drift apart. `=== true` so a non-boolean cannot pose as a stall.
     const isStalled = health.active === true && health.kind === "upstream";
     const recovered = sourceWasStalled && !isStalled;
+    // Use the same media positions as the displayed local lag. The backend's
+    // withheld duration and this browser's playlist may be from different ticks.
+    const edgeGap = Number.isFinite(measuredDelay) && Number.isFinite(playerBehind)
+      ? Math.max(0, measuredDelay - playerBehind) : data.hiddenMediaSeconds;
     const decision = window.decidePlaybackRecovery?.({
       playerBehind,
       targetDelay: data.targetDelaySeconds,
-      hiddenDelay: data.hiddenMediaSeconds,
+      hiddenDelay: edgeGap,
       bufferAhead: ahead,
       upstreamStalled: isStalled,
       recovered,
@@ -1289,7 +1508,7 @@
       quietSourceLogged = stalled;
       if (stalled) {
         diagnosticsBar?.push("warn", "source",
-          `直播源已停 ${Math.round(health.stallSeconds)} 秒（${health.kind}），当前播放缓冲 ${Math.round(ahead)} 秒`);
+          updateLabel("msg.stallSummary", "直播源已停 {seconds} 秒（{kind}），当前播放缓冲 {ahead} 秒", { seconds: Math.round(health.stallSeconds), kind: health.kind, ahead: Math.round(ahead) }));
       }
     }
     if (!stalled || !starving) {
@@ -1315,6 +1534,9 @@
   }
 
   function estimateVideoLatency() {
+    if (!Number.isFinite(video.currentTime) || video.readyState < 2) return null;
+    // Recompute on every poll; currentTime changes between LEVEL_UPDATED events.
+    if (Number.isFinite(latestLevelDetails?.edge)) return Math.max(0, latestLevelDetails.edge - video.currentTime);
     if (!video.seekable.length) return null;
     return Math.max(0, video.seekable.end(video.seekable.length - 1) - video.currentTime);
   }
@@ -1345,27 +1567,68 @@
   }
 
   const providerKinds = {
+    // Grouped in the order they should be tried, because these two do something
+    // the others do not: they translate on the recognition session itself, so a
+    // bilingual subtitle needs no second model and no second failure point.
+    // Every protocol below them is wired from vendor docs and tested against a
+    // local fake server only, which proves the request shape and nothing else.
     asr: [
-      ["dashscope-qwen-realtime", "DashScope Qwen Realtime"],
-      ["dashscope-task-asr", "DashScope Task ASR"],
-      ["openai-audio-transcriptions", "OpenAI Audio Transcriptions"],
-      ["deepgram-streaming", "Deepgram Streaming"],
-      ["soniox-realtime", "Soniox Realtime STT"],
-      ["openai-realtime-transcription", "OpenAI Realtime Transcription"],
-      ["assemblyai-streaming", "AssemblyAI Streaming v3"],
-      ["volcengine-sauc", "火山引擎豆包大模型流式 ASR (v3 sauc)"],
-      ["elevenlabs-scribe-realtime", "ElevenLabs Scribe v2 Realtime"],
-      ["speechmatics-realtime", "Speechmatics Realtime v2"],
-      ["tencent-asr", "腾讯云实时语音识别"],
+      [
+        "bilingual",
+        [
+          ["soniox-realtime", "⭐ Soniox Realtime STT（端到端双语）"],
+          ["dashscope-livetranslate-realtime", "DashScope Qwen LiveTranslate（端到端双语）"],
+        ],
+      ],
+      [
+        "recognition",
+        [
+          ["dashscope-qwen-realtime", "DashScope Qwen Realtime"],
+          ["soniox-realtime-transcribe", "Soniox Realtime STT（只做识别）"],
+          ["dashscope-task-asr", "DashScope Task ASR"],
+          ["openai-audio-transcriptions", "OpenAI Audio Transcriptions"],
+          ["deepgram-streaming", "Deepgram Streaming"],
+          ["openai-realtime-transcription", "OpenAI Realtime Transcription"],
+          ["assemblyai-streaming", "AssemblyAI Streaming v3"],
+          ["volcengine-sauc", "火山引擎豆包大模型流式 ASR (v3 sauc)"],
+          ["elevenlabs-scribe-realtime", "ElevenLabs Scribe v2 Realtime"],
+          ["speechmatics-realtime", "Speechmatics Realtime v2"],
+          ["tencent-asr", "腾讯云实时语音识别"],
+        ],
+      ],
     ],
     translation: [
-      ["openai-compatible", "OpenAI Compatible"],
-      ["anthropic-messages", "Anthropic Messages (Claude)"],
-      ["google-genai", "Google Gemini (GenerateContent)"],
+      [
+        null,
+        [
+          ["openai-compatible", "OpenAI Compatible"],
+          ["anthropic-messages", "Anthropic Messages (Claude)"],
+          ["google-genai", "Google Gemini (GenerateContent)"],
+        ],
+      ],
     ],
   };
 
+  // The group headings carry the recommendation, not just decoration: an
+  // untested protocol listed right next to a working one reads as an equal
+  // option. A section without an entry here stays one flat list.
+  const providerKindGroups = {
+    bilingual: ["grp.bilingual", "端到端双语（识别与翻译在同一会话 · 已实测）"],
+    recognition: ["grp.recognitionOnly", "只做识别（需再配一个翻译模型）"],
+  };
+
   const providerDefaults = {
+    // No `translationType` here: this protocol has no switch to turn
+    // translating off, so the key was a control that changed nothing.
+    // The global host is what the live service answers on, so a new profile
+    // works with just an API key. `workspaceId` stays for anyone pointed at a
+    // regional `*.maas.aliyuncs.com` host by their own provider page.
+    // `voice` is load-bearing even for text-only subtitles: the session the
+    // server starts has voice `Chelsie`, which this model rejects on its first
+    // turn, and the connection dies before any caption exists.
+    // Saving a profile writes these numbers into providers.json, where they win
+    // over the backend builtin -- so silenceDurationMs has to agree with config.py.
+    "dashscope-livetranslate-realtime": { model: "qwen3.8-livetranslate-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000, workspaceId: "", voice: "Tina", audioOutput: false, silenceDurationMs: 300, sourceLanguage: "", closeDrainTimeoutSeconds: 15 } },
     "dashscope-qwen-realtime": { model: "qwen3-asr-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000 } },
     "dashscope-task-asr": { model: "fun-asr-realtime-2026-02-28", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference", options: { sampleRate: 16000, heartbeat: true } },
     // No `language` here. The adapter builds its request from the global
@@ -1375,7 +1638,8 @@
     // carries one loads, round-trips and is ignored, as before.
     "openai-audio-transcriptions": { model: "", baseUrl: "https://api.openai.com/v1", options: { windowSeconds: 3, requestTimeoutSeconds: 20 } },
     "deepgram-streaming": { model: "nova-3", baseUrl: "wss://api.deepgram.com/v1/listen", options: { interimResults: true, smartFormat: true, endpointingMs: 100, vadEvents: true, utteranceEndMs: 1000, keepAliveSeconds: 8 } },
-    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700 } },
+    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3, translationType: "one_way" } },
+    "soniox-realtime-transcribe": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3 } },
     "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
     "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", speakerLabels: true, maxSpeakers: 6 } },
     "volcengine-sauc": { model: "bigmodel_async", baseUrl: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", options: { resourceId: "volc.bigasr.sauc.concurrent", authMode: "new" } },
@@ -1450,9 +1714,9 @@
       button.className = "connection-item";
       button.setAttribute("aria-pressed", String(editingModel[section] === p.id));
       const uses = [];
-      if (p.id === group.active) uses.push(section === "asr" ? "识别已选" : "字幕已选");
-      if (section === "translation" && p.id === providerCatalog.chatTranslation?.active) uses.push("弹幕已选");
-      button.textContent = `${p.label || p.model}  ${uses.join(" · ")}`;
+      if (p.id === group.active) uses.push(section === "asr" ? updateLabel("dlg.model.pickedAsr", "识别已选") : updateLabel("dlg.model.pickedSubs", "字幕已选"));
+      if (section === "translation" && p.id === providerCatalog.chatTranslation?.active) uses.push(updateLabel("dlg.model.pickedChat", "弹幕已选"));
+      button.textContent = `${isRecommended(p) ? "⭐ " : ""}${profileText(p.id, p.label || p.model)}  ${uses.join(" · ")}`;
       button.addEventListener("click", () => { editingModel[section] = p.id; renderProviderProfiles(); });
       list.append(button);
     });
@@ -1463,12 +1727,21 @@
       card.dataset.providerId = provider.id;
       const isActive = group.active === provider.id;
       const cannotDelete = isActive || (section === "translation" && providerCatalog.chatTranslation?.active === provider.id) || group.providers.length === 1;
-      const kinds = providerKinds[section].map(([value, label]) =>
-        `<option value="${value}"${provider.kind === value ? " selected" : ""}>${label}</option>`
-      ).join("");
+      const kinds = providerKinds[section].map(([group, items]) => {
+        // The captions are vendor names plus a qualifier, and four of them carry
+        // Chinese that no other locale can read, so each resolves through
+        // `proto.<kind>` and keeps this label as the fallback.
+        const options = items.map(([value, itemLabel]) =>
+          `<option value="${value}"${provider.kind === value ? " selected" : ""}>${escapeHtml(updateLabel(`proto.${value}`, itemLabel))}</option>`
+        ).join("");
+        const heading = providerKindGroups[group];
+        if (!heading) return options;
+        return `<optgroup label="${escapeHtml(updateLabel(heading[0], heading[1]))}">${options}</optgroup>`;
+      }).join("");
       card.innerHTML = `
         <header class="provider-profile-head">
-          <strong class="active-provider">${updateLabel("dlg.model.editing", "正在编辑：")}${escapeHtml(provider.label || provider.model)}</strong>
+          <strong class="active-provider">${updateLabel("dlg.model.editing", "正在编辑：")}${escapeHtml(profileText(provider.id, provider.label || provider.model))}</strong>
+          ${recommendedBadge(provider)}
           <code>${escapeHtml(provider.id)}</code>
           <button class="secondary compact provider-delete" type="button" data-action="delete" ${cannotDelete ? "disabled" : ""}>${updateLabel("action.delete", "删除")}</button>
         </header>
@@ -1528,17 +1801,49 @@
     return value ? " checked" : "";
   }
 
+  function translationModeField(options, L) {
+    const mode = options.translationType === "one_way" || options.translationType === "two_way"
+      ? options.translationType
+      : "";
+    return `
+      <label><span>${L("opt.translationMode", "Provider 内置翻译")}</span><select data-option="translationType">
+        <option value=""${mode === "" ? " selected" : ""}>${L("opt.translationOff", "关闭（只做识别）")}</option>
+        <option value="one_way"${mode === "one_way" ? " selected" : ""}>${L("opt.translationOneWay", "单向（识别＋译成目标语言，出双语字幕）")}</option>
+        <option value="two_way"${mode === "two_way" ? " selected" : ""}>${L("opt.translationTwoWay", "双向（语言 A ↔ 语言 B 互译，需填两侧）")}</option>
+      </select></label>
+      <p class="provider-hint wide">${L("opt.translationHelp", "这里控制 Soniox 是否在同一会话里翻译：关闭=只识别；单向=源语言→字幕目标语言；双向=语言 A↔语言 B，适合双语对话。单向和双向都会送回原文与译文两条文本，画面上显示几行由“字幕显示→显示”决定（选了“仅译文”就只剩一行译文）。")}</p>
+      <label><span>${L("opt.translationLanguageA", "双向语言 A（对话用）")}</span><input data-option="translationLanguageA" value="${escapeHtml(options.translationLanguageA || "")}" placeholder="ja"></label>
+      <label><span>${L("opt.translationLanguageB", "双向语言 B（对话用）")}</span><input data-option="translationLanguageB" value="${escapeHtml(options.translationLanguageB || "")}" placeholder="zh"></label>`;
+  }
+
   function asrOptionFields(provider) {
     const options = provider.options || {};
     const L = (key, fallback) => updateLabel(key, fallback);
+    if (provider.kind === "dashscope-livetranslate-realtime") return `
+      <label><span><input data-option="audioOutput" type="checkbox"${checked(options.audioOutput)}> ${L("opt.audioOutput", "同时输出合成语音（额外计费）")}</span></label>
+      ${options.audioOutput ? `<label><span>${L("opt.livetranslateVoice", "翻译语音的音色（voice）")}</span><input data-option="voice" value="${escapeHtml(options.voice || "Tina")}" placeholder="Tina"><small>${L("opt.livetranslateVoiceHelp", "听到的译文语音用什么声音，不填默认 Tina。")}</small></label>` : ""}
+      <label><span>${L("opt.pinSourceLanguage", "锁定源语言（留空=自动识别）")}</span><input data-option="sourceLanguage" value="${escapeHtml(options.sourceLanguage || "")}" placeholder="ja"></label>
+      <label><span>${L("opt.silenceDurationMs", "断句静音阈值 ms")}</span><input data-option="silenceDurationMs" type="number" min="200" max="6000" step="100" value="${Number(options.silenceDurationMs || 300)}"><small>${L("opt.silenceDurationMsHelp", "说完话之后静音多久就断句出字幕。默认 300：模型自己收尾的那条字幕一定带着译文，所以这里越小越好；它一直不收尾的长句，改由我们的 7 秒上限切开。")}</small></label>
+      <label><span>${L("opt.workspaceId", "业务空间 ID（可选）")}</span><input data-option="workspaceId" value="${escapeHtml(options.workspaceId || "")}" placeholder="llm-xxxxxxxx"><small>${L("opt.workspaceIdHelp", "默认的全局地址不需要它。只有把 Base URL 换成 wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/… 这类按业务空间分配的地址时才填，填了会自动替换地址里的占位符。")}</small></label>
+      <label><span>${L("opt.nativeTimeout", "内置翻译等待（秒）")}</span><input data-option="nativeTranslationTimeoutSeconds" type="number" min="3" max="60" step="1" value="${Number(options.nativeTranslationTimeoutSeconds || 15)}"></label>
+      <p class="provider-hint wide">${L("opt.livetranslateHint", "这个 Profile 是字幕接口：默认只往画面上送原文和译文，不合成语音（实测一场直播下来一个语音字节都没收到）。译文语言取字幕设置里的目标语言，源语言由模型自己判断；锁定源语言只对 3.5 代模型生效，3.8 没有这个参数，始终自动识别。")}</p>`;
     if (provider.kind === "openai-audio-transcriptions") return `
       <label><span>${L("opt.windowSeconds", "分窗秒数")}</span><input data-option="windowSeconds" type="number" min="0.5" step="0.5" value="${Number(options.windowSeconds || 3)}"></label>
       <label><span>${L("opt.requestTimeoutSeconds", "请求超时（秒）")}</span><input data-option="requestTimeoutSeconds" type="number" min="1" step="1" value="${Number(options.requestTimeoutSeconds || 20)}"></label>`;
-    if (provider.kind === "soniox-realtime") return `
+    if (provider.kind === "soniox-realtime" || provider.kind === "soniox-realtime-transcribe") {
+      // The transcribe-only entry shares the model and every control with the
+      // bilingual one, minus the switch: the backend pins translating off for it,
+      // so offering a control that cannot take effect would be a lie.
+      const transcribeOnly = provider.kind === "soniox-realtime-transcribe";
+      return `
       <label><span><input data-option="enableEndpointDetection" type="checkbox"${checked(options.enableEndpointDetection !== false)}> ${L("opt.endpointDetection", "端点检测")}</span></label>
       <label><span><input data-option="enableLanguageIdentification" type="checkbox"${checked(options.enableLanguageIdentification !== false)}> ${L("opt.languageIdentification", "语言识别")}</span></label>
       <label><span><input data-option="enableSpeakerDiarization" type="checkbox"${checked(options.enableSpeakerDiarization)}> ${L("opt.speakerDiarization", "说话人分离")}</span></label>
-      <label><span>${L("opt.maxEndpointDelayMs", "最大端点延迟 ms")}</span><input data-option="maxEndpointDelayMs" type="number" min="500" max="3000" step="100" value="${Number(options.maxEndpointDelayMs || 2000)}"></label>`;
+      <label><span>${L("opt.maxEndpointDelayMs", "最大端点延迟 ms")}</span><input data-option="maxEndpointDelayMs" type="number" min="500" max="3000" step="100" value="${Number(options.maxEndpointDelayMs || 700)}"></label>
+      ${transcribeOnly
+        ? `<p class="provider-hint wide">${L("opt.transcribeOnlyHint", "这条协议只做识别，不会在会话里翻译；译文由「字幕翻译」那一个模型来出。")}</p>`
+        : translationModeField(options, L)}`;
+    }
     if (provider.kind === "deepgram-streaming") return `
       <label><span><input data-option="diarize" type="checkbox"${checked(options.diarize)}> ${L("opt.diarizeBilled", "说话人分离（附加计费）")}</span></label>
       <label><span>${L("opt.endpointingMs", "Endpointing ms")}</span><input data-option="endpointingMs" type="number" min="1" step="10" value="${Number(options.endpointingMs || 300)}"></label>
@@ -1621,8 +1926,24 @@
     el("modelSettingsDialog").close();
   }
 
+  const cookieDrafts = new Map();
+  let cookieDraftPlatform = el("cookiePlatform")?.value || null;
+
   function updateCookiePlatformHelp() {
-    const platform = el("cookiePlatform").value;
+    const platformSelect = el("cookiePlatform");
+    const payloadField = el("cookiePayload");
+    const platform = platformSelect.value;
+    // Keep only unsent text in memory, keyed by platform. A platform change
+    // must never leave a YouTube Cookie visible while Bilibili is selected,
+    // and saved Cookie values are intentionally never fetched back into this
+    // field from disk.
+    if (cookieDraftPlatform === null) {
+      cookieDraftPlatform = platform;
+    } else if (cookieDraftPlatform !== platform) {
+      cookieDrafts.set(cookieDraftPlatform, payloadField.value);
+      payloadField.value = cookieDrafts.get(platform) || "";
+      cookieDraftPlatform = platform;
+    }
     const bilibili = platform === "bilibili";
     const twitch = platform === "twitch";
     el("cookieImportIntro").textContent = bilibili
@@ -1630,7 +1951,7 @@
       : twitch
         ? updateLabel("dlg.cookie.intro.twitch", "从 twitch.tv 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。公开 Twitch 直播不要求 Cookie。")
         : updateLabel("dlg.cookie.intro.youtube", "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。");
-    el("cookiePayload").placeholder = bilibili
+    payloadField.placeholder = bilibili
       ? "SESSDATA　xxxxxxxx…\nbili_jct　yyyyyyyy…\nDedeUserID　12345"
       : twitch
         ? updateLabel("dlg.cookie.ph.twitch", "auth-token　xxxxxxxx…\npersistent　1\n（公开直播可不导入）")
@@ -1670,8 +1991,8 @@
       authToken = data.authToken;
       if (data.missingCritical && data.missingCritical.length) {
         feedback.textContent = data.platform === "bilibili"
-          ? `已保存 ${data.accepted} 个 Bilibili Cookie，但缺少 yt-dlp 登录关键字段 SESSDATA。请从 bilibili.com 的 Cookie 列表重新复制。`
-          : `已保存 ${data.accepted} 个 YouTube Cookie，但缺少登录关键字段：${data.missingCritical.join("、")}。请从 YouTube/Google 登录域的 Cookie 列表重新复制。`;
+          ? updateLabel("dlg.cookie.missingSessdata", "已保存 {count} 个 Bilibili Cookie，但缺少 yt-dlp 登录关键字段 SESSDATA。请从 bilibili.com 的 Cookie 列表重新复制。", { count: data.accepted })
+          : updateLabel("dlg.cookie.missingYoutube", "已保存 {count} 个 YouTube Cookie，但缺少登录关键字段：{fields}。请从 YouTube/Google 登录域的 Cookie 列表重新复制。", { count: data.accepted, fields: data.missingCritical.join("、") });
         feedback.dataset.tone = "error";
       } else {
         const platformName = data.platform === "bilibili" ? "Bilibili" : data.platform === "twitch" ? "Twitch" : "YouTube";
@@ -1683,6 +2004,8 @@
           { count: data.accepted, platform: platformName, names: data.names.join("、") },
         );
         feedback.dataset.tone = "success";
+        cookieDrafts.set(payload.platform, "");
+        el("cookiePayload").value = "";
       }
       el("message").textContent = updateLabel("dlg.cookie.importedNotice", "登录 Cookie 已导入，解析与播放将使用该登录态。");
     } catch (error) {
@@ -1777,7 +2100,7 @@
       chip.className = "language-chip";
       chip.dir = "auto";
       chip.textContent = `${index === 0 ? updateLabel("section.primary", "首选") + " " : ""}${parts.autonym} · ${tag} ×`;
-      chip.setAttribute("aria-label", `移除候选语言 ${parts.primary}`);
+      chip.setAttribute("aria-label", updateLabel("ph.removeCandidate", "移除候选语言 {tag}", { tag: parts.primary }));
       chip.addEventListener("click", () => removeCandidate(tag));
       container.append(chip);
     });
@@ -1790,6 +2113,7 @@
     detectOption.disabled = detectUnsupported;
     if (detectUnsupported && el("sourceLanguageMode").value === "detect") el("sourceLanguageMode").value = "specified";
     updateSourceModeVisibility();
+    renderRoleModeHint();
   }
 
   function tagCoveredBy(tag, supportedTags) {
@@ -1807,21 +2131,21 @@
     const policy = sourcePolicyFromUi();
     if (asr) {
       if (policy.mode === "specified") {
-        if (!tagCoveredBy(policy.tag, asr.supportedTags)) return `当前 ASR 不支持源语言 ${policy.tag}`;
+        if (!tagCoveredBy(policy.tag, asr.supportedTags)) return updateLabel("hint.sourceTagUnsupported", "当前 ASR 不支持源语言 {tag}", { tag: policy.tag });
       } else {
-        if (asr.detection === "none") return "当前 ASR 不支持自动识别源语言，请指定语言";
-        if (asr.detection === "candidates" && !policy.candidates.length) return "当前 ASR 自动识别需要候选语言";
-        if (asr.maxCandidates != null && policy.candidates.length > asr.maxCandidates) return `当前 ASR 自动识别最多支持 ${asr.maxCandidates} 个候选语言`;
+        if (asr.detection === "none") return updateLabel("hint.detectionUnsupported", "当前 ASR 不支持自动识别源语言，请指定语言");
+        if (asr.detection === "candidates" && !policy.candidates.length) return updateLabel("hint.needCandidates", "当前 ASR 自动识别需要候选语言");
+        if (asr.maxCandidates != null && policy.candidates.length > asr.maxCandidates) return updateLabel("hint.maxCandidates", "当前 ASR 自动识别最多支持 {max} 个候选语言", { max: asr.maxCandidates });
         const candidateScope = asr.detectionTags ?? asr.supportedTags;
         const unsupported = policy.candidates.filter((tag) => !tagCoveredBy(tag, candidateScope));
-        if (unsupported.length) return `当前 ASR 不支持候选语言：${unsupported.join("、")}`;
-        if (policy.allowCodeSwitching && !asr.codeSwitching) return "当前 ASR 不支持混合语言（code-switching）识别";
+        if (unsupported.length) return updateLabel("hint.candidatesUnsupported", "当前 ASR 不支持候选语言：{tags}", { tags: unsupported.join("、") });
+        if (policy.allowCodeSwitching && !asr.codeSwitching) return updateLabel("hint.noCodeSwitching", "当前 ASR 不支持混合语言（code-switching）识别");
       }
     }
     const translation = languageState.translation?.language;
     const target = targetSelector?.value;
     if (translation && target && !translation.openWorldPrompting && !tagCoveredBy(target, translation.targetTags)) {
-      return `当前翻译 Provider 不支持目标语言 ${target}`;
+      return updateLabel("hint.translationTargetUnsupported", "当前翻译 Provider 不支持目标语言 {target}", { target });
     }
     return null;
   }
@@ -1844,7 +2168,7 @@
       languageState.subtitle = data.subtitle;
       if (patch.targetLanguage !== previousTarget) {
         const parts = window.LingerLensLanguages.nameParts(patch.targetLanguage);
-        el("message").textContent = `目标语言已切换为 ${parts.primary}；后续字幕立即使用新语言。`;
+        el("message").textContent = updateLabel("msg.targetLanguageSwitched", "目标语言已切换为 {tag}；后续字幕立即使用新语言。", { tag: parts.primary });
       }
     } catch (error) {
       showError(error);
@@ -1865,7 +2189,7 @@
         onChange: () => persistLanguageSettings(),
       });
       candidateSelector = window.LingerLensLanguages.createLanguageSelector(el("sourceCandidates"), {
-        placeholder: "添加候选语言…",
+        placeholder: updateLabel("ph.addCandidate", "添加候选语言…"),
         onChange: (tag) => { addCandidate(tag); candidateSelector.value = ""; },
       });
     }
@@ -1879,6 +2203,8 @@
     languageState.asr = languages.asr;
     languageState.translation = languages.translation;
     refreshLanguageCapabilityUi();
+    if (roleCatalog) renderRoleSelectors(roleCatalog);
+    renderRoleModeHint();
   }
 
   async function loadLanguageSettings() {
@@ -1891,13 +2217,13 @@
       languageState.subtitle = providers.subtitle || {};
       initLanguageSelectors(languages.defaults || {});
       refreshLanguageCapabilityUi();
+      renderRoleModeHint();
     } catch (error) {
       showError(error);
     }
   }
 
-  // 延迟预算闭环（redesign Fix E）：预算余量 = 当前总观看延迟 − p95(readyLag)。
-  // 余量 < 0.5s 持续 30 秒就给出可执行建议：一键抬高发布延迟。
+  // Recommendations use matched cue arrivals and the actual viewer position.
   function cueDurationPercentiles() {
     const spans = [];
     for (const cue of subtitleCues.values()) {
@@ -1911,10 +2237,55 @@
     return { p50: at(0.5), p95: at(0.95) };
   }
 
+  function resetSubtitleBudget() {
+    subtitleReadiness.clear();
+    subtitleBudget.lowSince = null;
+    subtitleBudget.suggested = null;
+    subtitleBudget.primed = false;
+    subtitleBudget.checkedAt = null;
+    el("budgetMargin").textContent = "—";
+    el("applyDelayButton").hidden = true;
+  }
+
+  function subtitleBudgetContext() {
+    const target = Number(el("targetDelay").value);
+    const offset = subtitlePrefs.offset;
+    const key = `${target}:${offset}`;
+    if (subtitleBudget.context !== undefined && subtitleBudget.context !== key) resetSubtitleBudget();
+    subtitleBudget.context = key;
+    const valid = lastSessionState === "running" && subtitlePrefs.enabled
+      && !video.paused && !video.seeking && !document.hidden
+      && video.readyState >= 3 && video.playbackRate === 1;
+    if (subtitleBudget.active !== valid && (!valid || subtitleBudget.active === false)) resetSubtitleBudget();
+    subtitleBudget.active = valid;
+    return valid;
+  }
+
+  function subtitleLeadStats() {
+    const now = performance.now();
+    const samples = [...subtitleReadiness.values()].map(sample => sample.translation)
+      .filter(sample => sample?.eligible && !sample.paused && !sample.seeking && !sample.hidden
+        && sample.playbackRate === 1 && sample.offset === subtitlePrefs.offset
+        && sample.target === Number(el("targetDelay").value)
+        && Number.isFinite(sample.leadSeconds) && now >= sample.monotonic && now - sample.monotonic <= 60000);
+    if (samples.length < 5) return null;
+    const latest = Math.max(...samples.map(sample => sample.monotonic));
+    if (now - latest > 10000) return null;
+    const leads = samples.map(sample => sample.leadSeconds).sort((a, b) => a - b);
+    // Lower 5th percentile of MATCHED observations, not the subtraction of
+    // independent duration/processing percentiles. Positive means arrived early.
+    return { margin: leads[Math.floor((leads.length - 1) * 0.05)], latest, count: leads.length };
+  }
+
   function updateSubtitleBudget(subtitles, totalDelaySeconds, targetDelaySeconds) {
-    const p50 = Number(subtitles.readyLagP50);
-    const p95 = Number(subtitles.readyLagP95);
-    const hasStats = Number.isFinite(p95) && Number.isFinite(Number(totalDelaySeconds));
+    const pipelineContext = JSON.stringify([subtitles.asrProviderId, subtitles.translationProviderId, subtitles.targetLanguage]);
+    if (subtitleBudget.pipelineContext !== undefined && subtitleBudget.pipelineContext !== pipelineContext) resetSubtitleBudget();
+    subtitleBudget.pipelineContext = pipelineContext;
+    // Terminal outcomes include failures; only successful translations tell
+    // us how long a translated caption actually took to become available.
+    const p50 = subtitles.translationProcessingP50;
+    const p95 = subtitles.translationProcessingP95;
+    const hasStats = Number.isFinite(p95);
 
     const counts = subtitles.timingSourceCounts || {};
     const total = Object.values(counts).reduce((sum, n) => sum + Number(n || 0), 0);
@@ -1935,43 +2306,45 @@
     el("subtitleReadyLag").textContent = hasStats
       ? `${Number.isFinite(p50) ? p50.toFixed(2) : "—"}s / ${p95.toFixed(2)}s`
       : "—";
-    if (!hasStats) {
-      el("budgetMargin").textContent = "—";
+    const valid = subtitleBudgetContext();
+    const leads = valid ? subtitleLeadStats() : null;
+    const now = performance.now();
+    if (Number.isFinite(subtitleBudget.checkedAt) && now - subtitleBudget.checkedAt > 10000) subtitleBudget.lowSince = null;
+    subtitleBudget.checkedAt = now;
+    el("budgetMargin").textContent = leads ? seconds(leads.margin) : "—";
+    subtitleBudget.suggested = null;
+    el("applyDelayButton").hidden = true;
+    if (!leads || leads.margin >= 0.5) {
       subtitleBudget.lowSince = null;
-      subtitleBudget.suggested = null;
-      el("applyDelayButton").hidden = true;
       return;
     }
-    // Cues are displayed from tStart, so the delay must cover the sentence
-    // itself as well as the time spent producing its translation.
-    const margin = totalDelaySeconds - p95 - (spans ? spans.p95 : 0);
-    el("budgetMargin").textContent = seconds(margin);
-    if (margin >= 0.5) {
-      subtitleBudget.lowSince = null;
-      subtitleBudget.suggested = null;
-      el("applyDelayButton").hidden = true;
-      return;
-    }
-    if (!subtitleBudget.lowSince) subtitleBudget.lowSince = Date.now();
-    if (Date.now() - subtitleBudget.lowSince < 30_000) return;
-    const current = Number.isFinite(Number(targetDelaySeconds)) ? Number(targetDelaySeconds) : Number(el("targetDelay").value) || 15;
-    const needed = current + Math.max(1, Math.ceil(1.5 - margin));
-    subtitleBudget.suggested = Math.max(11, Math.min(60, needed));
+    if (subtitleBudget.lowSince === null) subtitleBudget.lowSince = now;
+    // A frozen sample cannot keep a recommendation alive or advance its timer.
+    if (leads.latest - subtitleBudget.lowSince < 30000) return;
+    const current = Number(targetDelaySeconds);
+    if (!Number.isFinite(current) || current < 11 || current >= 60) return;
+    const needed = Math.min(60, current + Math.max(1, Math.ceil(1.5 - leads.margin)));
+    subtitleBudget.suggested = needed;
     el("applyDelayButton").hidden = false;
-    el("applyDelayButton").textContent = updateLabel("msg.raiseDelay", `增加 ${subtitleBudget.suggested} 秒缓冲`, { n: subtitleBudget.suggested });
+    el("applyDelayButton").textContent = updateLabel("msg.raiseDelay", `将目标延迟调到 ${needed} 秒`, { n: needed });
   }
 
   async function applySuggestedDelay() {
     const suggested = subtitleBudget.suggested;
-    if (!Number.isFinite(suggested)) return;
+    const leads = subtitleBudgetContext() ? subtitleLeadStats() : null;
+    if (!Number.isFinite(suggested) || !leads || leads.margin >= 0.5
+        || !Number.isFinite(subtitleBudget.checkedAt) || performance.now() - subtitleBudget.checkedAt > 10000
+        || suggested <= Number(el("targetDelay").value)) return;
+    const claim = uiGeneration;
     const button = el("applyDelayButton");
     button.disabled = true;
     try {
       await request("/api/target-delay", { seconds: suggested });
+      if (claim !== uiGeneration) return;
       el("targetDelay").value = String(suggested);
       localStorage.setItem("lingerlens.targetDelaySeconds", String(suggested));
-      el("message").textContent = `已把目标延迟调到 ${suggested} 秒，字幕显示余量现在够了；负载回落后可以手动调回。`;
-      subtitleBudget.lowSince = null;
+      el("message").textContent = updateLabel("msg.delayApplied", `目标延迟已调到 ${suggested} 秒，将继续观察字幕是否及时。`, { n: suggested });
+      resetSubtitleBudget();
       button.hidden = true;
     } catch (error) {
       showError(error);
@@ -1982,16 +2355,29 @@
 
   async function refreshSubtitles() {
     if (!subtitlePrefs.enabled) return;
+    const claim = uiGeneration;
     try {
       // 单调序列号游标（redesign Fix I）：时钟绝不参与轮询进度。
       const data = await request(`/api/subtitles?afterSeq=${subtitleAfterSeq}`);
+      if (claim !== uiGeneration) return;
+      if ("mediaSessionId" in data && data.mediaSessionId !== observedMediaSessionId) return;
+      const observing = subtitleBudgetContext();
       for (const cue of data.cues || []) {
         const merge = window.mergeSubtitleCueBySeq || ((cues, incoming) => {
           const current = cues.get(incoming.id);
           if (!current || Number(incoming.seq) > Number(current.seq)) cues.set(incoming.id, incoming);
         });
+        const before = subtitleCues.get(cue.id);
         merge(subtitleCues, cue);
+        const after = subtitleCues.get(cue.id);
+        if (after !== before) subtitleCueOrderDirty = true;
+        if (subtitleCues.get(cue.id) === cue) recordSubtitleReadiness(cue);
       }
+      subtitleBudget.primed = observing;
+      // Recognized but not yet a cue. Held verbatim and checked at paint time:
+      // a payload that cannot be placed on the timeline is no line at all, and
+      // the next poll replaces it, so a dropped poll drops the line too.
+      subtitleDraft = data.draft || null;
       const maxSeq = Number(data.maxSeq);
       if (Number.isFinite(maxSeq)) subtitleAfterSeq = Math.max(subtitleAfterSeq, maxSeq);
       // 保留期裁剪以已知 cue 的时间线为基准，不用 Date.now()（RC-6）。
@@ -2002,9 +2388,15 @@
       // least about 100 recent cues. The DOM remains separately capped below.
       const cutoff = newest - 605;
       for (const [id, cue] of subtitleCues) {
-        if (cue.tEnd + cue.hold < cutoff) subtitleCues.delete(id);
+        if (cue.tEnd + cue.hold < cutoff) {
+          subtitleCues.delete(id);
+          subtitleCueOrderDirty = true;
+        }
       }
     } catch (error) {
+      if (claim !== uiGeneration) return;
+      subtitleDraft = null;
+      resetSubtitleBudget();
       if (!String(error.message).includes("Failed to fetch")) console.warn("subtitle poll failed", error);
     }
   }
@@ -2012,6 +2404,31 @@
   function playingWallClock() {
     if (Number.isFinite(window.__lingerlensSubtitleTestWallTime)) return window.__lingerlensSubtitleTestWallTime;
     return mediaClock?.playingWallTime() ?? null;
+  }
+
+  function recordSubtitleReadiness(cue) {
+    const eligible = subtitleBudgetContext() && subtitleBudget.primed;
+    let sample = subtitleReadiness.get(cue.id);
+    if (!sample) {
+      sample = { id: cue.id, generation: cue.generation ?? null, tStart: cue.tStart,
+        source: null, translation: null };
+      subtitleReadiness.set(cue.id, sample);
+    }
+    const wall = playingWallClock();
+    const observation = {
+      at: Date.now() / 1000,
+      playhead: Number.isFinite(wall) ? wall : null,
+      monotonic: performance.now(), eligible,
+      offset: subtitlePrefs.offset, target: Number(el("targetDelay").value),
+      leadSeconds: Number.isFinite(wall) && Number.isFinite(cue.tStart) ? cue.tStart - (wall + subtitlePrefs.offset) : null,
+      paused: video.paused, seeking: video.seeking, hidden: document.hidden,
+      playbackRate: video.playbackRate,
+    };
+    // Arrival is measured at the actual viewer position. Keep paused/hidden
+    // observations labelled so they cannot masquerade as live on-time samples.
+    if (cue.src && sample.source === null) sample.source = observation;
+    if (cue.state === "done" && cue.zh?.trim() && sample.translation === null) sample.translation = observation;
+    while (subtitleReadiness.size > 512) subtitleReadiness.delete(subtitleReadiness.keys().next().value);
   }
 
   function renderSubtitlesTimeline(wallClock) {
@@ -2025,9 +2442,11 @@
     }
 
     const t = wallClock + subtitlePrefs.offset;
-    const sortedCues = [...subtitleCues.values()]
-      .filter((cue) => subtitleLines(cue) && cue.tStart <= t)
-      .sort((a, b) => a.tStart - b.tStart);
+    if (subtitleCueOrderDirty) {
+      sortedSubtitleCues = [...subtitleCues.values()].sort((a, b) => a.tStart - b.tStart);
+      subtitleCueOrderDirty = false;
+    }
+    const sortedCues = sortedSubtitleCues.filter((cue) => subtitleLines(cue) && cue.tStart <= t);
 
     const empty = container.querySelector(".timeline-empty-state");
     if (sortedCues.length === 0) {
@@ -2041,7 +2460,7 @@
       if (child.dataset?.cueId) existingRows.set(child.dataset.cueId, child);
     }
 
-    const activeCue = subtitleScheduler ? subtitleScheduler.pick([...subtitleCues.values()], t) : null;
+    const activeCue = subtitleScheduler ? subtitleScheduler.pick(sortedSubtitleCues, t) : null;
     const maxEntries = 100;
     const sliced = sortedCues.slice(-maxEntries);
     // dataset values are always strings. Comparing them with numeric cue IDs
@@ -2117,31 +2536,48 @@
     const end = video.seekable.end(video.seekable.length - 1);
     if (position < start || position > end) {
       row?.setAttribute("aria-disabled", "true");
-      row?.setAttribute("title", "已超出本地回看窗口");
+      row?.setAttribute("title", updateLabel("player.noDvr", "已超出本地回看窗口"));
       return;
     }
     video.currentTime = position;
   }
 
   function updatePlayerControls() {
+    // Replacing identical text still mutates the DOM and can emit native
+    // accessibility events. Keep the 250ms clock, but only publish changes.
+    const text = (id, value) => {
+      const node = el(id);
+      if (node.textContent !== value) node.textContent = value;
+    };
+    const attribute = (id, name, value) => {
+      const node = el(id);
+      if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+    };
     const range = mediaClock?.seekableWallClockRange();
     const rail = el("seekRail");
-    const playLabel = video.paused ? "播放" : "暂停";
-    const muteLabel = video.muted ? "取消静音" : "静音";
-    el("playPause").setAttribute("aria-label", playLabel);
-    el("playPause").setAttribute("title", playLabel);
-    el("muteToggle").setAttribute("aria-label", muteLabel);
-    el("muteToggle").setAttribute("title", muteLabel);
+    const playLabel = video.paused
+      ? updateLabel("player.play", "播放")
+      : updateLabel("player.pause", "暂停");
+    const muteLabel = video.muted
+      ? updateLabel("player.unmute", "取消静音")
+      : updateLabel("player.mute", "静音");
+    attribute("playPause", "aria-label", playLabel);
+    attribute("playPause", "title", playLabel);
+    attribute("muteToggle", "aria-label", muteLabel);
+    attribute("muteToggle", "title", muteLabel);
     stage.classList.toggle("is-paused", video.paused);
     stage.classList.toggle("is-muted", video.muted);
-    el("currentWallTime").textContent = mediaClock?.formatTime(range?.currentWallTime) || "--:--:--";
+    text("currentWallTime", mediaClock?.formatTime(range?.currentWallTime) || "--:--:--");
     if (!range || !rail) return;
-    rail.min = String(range.startPosition);
-    rail.max = String(range.endPosition);
-    if (!rail.matches(":active")) rail.value = String(Math.min(range.endPosition, Math.max(range.startPosition, video.currentTime)));
-    el("seekStartWallTime").textContent = mediaClock.formatTime(range.startWallTime);
-    el("seekEndWallTime").textContent = mediaClock.formatTime(range.endWallTime);
-    if (!rail.dataset.dragging) el("seekPreview").textContent = mediaClock.formatTime(range.currentWallTime);
+    if (rail.min !== String(range.startPosition)) rail.min = String(range.startPosition);
+    if (rail.max !== String(range.endPosition)) rail.max = String(range.endPosition);
+    if (!rail.matches(":active")) {
+      const value = String(Math.min(range.endPosition, Math.max(range.startPosition, video.currentTime)));
+      if (rail.value !== value) rail.value = value;
+    }
+    text("seekStartWallTime", mediaClock.formatTime(range.startWallTime));
+    text("seekEndWallTime", mediaClock.formatTime(range.endWallTime));
+    if (!rail.dataset.dragging) text("seekPreview", mediaClock.formatTime(range.currentWallTime));
   }
 
   let playerControlsHideTimer = null;
@@ -2164,7 +2600,9 @@
 
   function updateFullscreenControl() {
     const fullscreen = document.fullscreenElement === stage;
-    const label = fullscreen ? "退出全屏" : "进入全屏";
+    const label = fullscreen
+      ? updateLabel("player.exitFullscreen", "退出全屏")
+      : updateLabel("player.enterFullscreen", "进入全屏");
     stage.classList.toggle("is-fullscreen", fullscreen);
     el("toggleFullscreen").setAttribute("aria-label", label);
     el("toggleFullscreen").setAttribute("title", label);
@@ -2188,14 +2626,19 @@
       const receiveIsProblem = stats.state === "reconnecting" || stats.state === "error" || stats.state === "unavailable";
       if (receiveState) (receiveIsProblem ? problems : routine).push(receiveState);
       if (data.error || stats.lastError) problems.push(data.error || stats.lastError);
-      if (stats.pendingClock) problems.push(`等待媒体时钟: ${stats.pendingClock}`);
+      if (stats.pendingClock) problems.push(`${updateLabel("cost.pendingClock", "等待媒体时钟: ")}${stats.pendingClock}`);
       if (stats.received !== undefined) routine.push(`收到: ${stats.received}`);
       if (stats.translated !== undefined) routine.push(`翻译: ${stats.translated}`);
-      if (stats.translationFailed) problems.push(`失败: ${stats.translationFailed}`);
-      const failureLabels = { timeout: "翻译超时", deadline: "翻译超时未完成", empty: "空译文", json_format: "JSON格式错误", batch_count: "批次数量不符", batch_item: "批次内容或编号异常", batch_ids: "批次编号不符", response_format: "响应格式异常", rate_limit: "翻译限流", authentication: "翻译认证失败", provider_error: "翻译调用失败" };
-      if (stats.translationLastFailure) problems.push(failureLabels[stats.translationLastFailure] || "翻译失败");
-      if (chatOverlay.getStats().dropped) routine.push(`画面省略: ${chatOverlay.getStats().dropped}`);
-      if (stats.translationSkipped) routine.push(`跳过: ${stats.translationSkipped}`);
+      if (stats.translationFailed) problems.push(`${updateLabel("cost.failedCount", "失败: ")}${stats.translationFailed}`);
+      const failureLabels = { timeout: ["fail.timeout", "翻译超时"], deadline: ["fail.deadline", "翻译超时未完成"], empty: ["fail.empty", "空译文"], json_format: ["fail.json", "JSON格式错误"], batch_count: ["fail.batchCount", "批次数量不符"], batch_item: ["fail.batchItem", "批次内容或编号异常"], batch_ids: ["fail.batchIds", "批次编号不符"], response_format: ["fail.responseShape", "响应格式异常"], rate_limit: ["fail.rateLimit", "翻译限流"], authentication: ["fail.auth", "翻译认证失败"], provider_error: ["fail.provider", "翻译调用失败"] };
+      if (stats.translationLastFailure) {
+        const labelled = failureLabels[stats.translationLastFailure];
+        problems.push(labelled
+          ? updateLabel(labelled[0], labelled[1])
+          : updateLabel("cost.translationFailed", "翻译失败"));
+      }
+      if (chatOverlay.getStats().dropped) routine.push(`${updateLabel("cost.chatSkipped", "画面省略: ")}${chatOverlay.getStats().dropped}`);
+      if (stats.translationSkipped) routine.push(`${updateLabel("cost.skipped", "跳过: ")}${stats.translationSkipped}`);
       const everything = [...problems, ...routine];
       const shown = (problems.length > 0 ? problems : routine).slice(0, 2);
       indicator.textContent = shown.length > 0 ? shown.join(" · ") : "聊天室就绪";
@@ -2209,21 +2652,29 @@
     }
     const target = el("chatTranslationTarget");
     if (target) {
-      const state = stats.translationState === "degraded" ? " · 降级" : "";
-      target.textContent = `目标语言 ${stats.targetLanguage || targetSelector?.value || "—"}${state}`;
+      const state = stats.translationState === "degraded" ? updateLabel("cost.degraded", " · 降级") : "";
+      target.textContent = `${updateLabel("cost.targetLanguage", "目标语言")} ${stats.targetLanguage || targetSelector?.value || "—"}${state}`;
     }
   }
 
   function renderTimelines() {
+    const measure = (name, run) => typeof playbackProbe !== "undefined" && playbackProbe
+      ? playbackProbe.measure(name, run) : run();
     const wall = playingWallClock();
-    renderSubtitlesTimeline(wall);
-    chatOverlay.render(wall, liveMessagesClient ? [...liveMessagesClient.getStore().values()] : [], {
+    // Both views consume the same immutable snapshot for this render pass.
+    // Spreading the store separately made every 333ms tick copy the retained
+    // message set twice before either view could do useful work.
+    const liveMessages = liveMessagesClient ? [...liveMessagesClient.getStore().values()] : [];
+    measure("subtitleHistory", () => renderSubtitlesTimeline(wall));
+    measure("chatOverlay", () => chatOverlay.render(wall, liveMessages, {
       enabled: chatOverlayToggle.checked, translated: el("chatTranslateToggle").checked,
       size: Number(chatOverlaySize.value),
       paused: video.paused, filterPureEmoji: el("hidePureEmojiToggle").checked,
-    });
+    }));
     if (liveMessagesTimeline) {
-      const result = liveMessagesTimeline.render(wall);
+      const result = measure("chatHistory", () => liveMessagesTimeline.render(wall, liveMessages, {
+        version: liveMessagesClient?.getVersion?.() ?? null,
+      }));
       if (result.changed && followChatController) {
         followChatController.onNewContent();
       }
@@ -2249,6 +2700,43 @@
     return hash % 10;
   }
 
+  /** Keep only a draft that can be placed on the timeline at all. */
+  function usableDraft(draft) {
+    if (!draft || typeof draft.text !== "string" || !draft.text.trim()) return null;
+    if (!Number.isFinite(draft.tStart) || !Number.isFinite(draft.tEnd)) return null;
+    return draft;
+  }
+
+  function foldForDraft(text) {
+    return String(text || "").normalize("NFKC").replace(/\s+/g, "");
+  }
+
+  function draftLine(draft, position, cues) {
+    // Translation-only mode has nothing to show: a draft is source text only,
+    // because the Provider has not translated a cut it has not made.
+    if (!draft || subtitlePrefs.mode === "zh") return "";
+    if (position < draft.tStart) return "";
+    // The backend cut the text at the playhead it was last told about, which is
+    // a poll behind this one. The bound absorbs that and hides the line when a
+    // seek leaves it behind.
+    if (position > draft.tEnd + SUBTITLE_DRAFT_STALE_SECONDS) return "";
+    const held = foldForDraft(draft.text);
+    // The cue that carries these words replaced the projection on the server.
+    for (const cue of cues) {
+      const shown = foldForDraft(cue.src);
+      if (shown && (shown.startsWith(held) || held.startsWith(shown))) return "";
+    }
+    return draft.text;
+  }
+
+  function paintDraft(text) {
+    const row = el("subtitleDraft");
+    if (!row || row.textContent === text) return;
+    row.textContent = text;
+    row.hidden = !text;
+    row.dir = "auto";
+  }
+
   function renderSubtitle() {
     const layer = el("subtitleLayer");
     if (!subtitlePrefs.enabled || !subtitleScheduler) { clearSubtitle(); return; }
@@ -2262,7 +2750,21 @@
     const cues = typeof subtitleScheduler.active === "function"
       ? subtitleScheduler.active(cueValues, t)
       : [subtitleScheduler.pick(cueValues, t)].filter(Boolean);
-    if (!cues.length) { clearSubtitle(); return; }
+    const draft = draftLine(usableDraft(subtitleDraft), t, cues);
+    if (!cues.length && !draft) {
+      lastSubtitlePaintKey = null;
+      clearSubtitle();
+      return;
+    }
+    const targetLanguage = targetSelector?.value || "";
+    const paintKey = `${subtitlePrefs.mode}\u001e${targetLanguage}\u001e${cues.map((cue) => [
+      cue.id, cue.seq, cue.revision, cue.src, cue.zh,
+    ].join("\u001f")).join("\u001e")}\u001e${draft}`;
+    // The scheduler still runs every 100ms so admissions follow the playhead,
+    // but avoid rebuilding the same DOM rows when the visible cue set did not
+    // change. This is the common case between two cue boundaries.
+    if (paintKey === lastSubtitlePaintKey) return;
+    lastSubtitlePaintKey = paintKey;
     if (layer.classList.contains("off")) layer.classList.remove("off");
     const content = layer.querySelector(".subtitle-content");
     const rowsById = new Map([...content.children].map((child) => [child.dataset.cueId, child]));
@@ -2273,7 +2775,6 @@
         rowsById.delete(id);
       }
     }
-    const targetLanguage = targetSelector?.value || "";
     for (let index = 0; index < cues.length; index += 1) {
       const cue = cues[index];
       const id = String(cue.id);
@@ -2297,7 +2798,7 @@
         if (colorIndex >= 0) row.dataset.speakerColor = String(colorIndex);
         else delete row.dataset.speakerColor;
         row.dataset.speaker = speakerKey(cue);
-        row.setAttribute("aria-label", cue.speaker ? `说话人 ${cue.speaker}` : "字幕");
+        row.setAttribute("aria-label", cue.speaker ? updateLabel("timeline.speaker", "说话人 {speaker}", { speaker: cue.speaker }) : updateLabel("timeline.cueLine", "字幕"));
         const zhLine = row.querySelector(".subtitle-zh");
         const srcLine = row.querySelector(".subtitle-src");
         const lines = subtitleLines(cue) || { translated: "", source: "" };
@@ -2322,13 +2823,16 @@
         content.insertBefore(row, content.children[index] || null);
       }
     }
+    paintDraft(draft);
   }
 
   function clearSubtitle() {
+    lastSubtitlePaintKey = null;
     const layer = el("subtitleLayer");
     if (!layer.classList.contains("off")) layer.classList.add("off");
     const content = layer.querySelector(".subtitle-content");
     if (content.childElementCount) content.replaceChildren();
+    paintDraft("");
   }
 
   function applySubtitlePrefs() {
@@ -2469,8 +2973,8 @@
     else el("start").removeAttribute("aria-busy");
     if (stopping) el("stop").setAttribute("aria-busy", "true");
     else el("stop").removeAttribute("aria-busy");
-    el("start").querySelector(".button-label").textContent = starting ? "正在启动" : "开始播放";
-    el("stop").querySelector(".button-label").textContent = stopping ? "正在停止" : "停止";
+    el("start").querySelector(".button-label").textContent = starting ? updateLabel("action.starting", "正在启动") : updateLabel("action.startPlayback", "开始播放");
+    el("stop").querySelector(".button-label").textContent = stopping ? updateLabel("action.stopping", "正在停止") : updateLabel("action.stop", "停止");
     renderSessionControls();
   }
 
@@ -2516,7 +3020,7 @@
     } catch (error) {
       setMediaLoading(false);
       setState("播放失败", "error");
-      el("message").textContent = `无法开始播放：${error.message || error}`;
+      el("message").textContent = `${updateLabel("msg.playStartFailed", "无法开始播放：")}${error.message || error}`;
     }
   });
   el("muteToggle").addEventListener("click", () => { video.muted = !video.muted; if (!video.muted && video.volume === 0) video.volume = 0.8; el("volume").value = String(video.muted ? 0 : video.volume); });
@@ -2545,6 +3049,7 @@
   el("closeCookieImport").addEventListener("click", closeCookieImport);
   el("cancelCookieImport").addEventListener("click", closeCookieImport);
   el("cookiePlatform").addEventListener("change", updateCookiePlatformHelp);
+  el("proxyMode")?.addEventListener("change", updateProxyModeUi);
   el("cookieImportForm").addEventListener("submit", submitCookieImport);
   el("manageModelConnections").addEventListener("click", openModelSettings);
   el("editAsrConnections").addEventListener("click", () => { editingSection = "asr"; renderProviderProfiles(); });
@@ -2580,16 +3085,10 @@
     }
     stallAutoPauseSuppressed = true;
   });
-  // Reset the fatal-error budget whenever the playhead actually advances: a
-  // stream that recovers and plays for a while must not be permanently
-  // condemned by earlier failures.
-  video.addEventListener("timeupdate", () => {
-    if (video.currentTime > mseRecoveryProgressAt + 0.5) {
-      mseRecoveryProgressAt = video.currentTime;
-      mseRecoveryAttempts = 0;
-    }
-  });
-  video.addEventListener("pause", () => { updatePlayerControls(); revealPlayerControls(); });
+  video.addEventListener("timeupdate", notePlaybackProgress);
+  video.addEventListener("pause", () => { resetSubtitleBudget(); updatePlayerControls(); revealPlayerControls(); });
+  video.addEventListener("seeking", resetSubtitleBudget);
+  video.addEventListener("ratechange", resetSubtitleBudget);
   video.addEventListener("volumechange", updatePlayerControls);
   video.addEventListener("waiting", () => {
     if (sessionAction === "stopping" || lastSessionState !== "running") return;
@@ -2621,6 +3120,7 @@
   // Clear timelines buttons
   el("clearSubtitlesTimelineBtn")?.addEventListener("click", () => {
     subtitleCues.clear();
+    subtitleCueOrderDirty = true;
     renderSubtitlesTimeline(null);
   });
   el("clearChatTimelineBtn")?.addEventListener("click", () => {
@@ -2635,6 +3135,9 @@
   window.__lingerlensSubtitleCues = subtitleCues;
   window.__lingerlensRenderSubtitle = renderSubtitle;
   window.__lingerlensRenderTimelines = renderTimelines;
+  window.__lingerlensSubtitleReadiness = () => [...subtitleReadiness.values()].map((sample) => ({
+    ...sample, source: sample.source && { ...sample.source }, translation: sample.translation && { ...sample.translation },
+  }));
   /* 与上面两个同类的测试钩子：诊断栏只在真出错时才动，没有它就只能靠制造
      一次真实故障来验证展开路径。 */
   window.__lingerlensDiagnostics = {
@@ -2689,7 +3192,11 @@
   });
   subtitlePoller = window.createSerialPoller?.({
     run: refreshSubtitles,
-    intervalMs: 500,
+    // A cue that arrives just after a poll used to wait up to 500ms before the
+    // renderer could even consider it. The local endpoint is cheap and the
+    // poller is serial, so 250ms keeps onset latency below one render beat
+    // without creating overlapping requests.
+    intervalMs: 250,
     hiddenIntervalMs: 2000,
     isHidden: () => document.hidden,
   });
@@ -2703,10 +3210,26 @@
   statusPoller?.start();
   subtitlePoller?.start();
   diagnosticsPoller?.start();
-  subtitleRenderTimer = setInterval(() => { if (!document.hidden) renderSubtitle(); }, 100);
-  timelineRenderTimer = setInterval(() => { if (!document.hidden) { renderTimelines(); updatePlayerControls(); } }, 250);
+  subtitleRenderTimer = setInterval(() => {
+    playbackProbe?.tick();
+    if (!document.hidden) {
+      if (playbackProbe) playbackProbe.measure("subtitle", renderSubtitle);
+      else renderSubtitle();
+    }
+  }, 100);
+  // Keep the 100ms subtitle layer responsive, but move the heavier history and
+  // chat DOM pass off that cadence. Starting it half a beat later prevents the
+  // two timers from repeatedly landing on the same event-loop turn.
+  window.setTimeout(() => {
+    timelineRenderTimer = setInterval(() => { if (!document.hidden) {
+      renderTimelines();
+      if (playbackProbe) playbackProbe.measure("controls", updatePlayerControls);
+      else updatePlayerControls();
+    } }, 333);
+  }, 125);
   if (liveMessagesClient) liveMessagesClient.startPolling(500);
   document.addEventListener("visibilitychange", () => {
+    resetSubtitleBudget();
     if (!document.hidden) {
       statusPoller?.wake();
       subtitlePoller?.wake();
@@ -2724,6 +3247,7 @@
     diagnosticsPoller?.stop();
     clearInterval(subtitleRenderTimer);
     clearInterval(timelineRenderTimer);
+    playbackProbe?.dispose();
     if (liveMessagesClient) liveMessagesClient.stopPolling();
   });
 })();

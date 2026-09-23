@@ -14,12 +14,103 @@ from .base import SourceLanguagePolicy, SUPPORTED_CURRENCIES, provider_currency
 
 BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
     {
+        # First in the catalog on purpose, and the only profile the interface
+        # stars: it recognises speech and emits the translation on the same
+        # session, so no translation Provider is involved at all.
+        "id": "soniox-stt-rt-v5",
+        "label": "Soniox STT RT v5（端到端双语）",
+        "kind": "soniox-realtime",
+        "model": "stt-rt-v5",
+        "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
+        "apiKeyEnv": "SONIOX_API_KEY",
+        "recommended": True,
+        "options": {
+            "enableLanguageIdentification": True,
+            "enableEndpointDetection": True,
+            # Diarization is included in the realtime rate (official pricing).
+            "enableSpeakerDiarization": True,
+            "maxEndpointDelayMs": 700,
+            "endpointSensitivity": 0.3,
+            "keepAliveSeconds": 5,
+            # "one_way" translates into the viewer's Target Language, which is
+            # what a bilingual subtitle wants; "two_way" is for bilingual
+            # conversations and needs translationLanguageA/B. Empty string keeps
+            # the profile transcript-only.
+            "translationType": "one_way",
+            "translationTerms": [],
+        },
+    },
+    {
+        # The other end-to-end bilingual profile, deliberately unstarred: one
+        # star in the list is the whole signal, and it belongs to the profile
+        # that has carried every live session here. No `recommended` field, so
+        # the player ranks it below Soniox rather than marking it second-best.
+        "id": "bailian-qwen38-livetranslate",
+        "label": "百炼 Qwen3.8-LiveTranslate（端到端双语）",
+        "kind": "dashscope-livetranslate-realtime",
+        "model": "qwen3.8-livetranslate-flash-realtime",
+        # Verified live 2026-09-21: this model answers on the classic global
+        # realtime host, and the per-workspace `*.maas.aliyuncs.com` host the
+        # docs print is only one more way to reach it. Nobody could get a
+        # workspace id out of the docs page, so a default that demanded one
+        # produced exactly the "Qwen returns nothing" report it was meant to
+        # prevent. A workspace host still works -- the adapter fills the id in
+        # when the profile asks for one.
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "options": {
+            "sampleRate": 16000,
+            # Optional: only needed to reach a regional/workspace host instead of
+            # the global one above.
+            "workspaceId": "",
+            # Text-only by default: audio output is billed on top of the text
+            # tokens, and this Profile exists to draw subtitles.
+            "audioOutput": False,
+            # The output voice. It only reaches the model when audioOutput is on,
+            # but the server demands a voice it accepts even then: its own
+            # default, Chelsie, aborts the session on the first turn.
+            "voice": "Tina",
+            # Trailing silence the service waits before it closes a turn. It
+            # answers 800 when asked for nothing, which ran one utterance to 36.4 s
+            # of speech; 300 let the model close 15 of 17 cues itself. A turn this
+            # Provider ends carries its own translation, so every cut we make
+            # instead has to be matched after the fact -- see the chunker.
+            "silenceDurationMs": 300,
+            # Empty = let the model auto-detect the source language, which is all
+            # 3.8 offers; a pin only reaches a 3.5-generation model.
+            "sourceLanguage": "",
+            "startTimeoutSeconds": 10,
+            "closeDrainTimeoutSeconds": 15.0,
+        },
+    },
+    {
+        # Third in the catalog: the same Soniox model with translating pinned
+        # off, so picking "transcription only" is one choice rather than a card
+        # edit. Nothing here carries a translation key: the caption path stays
+        # on the recognise-then-translate chain, which is also the chain every
+        # other recognition-only profile below uses.
+        "id": "soniox-stt-rt-v5-transcribe",
+        "label": "Soniox STT RT v5（只做识别·需另配翻译模型）",
+        "kind": "soniox-realtime-transcribe",
+        "model": "stt-rt-v5",
+        "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
+        "apiKeyEnv": "SONIOX_API_KEY",
+        "options": {
+            "enableLanguageIdentification": True,
+            "enableEndpointDetection": True,
+            "enableSpeakerDiarization": True,
+            "maxEndpointDelayMs": 700,
+            "endpointSensitivity": 0.3,
+            "keepAliveSeconds": 5,
+        },
+    },
+    {
         "id": "bailian-fun-asr-2026-02-28",
         "label": "百炼 Fun-ASR-Realtime 2026-02-28（日/中/英）",
         "kind": "dashscope-task-asr",
         "model": "fun-asr-realtime-2026-02-28",
         "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-        "apiKey": "",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
         "options": {
             "sampleRate": 16000,
             "languages": ["zh", "en", "ja"],
@@ -105,23 +196,6 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
             "utteranceEndMs": 1000,
             # Diarization is a paid add-on: opt in per profile (diarize: true).
             "keepAliveSeconds": 8,
-        },
-    },
-    {
-        "id": "soniox-stt-rt-v5",
-        "label": "Soniox STT RT v5（多语言·稳定前缀）",
-        "kind": "soniox-realtime",
-        "model": "stt-rt-v5",
-        "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
-        "apiKeyEnv": "SONIOX_API_KEY",
-        "options": {
-            "enableLanguageIdentification": True,
-            "enableEndpointDetection": True,
-            # Diarization is included in the realtime rate (official pricing).
-            "enableSpeakerDiarization": True,
-            "maxEndpointDelayMs": 700,
-            "endpointSensitivity": 0.3,
-            "keepAliveSeconds": 5,
         },
     },
     {
@@ -224,11 +298,21 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
 )
 
 
+# The Profile a fresh install starts on. Named rather than indexed: the catalog
+# head is now a recommended end-to-end bilingual Profile, and `providers[0]`
+# silently became the default the moment the list was reordered.
+DEFAULT_ASR_PROVIDER_ID = "bailian-fun-asr-2026-02-28"
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "version": 3,
     "asr": {
-        "active": "bailian-fun-asr-2026-02-28",
-        "providers": [copy.deepcopy(BUILTIN_ASR_PROVIDERS[0])],
+        "active": DEFAULT_ASR_PROVIDER_ID,
+        "providers": [
+            copy.deepcopy(provider)
+            for provider in BUILTIN_ASR_PROVIDERS
+            if provider["id"] == DEFAULT_ASR_PROVIDER_ID
+        ],
     },
     "translation": {
         "active": "bailian-qwen35-flash",
@@ -347,6 +431,7 @@ def validate_config(config: dict[str, Any]) -> None:
             {
                 "dashscope-qwen-realtime",
                 "dashscope-task-asr",
+                "dashscope-livetranslate-realtime",
                 "openai-audio-transcriptions",
                 "deepgram-streaming",
                 "soniox-realtime",

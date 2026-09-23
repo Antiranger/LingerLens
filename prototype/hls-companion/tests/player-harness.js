@@ -305,6 +305,7 @@ function sessionGlobals(overrides = {}) {
     updateStallOverlay: spy(),
     updatePlaybackRecovery: spy(),
     updateSubtitleBudget: spy(),
+    resetSubtitleBudget: spy(),
     commonBody: () => ({ qualityId: "auto" }),
     sourcePolicyFromUi: () => ({ mode: "auto" }),
     validateLanguageSettingsClient: () => null,

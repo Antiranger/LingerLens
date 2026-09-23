@@ -453,6 +453,53 @@ class MinimalLatencyBreakdownTests(unittest.TestCase):
         self.assertEqual(status["latencyUnknown"], 1)
 
 class TranslationLatencyStatsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_processing_time_uses_monotonic_audio_send_and_expires(self) -> None:
+        now = [12.0]
+        pipeline = SubtitlePipeline(asr_provider=FakeASR(), cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+            monotonic=lambda: now[0], wall_clock=lambda: 999999.0)
+        for cue_id, success in ((1, True), (2, False)):
+            pipeline._cue_latencies[cue_id] = pipeline_module._CueLatency(
+                2, 10, 10, 10, translation_started=10, provider_finished=12, audio_pushed=8)
+            pipeline._audio_end_walls[cue_id] = 900000
+            pipeline._record_ready_lag(cue_id, success=success)
+        status = pipeline.status()
+        self.assertEqual(status["translationProcessingSamples"], 1)
+        self.assertEqual(status["translationProcessingP95"], 4)
+        pipeline._record_translation_latency(2000)
+        now[0] = 73
+        status = pipeline.status()
+        self.assertIsNone(status["translationProcessingP95"])
+        self.assertEqual(status["translationProcessingSamples"], 0)
+        self.assertIsNone(status["avgTranslationLatencyMs"])
+        pipeline._record_translation_latency(100)
+        self.assertEqual(pipeline.status()["avgTranslationLatencyMs"], 100)
+
+    async def test_worker_measures_elapsed_time_instead_of_trusting_provider_latency(self) -> None:
+        now = [10.0]
+
+        class TimedTranslation(RecordingTranslation):
+            async def translate(self, request):
+                now[0] += 2.5
+                # This adapter reports 1 ms; the real wait was 2500 ms.
+                return await super().translate(request)
+
+        pipeline = SubtitlePipeline(asr_provider=FakeASR(),
+            translation_provider=TimedTranslation("timed"), cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"), monotonic=lambda: now[0])
+        cue = pipeline.store.add(t_start=0, t_end=1, hold=1, src="hello", lang="ja", timing_source="asr")
+        pipeline._enqueue_translation(cue)
+        pipeline._running = True
+        worker = asyncio.create_task(pipeline._translation_worker())
+        try:
+            await asyncio.wait_for(pipeline._translation_queue.join(), 1)
+            self.assertEqual(pipeline.store.get(cue.id).state, "done")
+            self.assertEqual(pipeline.status()["avgTranslationLatencyMs"], 2500)
+        finally:
+            pipeline._running = False
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
     async def test_records_last_and_rolling_average_latency(self) -> None:
         pipeline = SubtitlePipeline(
             asr_provider=FakeASR(),

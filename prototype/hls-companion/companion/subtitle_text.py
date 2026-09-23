@@ -71,6 +71,31 @@ def clean_subtitle_text(text: str | None) -> str | None:
     return cleaned
 
 
+def subtitle_match_key(text: str | None) -> str:
+    """The comparable form of one subtitle string.
+
+    Provider-side translation joins a cue against the text the ASR session
+    reported for it. The cue has been through :func:`clean_subtitle_text`, which
+    NFKC-folds the full-width ``！`` Soniox really does emit and collapses a
+    stuttered ``。。``; the Provider side must go through the same fold or the two
+    halves of one sentence never compare equal and the cue silently loses its
+    translation. Text too short or too empty for a subtitle keeps a key anyway:
+    here only equality matters, and a cue that was never published cannot match.
+
+    Spacing is then dropped entirely. A Provider writes a space between two
+    Japanese words (DashScope does it mid-utterance); the caption never keeps it,
+    because the chunker joins a turn's text by deleting the gap between CJK
+    neighbours. Comparing with the spaces still in would split one sentence into
+    a keyed side that matches and a keyed side that never does.
+    """
+
+    cleaned = clean_subtitle_text(text)
+    if cleaned is not None:
+        return _WHITESPACE_RE.sub("", cleaned)
+    folded = _WHITESPACE_RE.sub(" ", unicodedata.normalize("NFKC", str(text or ""))).strip()
+    return _WHITESPACE_RE.sub("", folded)
+
+
 def is_duplicate_final(current: str, previous: str | None) -> bool:
     """Return whether an ASR final is an exact/near-prefix resend."""
 

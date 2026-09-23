@@ -44,6 +44,7 @@ def _create(config: dict[str, Any]) -> object:
 
 # Import built-ins for registration side effects.
 from . import asr_dashscope_task as _asr_dashscope_task  # noqa: E402,F401
+from . import asr_dashscope_livetranslate as _asr_dashscope_livetranslate  # noqa: E402,F401
 from . import asr_qwen_realtime as _asr_qwen_realtime  # noqa: E402,F401
 from . import asr_openai_transcriptions as _asr_openai_transcriptions  # noqa: E402,F401
 from . import asr_deepgram_streaming as _asr_deepgram_streaming  # noqa: E402,F401

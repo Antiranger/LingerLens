@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,7 +36,7 @@ jobs:
       - name: Verify vendored yt-dlp checksum
         shell: powershell
         run: |
-          $expected = ((Get-Content prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe.sha256 -Raw).Trim().Split()[0]).ToLowerInvariant()
+          $expected = ((Get-Content prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe.sha256 -Encoding utf8 -Raw).Trim().Split()[0]).ToLowerInvariant()
           $actual = (Get-FileHash prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "Vendored yt-dlp checksum mismatch" }
 
@@ -44,6 +45,12 @@ jobs:
 
       - name: Tracked file completeness guard
         run: npm run guard:tracked
+
+      - name: Third-party notices
+        run: npm run guard:licences
+
+      - name: Documentation links and language coverage
+        run: npm run check:docs
 
       - name: Python compile check
         run: npm run check:python

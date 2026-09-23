@@ -526,6 +526,28 @@ class FfmpegCommandTests(unittest.TestCase):
 
 
 class PlaylistPublisherTests(unittest.TestCase):
+    def test_edge_uses_playlist_clock_including_missing_media(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            private, public = root / "private", root / "public"
+            private.mkdir()
+            public.mkdir()
+            self._write_segments(private, 3)
+            (private / "live.m3u8").write_text(
+                "#EXTM3U\n#EXT-X-PROGRAM-DATE-TIME:2026-08-30T12:00:00Z\n"
+                "#EXTINF:1,\nseg_000000000.m4s\n"
+                "#EXT-X-PROGRAM-DATE-TIME:2026-08-30T12:00:10Z\n"
+                "#EXTINF:2,\nseg_000000001.m4s\n"
+                "#EXTINF:3,\nseg_000000002.m4s\n", encoding="utf-8")
+            publisher = DelayedPlaylistPublisher(private, public, publish_delay=0, startup_buffer_seconds=0)
+            self.assertIsNone(publisher.snapshot()["privateEdgeWallTime"])
+            publisher._tick()
+            status = publisher.snapshot()
+            self.assertEqual(status["privateMediaSeconds"], 6)
+            self.assertEqual(status["privateEdgeWallTime"], 1788091215)
+            publisher._tick()
+            self.assertEqual(publisher.snapshot()["privateEdgeWallTime"], 1788091215)
+
     @staticmethod
     def _write_segments(private: Path, count: int) -> None:
         (private / "init.mp4").write_bytes(b"init")

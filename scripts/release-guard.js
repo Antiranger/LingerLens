@@ -26,7 +26,9 @@ if (filesFrom) {
 }
 
 const forbiddenPaths = [
-  /^(?:build-desktop|release|\.venv-desktop)(\/|$)/i,
+  /^(?:build-desktop|release|\.scratch)(\/|$)/i,
+  /^\.archive\/(?!README\.md$)/i,
+  /(^|\/)(?:\.venv(?:[-_][^/]*)?|venv|\.agents?|\.pytest_cache)(\/|$)/i,
   /(^|\/)runtime\/(?!providers\.example\.json$)/i,
   /(^|\/)(?:output|stream|logs?|cache|captures?)(\/|$)/i,
   /(^|\/)\.playwright-cli(\/|$)/i,
@@ -36,7 +38,7 @@ const forbiddenPaths = [
   /(^|\/)node_modules(\/|$)/i,
   /(^|\/)__pycache__(\/|$)/i,
   /(^|\/)\.env(?:\.|$)/i,
-  /(?:^|\/)(?:auth-snapshot|control\.secret|providers)\.json$/i,
+  /(?:^|\/)(?:(?:auth-snapshot|providers)\.json|control\.secret|cookies\.txt)$/i,
   /\.(?:log|m3u8|m4s|ts|mp4|webm|wav|pcm|cookie|cookies)$/i,
 ];
 
@@ -58,13 +60,13 @@ for (const relativeRaw of tracked) {
     continue;
   }
   const absolute = path.join(root, relativeRaw);
-  if (!fs.existsSync(absolute) || !textExtensions.has(path.extname(relative).toLowerCase())) continue;
-  const stat = fs.statSync(absolute);
-  if (stat.size > 2 * 1024 * 1024) continue;
+  if (!fs.existsSync(absolute) || (!allowExample && !textExtensions.has(path.extname(relative).toLowerCase()))) continue;
   const contents = fs.readFileSync(absolute, "utf8");
   for (const pattern of credentialPatterns) {
     const isFixtureOrDocumentation = /(^|\/)(?:tests?|docs?)(\/|$)/i.test(relative);
-    if (isFixtureOrDocumentation && pattern.name !== "private key material") continue;
+    // Generic assignments in prose/tests are often intentional fixtures, but
+    // recognizable provider tokens and private keys must be checked everywhere.
+    if (isFixtureOrDocumentation && pattern.name === "credential material") continue;
     if (pattern.regex.test(contents)) findings.push(`${relative}: possible ${pattern.name}`);
   }
 }

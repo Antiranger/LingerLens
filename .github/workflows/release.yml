@@ -1,8 +1,7 @@
-name: Publish desktop release
+name: Prepare draft desktop release
 
-# Publishes an installer and the update manifest to the PUBLIC download channel.
-# The source repository stays private; only release assets are public, which is
-# what lets the installed app check for updates without any credentials.
+# Prepares a DRAFT in the download repository. A maintainer reviews the assets,
+# source/licence bundle and installation evidence before explicitly publishing.
 #
 # Requires a secret named RELEASES_TOKEN: a fine-grained PAT with
 # "Contents: read and write" on the release repository. The workflow's own
@@ -18,6 +17,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   RELEASES_REPO: Antiranger/LingerLens-releases
@@ -46,16 +49,17 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           $tag = "${{ github.ref_name }}".TrimStart('v')
-          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $pkg = (Get-Content package.json -Encoding utf8 -Raw | ConvertFrom-Json).version
           if ($tag -ne $pkg) {
             Write-Error "tag v$tag does not match package.json version $pkg"
             exit 1
           }
       - name: Verify the tree before building
         run: |
-          npm run guard:release
+          $env:PATH = "$PWD/.venv-desktop/Scripts;$env:PATH"
+          npm run ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run guard:tracked
+          npm run desktop:test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build backend and installer
         run: |
@@ -69,23 +73,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the update manifest from the artifact just produced
         run: |
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $version = (Get-Content package.json -Encoding utf8 -Raw | ConvertFrom-Json).version
           $name = "LingerLens-$version-windows-x64-setup.exe"
           $url = "https://github.com/$env:RELEASES_REPO/releases/download/v$version/$name"
           node scripts/make-update-manifest.js "release/$name" "$url"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Publish to the public download channel
+      - name: Create a draft in the download channel
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
           if (-not $env:GH_TOKEN) {
-            Write-Error "RELEASES_TOKEN is not set; refusing to publish nowhere"
+            Write-Error "RELEASES_TOKEN is not set; cannot create the draft"
             exit 1
           }
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $version = (Get-Content package.json -Encoding utf8 -Raw | ConvertFrom-Json).version
           $name = "LingerLens-$version-windows-x64-setup.exe"
-          gh release create "v$version" --repo "$env:RELEASES_REPO" --title "LingerLens $version" `
-            --notes "Unsigned preview build. Windows SmartScreen may warn on first run." `
+          gh release create "v$version" --repo "$env:RELEASES_REPO" --title "LingerLens $version" --draft `
+            --notes "Preview candidate. Review docs/RELEASING.md in the source repository before publishing. This build is unsigned." `
             "release/$name" "release/manifest.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Host "published v$version to $env:RELEASES_REPO"
+          Write-Host "Prepared draft v$version in $env:RELEASES_REPO; nothing was published."

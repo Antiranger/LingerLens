@@ -26,6 +26,11 @@ jobs:
           .venv-desktop/Scripts/python.exe -m pip install -r desktop/requirements-build.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --ignore-scripts
+      - name: Verify source, documentation and offline regressions
+        run: |
+          $env:PATH = "$PWD/.venv-desktop/Scripts;$env:PATH"
+          npm run ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build runtime and test desktop contracts
         run: |
           npm run desktop:backend

@@ -133,9 +133,13 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(html, /id="asrProfiles"/);
   assert.match(html, /id="translationProfiles"/);
   assert.match(html, /id="roleFallback"/);
-  assert.match(js, /<option value="">不选<\/option>/);
+  assert.match(html, /id="roleSubtitleStatus"/);
+  assert.match(html, /id="roleFallbackStatus"/);
+  assert.match(js, /<option value="">\$\{updateLabel\("opt\.none", "不选"\)\}<\/option>/);
   assert.match(js, /translationFallback/);
   assert.match(js, /fallback: value \? \[value\] : \[\]/);
+  assert.match(js, /nativeTranslationRoleUnavailable/);
+  assert.match(js, /select\.disabled = nativeTranslation/);
   assert.doesNotMatch(html, /translationFallbackList|fallback-settings/);
   assert.doesNotMatch(js, /renderTranslationFallbackSelector|fallbackToggle|fallbackMove/);
   assert.doesNotMatch(html, /brand-jp|side-note|遅延ライブ翻訳|ラグリンゴ|メディアはローカルのみ/);
@@ -201,9 +205,19 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   const mediaClock = fs.readFileSync(path.join(root, "web-player/media-clock.js"), "utf8");
   assert.doesNotMatch(mediaClock.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ""), /Date\.now\(/);
   assert.match(js, /\/api\/subtitles\?afterSeq=/);
-  assert.match(js, /run:\s*refreshSubtitles,\s*\n?\s*intervalMs:\s*500/);
+  assert.match(js, /run:\s*refreshSubtitles,[\s\S]*?intervalMs:\s*250/);
   assert.match(js, /subtitleRenderTimer\s*=\s*setInterval\([\s\S]*?renderSubtitle\(\)[\s\S]*?,\s*100\)/);
   assert.match(js, /subtitleScheduler\.active/);
+  // The draft line: recognized text the backend holds while the Provider has not
+  // ended its turn. It must be painted outside .subtitle-content, which the cue
+  // reconciler clears by cueId, and it must be bounded by the playhead.
+  assert.match(js, /subtitleDraft = data\.draft \|\| null/);
+  assert.match(js, /el\("subtitleDraft"\)/);
+  assert.match(js, /position > draft\.tEnd \+ SUBTITLE_DRAFT_STALE_SECONDS/);
+  assert.match(js, /position < draft\.tStart/);
+  assert.match(html, /id="subtitleDraft"[^>]+hidden/);
+  assert.match(html, /class="subtitle-content"><\/div>\s*<div id="subtitleDraft"/);
+  assert.match(css, /\.subtitle-draft\s*\{[^}]*var\(--font-jp\)/);
   assert.match(js, /return hash % 10/);
   assert.match(js, /row\.dataset\.speakerColor/);
   assert.match(js, /\/api\/target-delay/);
@@ -211,8 +225,8 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.doesNotMatch(html, /id="publishDelay"/);
   assert.match(html, /id="targetDelay"[^>]+type="number"[^>]+min="11"[^>]+value="15"/);
   assert.match(html, /目标延迟/);
-  assert.match(html, /当前实测延迟/);
-  assert.match(html, /不包含直播源本身的延迟/);
+  assert.match(html, /本地分片延迟/);
+  assert.match(html, /不含直播平台延迟和未完成的分片/);
   assert.doesNotMatch(js, /textContent\s*=\s*["'`]翻译中/);
   // Assert the live rule, never a comment. The eligibility rule now lives in
   // subtitleLines(): a translation counts only in state "done", and settled
@@ -245,13 +259,13 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   // treating every publisher-only packaging pause as a download outage.
   assert.match(js, /if \(data\.state === "error"\) \{[\s\S]*?setMediaLoading\(false\);/);
   assert.match(js, /health\.kind === "upstream"/);
-  // The stall text must not promise a recovery the app never attempts: nothing
-  // anywhere consumes RecoveryPolicy.action, so "attempting to reconnect" was a
-  // claim with no mechanism behind it.
+  // Ordinary buffer stalls still wait locally; a session-level outage is now
+  // surfaced through the bounded backend supervisor instead of a vague banner.
   assert.match(js, /直播源暂时没有新数据，正在等待恢复/);
   assert.doesNotMatch(js, /正在尝试重新连接/);
-  assert.doesNotMatch(js, /正在自动恢复/);
-  assert.doesNotMatch(js, /上游直播数据中断，正在自动恢复/);
+  assert.match(js, /正在自动恢复直播/);
+  assert.match(js, /recovery\.state === "reconnecting"/);
+  assert.match(js, /data\.sessionRecovery/);
   // The banner reports what the viewer is experiencing, never what the source is
   // doing. A source that goes quiet behind a deep buffer is invisible to the
   // viewer, and announcing it was the false alarm that fired on 8 of 101 samples
@@ -285,6 +299,9 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(js, /\/api\/model-settings/);
   assert.match(js, /\/api\/auth-cookies/);
   assert.match(js, /authToken = data\.authToken/);
+  // The backend-HTTP failure stays a plain template: `request` is compiled in a vm
+  // by test_request_timeout.js, so it cannot reach a UI helper -- and a transport
+  // error belongs to the log, not to the interface language.
   assert.match(js, /本地后台接口 \$\{path\} 返回 HTTP \$\{response\.status\}/);
   assert.doesNotMatch(js, /throw new Error\(payload\.error \|\| `HTTP/);
 });
@@ -298,6 +315,12 @@ test("cookie import is platform-aware without exposing cookie values", () => {
   assert.match(html, /value="twitch"/);
   assert.match(html, /id="chatTranslateToggle"/);
   assert.match(js, /platform:\s*el\("cookiePlatform"\)\.value/);
+  assert.match(js, /const cookieDrafts = new Map\(\)/);
+  assert.match(js, /payloadField\.value = cookieDrafts\.get\(platform\) \|\| ""/);
+  assert.match(js, /cookieDrafts\.set\(payload\.platform, ""\)/);
+  assert.match(html, /id="roleModeHint"/);
+  assert.match(js, /msg\.nativeBilingualMode/);
+  assert.match(js, /msg\.separateTranslationMode/);
   assert.match(js, /SESSDATA/);
   assert.match(js, /data\.names/);
   assert.doesNotMatch(js, /data\.cookies|data\.values/);
@@ -356,7 +379,7 @@ test("the diagnostics bar is wired end to end and every id it needs exists", () 
   assert.match(html, /id="diagList"/);
   assert.match(html, /id="diagCopy"/);
   assert.match(html, /id="diagClear"/);
-  assert.match(html, /id="diagUpdate"/);
+  assert.match(html, /id="appUpdateButton"/);
   assert.match(html, /id="diagBuild"/);
   assert.match(html, /diagnostics-log\.js/);
   // The collapsed bar must not cost vertical space: it lives inside the top
@@ -412,6 +435,16 @@ test("the diagnostics bar is wired end to end and every id it needs exists", () 
   // them from freezing in the previous language.
   assert.match(i18n, /dispatchEvent\(new CustomEvent\("i18n:changed"/);
   assert.match(js, /addEventListener\("i18n:changed"/);
+  assert.match(js, /document\.addEventListener\("i18n:changed", \(\) => \{[\s\S]{0,240}?renderUpdate\(updateClient\?\.get\(\), true\)/);
+  assert.match(js, /function renderUpdate\(state, forceLabelRefresh = false\)/);
+  assert.match(js, /signature === lastUpdateSignature && !forceLabelRefresh/);
+});
+
+test("subtitle polling is frequent enough for live cue onset", () => {
+  const js = fs.readFileSync(path.join(root, "web-player/player.js"), "utf8");
+  const match = js.match(/subtitlePoller\s*=\s*window\.createSerialPoller\?\.\(\{[\s\S]*?intervalMs:\s*(\d+)/);
+  assert.ok(match, "player.js must configure a subtitle poller");
+  assert.ok(Number(match[1]) <= 250, `subtitle polling may wait too long: ${match[1]}ms`);
 });
 
 /*
@@ -528,7 +561,12 @@ test("realtime workbench UI elements and live message contracts are wired", () =
   assert.match(html, /class="icon-play"/);
   assert.match(html, /class="icon-muted"/);
   assert.doesNotMatch(html, /id="returnLive"/);
-  assert.doesNotMatch(html, />播放<|>静音<|>全屏<|回到直播/);
+  // The icon-only controls keep their accessible labels, while the old visible
+  // text buttons are gone. Scope this check to button contents so explanatory
+  // prose such as the Cookie import instructions can still say “回到直播”.
+  const buttonText = [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)]
+    .map((match) => match[1].replace(/<[^>]+>/g, "").trim()).join("\n");
+  assert.doesNotMatch(buttonText, /^(播放|静音|全屏|回到直播)$/m);
   assert.match(js, /setTimeout\(\(\) => setPlayerControlsVisible\(false\), 1600\)/);
   assert.match(js, /stage\.addEventListener\("pointermove", schedulePlayerControlsHide\)/);
   assert.doesNotMatch(js, /el\("returnLive"\)/);
@@ -607,4 +645,178 @@ test("realtime workbench UI elements and live message contracts are wired", () =
   assert.match(js, /createLiveMessagesTimeline/);
   assert.match(js, /createFollowModeController/);
   assert.match(js, /renderSubtitlesTimeline/);
+});
+
+/*
+ * C4: the locale tables are the whole defense between a non-Chinese viewer and a
+ * Chinese UI, and until now nothing checked that defense. Two ways the player
+ * claims text: BINDINGS localizes static markup, and a script either calls a
+ * translate helper or writes a phrase the ZH_DYNAMIC / DYNAMIC_PHRASES bridge
+ * knows. Anything outside those is only ever Chinese, whatever the interface
+ * language says -- which is how 57 strings ended up that way.
+ */
+test("every locale defines the same keys, and no script writes unclaimed Chinese", () => {
+  const i18n = fs.readFileSync(path.join(root, "web-player/i18n.js"), "utf8");
+  const objectBody = (source, anchor) => {
+    const start = source.indexOf(anchor);
+    assert.notEqual(start, -1, `i18n.js lost ${anchor}`);
+    const open = source.indexOf("{", start);
+    let depth = 0;
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === "{") depth += 1;
+      else if (source[index] === "}" && --depth === 0) return source.slice(open, index + 1);
+    }
+    throw new Error(`unbalanced ${anchor}`);
+  };
+  const entriesOf = (body) => [...body.matchAll(/"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g)];
+
+  /* A sentence a script assembles keeps its shape once the interpolated parts are
+     removed, and a table's phrase keeps the same shape once its `{name}` slots are
+     removed -- so both sides normalize to the fixed text and compare there. */
+  const fixedParts = (text) => {
+    let out = "";
+    let depth = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (depth) {
+        if (char === "{") depth += 1;
+        else if (char === "}") depth -= 1;
+      } else if (char === "$" && text[index + 1] === "{") {
+        depth = 1;
+        index += 1;  // consume the brace too, or the expression never closes
+      } else out += char;
+    }
+    return out;
+  };
+  const shape = (text) => fixedParts(text)
+    .replace(/\{[a-zA-Z0-9_]*\}/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\s+/g, "")
+    .replace(/;$/, "");
+  const CJK = /[一-鿿]/;
+
+  const localeKeys = {};
+  for (const name of ["en", "ja", "de", "ru"]) {
+    const body = objectBody(i18n, `    ${name}: {`);
+    localeKeys[name] = new Set([...body.matchAll(/"([a-zA-Z0-9_.]+)"\s*:/g)].map((m) => m[1]));
+  }
+  for (const name of ["ja", "de", "ru"]) {
+    const missing = [...localeKeys.en].filter((key) => !localeKeys[name].has(key));
+    const extra = [...localeKeys[name]].filter((key) => !localeKeys.en.has(key));
+    assert.deepEqual([missing, extra], [[], []], `${name} drifted from en: -${missing} +${extra}`);
+  }
+
+  // ZH_DYNAMIC maps a key to the Chinese a script writes; DYNAMIC_PHRASES maps that
+  // Chinese back to the key so the observer can re-render it. Either half counts.
+  const tablePhrases = new Set([
+    ...entriesOf(objectBody(i18n, "const ZH_DYNAMIC = ")).map((m) => m[2].trim()),
+    ...objectBody(i18n, "const DYNAMIC_PHRASES = ").matchAll(/"([^"]*[一-鿿][^"]*)"\s*:/g)
+      .map((m) => m[1].trim()),
+  ]);
+  const tableShapes = new Set([...tablePhrases].map(shape));
+
+  const sources = {};
+  for (const entry of fs.readdirSync(path.join(root, "web-player"))) {
+    if (entry.endsWith(".js") && entry !== "i18n.js") {
+      sources[entry] = fs.readFileSync(path.join(root, "web-player", entry), "utf8");
+    }
+  }
+
+  // A Chinese literal handed to a translate call is that key's fallback, not an
+  // untranslated string. Two shapes carry one -- `t(key, zh)` in the player's own
+  // helpers and `I18N.t(key, vars, zh)` where vars sits in the middle -- plus the
+  // `fallback:` property of the hint table. Collected across whole files because
+  // the call can open on an earlier line.
+  const fallbacks = new Set();
+  const usedKeys = new Map();
+  for (const [name, source] of Object.entries(sources)) {
+    for (const call of source.matchAll(
+      /\b(?:L|t|updateLabel|translate|label)\(\s*["']([a-zA-Z0-9_.]+)["']\s*,\s*(?:[^,)]+,\s*)?"((?:[^"\\]|\\.)*)"/g,
+    )) {
+      fallbacks.add(call[2].trim());
+      if (!usedKeys.has(call[1])) usedKeys.set(call[1], name);
+    }
+    for (const entry of source.matchAll(/["']?fallback["']?\s*:\s*"((?:[^"\\]|\\.)*)"/g)) {
+      fallbacks.add(entry[1].trim());
+    }
+  }
+  const fallbackShapes = new Set([...fallbacks].map(shape));
+  for (const key of usedKeys.keys()) {
+    for (const name of Object.keys(localeKeys)) {
+      assert.ok(localeKeys[name].has(key), `${usedKeys.get(key)} asks for "${key}", which ${name} does not define`);
+    }
+  }
+
+  const withoutComments = (source) => source
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
+    .replace(/\/\/[^\n]*/g, "");
+  // What this cannot see: a phrase that IS in a table but gets written to a node the
+  // observer never walks, or a key assembled at runtime (`proto.` + kind). Both still
+  // render wrong; test_browser_metrics.py drives a real page over every locale, and
+  // that is where the visible outcome is actually checked.
+  const leaks = [];
+  for (const [name, source] of Object.entries(sources)) {
+    const lines = withoutComments(source).split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      for (const literal of lines[index].matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g)) {
+        const text = (literal[1] ?? literal[2] ?? literal[3] ?? "").trim();
+        if (!CJK.test(text)) continue;
+        const fixed = shape(text);
+        if (!CJK.test(fixed)) continue;
+        if (tablePhrases.has(text) || fallbacks.has(text)) continue;
+        if (tableShapes.has(fixed) || fallbackShapes.has(fixed)) continue;
+        leaks.push(`${name}:${index + 1}  ${text.slice(0, 70)}`);
+      }
+    }
+  }
+  assert.deepEqual(leaks, [], `Chinese that no locale can translate:\n${leaks.join("\n")}`);
+});
+
+/*
+ * The profile names in the settings list come from the backend catalog, which is
+ * Chinese. The player resolves `profile.<id>` over them, and a key assembled at
+ * runtime is invisible to the scan above -- so this reads config.py and checks
+ * every built-in name directly, in all five tables, character for character.
+ */
+test("every built-in profile name has a translation in all five tables", () => {
+  const config = fs.readFileSync(
+    path.join(root, "companion/providers/config.py"), "utf8",
+  );
+  const block = config.slice(config.indexOf("BUILTIN_ASR_PROVIDERS"));
+  const builtins = [...block.matchAll(/"id": "([^"]+)",\s*\n\s*"label": "([^"]+)"/g)]
+    .map((m) => ({ id: m[1], label: m[2] }));
+  assert.ok(builtins.length >= 15, `config.py lost its profile list (${builtins.length})`);
+
+  const i18n = fs.readFileSync(path.join(root, "web-player/i18n.js"), "utf8");
+  const bodyOf = (anchor) => {
+    const start = i18n.indexOf(anchor);
+    assert.notEqual(start, -1, `i18n.js lost ${anchor}`);
+    const open = i18n.indexOf("{", start);
+    let depth = 0;
+    for (let index = open; index < i18n.length; index += 1) {
+      if (i18n[index] === "{") depth += 1;
+      else if (i18n[index] === "}" && --depth === 0) return i18n.slice(open, index + 1);
+    }
+    throw new Error(`unbalanced ${anchor}`);
+  };
+  const values = (body) => new Map(
+    [...body.matchAll(/"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => [m[1], m[2]]),
+  );
+  const tables = { zh: values(bodyOf("const ZH_DYNAMIC = ")) };
+  for (const locale of ["en", "ja", "de", "ru"]) {
+    tables[locale] = values(bodyOf(`    ${locale}: {`));
+  }
+
+  for (const entry of builtins) {
+    const key = `profile.${entry.id}`;
+    for (const locale of Object.keys(tables)) {
+      assert.ok(
+        tables[locale].has(key),
+        `${entry.id} is named in ${locale === "zh" ? "no dynamic table" : locale}`,
+      );
+    }
+    // Chinese has no key of its own to fall back on: the table value is the only
+    // copy, so if it drifts from config.py the list silently shows the stale name.
+    assert.equal(tables.zh.get(key), entry.label, `${key} no longer matches config.py`);
+  }
 });

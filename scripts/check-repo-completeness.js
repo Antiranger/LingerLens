@@ -96,6 +96,7 @@ function collectReferences() {
 }
 
 function main() {
+  if (process.argv.includes("--docs")) return checkDocs();
   let tracked;
   try {
     tracked = new Set(git(["ls-files", "-z"]).split("\0").filter(Boolean));
@@ -155,6 +156,31 @@ function main() {
     return 1;
   }
   console.log("PASS every referenced path is tracked or deliberately ignored");
+  return 0;
+}
+
+function checkDocs() {
+  const required = [
+    "README.md", "README.zh-CN.md", "README.ja.md", "README.de.md", "README.ru.md",
+    "docs/README.md", "docs/en/guide.md", "docs/zh-CN/guide.md", "docs/ja/guide.md", "docs/de/guide.md", "docs/ru/guide.md",
+    "docs/DEVELOPMENT.md", "docs/PROVIDERS.md", "docs/RELEASING.md", "docs/OPEN_SOURCE_READINESS.md", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md", "SUPPORT.md", "CHANGELOG.md",
+  ];
+  const findings = required.filter((relative) => !fs.existsSync(path.join(REPO_ROOT, relative))).map((relative) => `missing required document: ${relative}`);
+  const tracked = new Set(git(["ls-files"]).split(/\r?\n/).filter(Boolean));
+  const files = [...tracked].filter((file) => /^README(?:\.[^/]+)?\.md$|^docs\/(?:README|DEVELOPMENT|PROVIDERS|RELEASING|OPEN_SOURCE_READINESS)\.md$|^docs\/(?:en|zh-CN|ja|de|ru)\/guide\.md$|^(?:CONTRIBUTING|SECURITY|CODE_OF_CONDUCT|SUPPORT|CHANGELOG)\.md$/.test(file));
+  const links = /\[[^\]]*\]\(([^)#]+)(?:#[^)]+)?\)/g;
+  for (const relative of files) {
+    const text = fs.readFileSync(path.join(REPO_ROOT, relative), "utf8");
+    for (const match of text.matchAll(links)) {
+      const target = match[1].trim();
+      if (/^(?:https?:|mailto:|#)/i.test(target)) continue;
+      const clean = target.replace(/^<|>$/g, "");
+      const resolved = path.resolve(REPO_ROOT, path.dirname(relative), clean);
+      if (!resolved.startsWith(REPO_ROOT + path.sep) || !fs.existsSync(resolved)) findings.push(`${relative}: broken local link ${target}`);
+    }
+  }
+  if (findings.length) { for (const finding of findings) console.error(finding); return 1; }
+  console.log(`Documentation check passed: ${required.length} required files and ${files.length} Markdown files scanned.`);
   return 0;
 }
 

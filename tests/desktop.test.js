@@ -250,6 +250,10 @@ test('a manifest is rejected unless every field the installer step needs is soun
     ['short sha', { ...good, installer: { ...good.installer, sha256: 'abc' } }],
     ['non-hex sha', { ...good, installer: { ...good.installer, sha256: 'z'.repeat(64) } }],
     ['zero size', { ...good, installer: { ...good.installer, size: 0 } }],
+    ['fractional size', { ...good, installer: { ...good.installer, size: 1.5 } }],
+    ['coerced size', { ...good, installer: { ...good.installer, size: '1024' } }],
+    ['unsafe size', { ...good, installer: { ...good.installer, size: Number.MAX_SAFE_INTEGER + 1 } }],
+    ['url credentials', { ...good, installer: { ...good.installer, url: 'https://user:password@example.test/a.exe' } }],
     ['string size', { ...good, installer: { ...good.installer, size: 'big' } }],
     ['no installer', { version: '0.2.0' }],
     ['bad version', { ...good, version: 'latest' }],
@@ -259,6 +263,62 @@ test('a manifest is rejected unless every field the installer step needs is soun
   for (const [label, payload] of broken) {
     assert.equal(updater.readManifest(payload), null, `${label} must be rejected`);
   }
+});
+
+test('version identifiers cannot escape the installer directory and follow prerelease ordering', () => {
+  for (const version of ['1.2.3-../../outside', '1.2.3-..\\outside', '1.2.3-x/y',
+    '1.2.3-', '1.2.3-rc..1', '1.2.3-01', '01.2.3', '1.2.3.4', '9007199254740992.0.0']) {
+    assert.equal(updater.parseVersion(version), null, version);
+  }
+  assert.equal(updater.compareVersions('1.2.3+build.7', '1.2.3'), 0);
+  assert.equal(updater.compareVersions('1.2.3-rc.10', '1.2.3-rc.9'), 1);
+  assert.equal(updater.compareVersions('1.2.3-rc.1', '1.2.3-rc'), 1);
+  assert.equal(updater.compareVersions('1.2.3-1', '1.2.3-alpha'), -1);
+  assert.equal(updater.compareVersions('1.2.3-rc.9+build', '1.2.3-rc.10'), -1);
+});
+
+test('a chunked download stops as soon as it exceeds the declared size', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-overflow-'));
+  const destination = path.join(dir, 'setup.exe');
+  let chunksRead = 0;
+  try {
+    await assert.rejects(updater.downloadVerified({
+      url: 'https://example.test/a.exe', sha256: 'a'.repeat(64), size: 4, destination,
+      fetchImpl: async () => ({ ok: true, headers: { get: () => null },
+        body: (async function* () { for (let i = 0; i < 10; i++) { chunksRead++; yield Buffer.from('1234'); } })() }),
+    }), /exceeds manifest size/);
+    assert.equal(chunksRead, 2);
+    assert.equal(fs.existsSync(destination), false);
+    assert.equal(fs.existsSync(`${destination}.part`), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a failed refresh cannot reuse a previous update offer', async () => {
+  let calls = 0;
+  const instance = updater.createUpdater({ currentVersion: '0.1.0', fetch: async () => {
+    if (++calls > 1) throw new Error('offline');
+    return { ok: true, json: async () => manifestFor('0.2.0', 'https://example.test/a.exe', Buffer.from('x'), 'a'.repeat(64)) };
+  } });
+  assert.equal((await instance.check()).status, 'available');
+  assert.equal((await instance.check()).status, 'failed');
+  assert.equal(instance.getState().update, null);
+  assert.match((await instance.download('unused.exe')).error, /nothing to download/);
+});
+
+test('repeated download and check requests do not race an in-progress download', async () => {
+  let finish;
+  let downloads = 0;
+  const instance = updater.createUpdater({ currentVersion: '0.1.0',
+    fetch: fetchJsonOnce(manifestFor('0.2.0', 'https://example.test/a.exe', Buffer.from('x'), 'a'.repeat(64))),
+    download: async () => { downloads++; return new Promise(resolve => { finish = resolve; }); },
+  });
+  await instance.check();
+  const pending = instance.download('unused.exe');
+  assert.equal((await instance.download('unused.exe')).status, 'downloading');
+  assert.equal((await instance.check()).status, 'downloading');
+  assert.equal(downloads, 1);
+  finish({ path: 'unused.exe', bytes: 1 });
+  assert.equal((await pending).status, 'ready');
 });
 
 test('the manifest url is fixed unless a trusted override is given', () => {

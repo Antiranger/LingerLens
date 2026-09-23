@@ -323,8 +323,10 @@ def parse_header_cookies(header: str, domain: str = ".youtube.com") -> list[dict
 def parse_name_value_lines(text: str, domain: str = ".youtube.com") -> list[dict[str, Any]]:
     """Parse pasted `name<TAB>value`, `name=value`, or `name value` rows.
 
-    This matches the TSV that DevTools' cookie table copies to the clipboard
-    ("Name<TAB>Value" per selected row, optional localized header row).
+    This matches both the short ``Name<TAB>Value`` form and the full cookie
+    table rows that Chromium/Firefox copy (name, value, domain, path, expiry,
+    and flags).  Keeping the original domain matters for YouTube: some login
+    cookies belong to ``google.com`` rather than ``youtube.com``.
     """
     cookies: list[dict[str, Any]] = []
     for raw_line in text.splitlines():
@@ -332,31 +334,51 @@ def parse_name_value_lines(text: str, domain: str = ".youtube.com") -> list[dict
         if not line or line.startswith("#"):
             continue
         if "\t" in line:
-            # DevTools copies full cookie-table rows (name, value, domain, path,
-            # expiry, size, flags, ...). Keep only the first two columns.
             fields = line.split("\t")
             if len(fields) < 2:
                 continue
             name, value = fields[0], fields[1]
+            row_domain = fields[2].strip() if len(fields) >= 3 else domain
+            row_path = fields[3].strip() if len(fields) >= 4 else "/"
+            row_expiry = fields[4].strip() if len(fields) >= 5 else ""
+            # The exact flag columns differ between browsers and locales.  A
+            # short two-column paste is treated as secure as before; a full
+            # row keeps an explicit secure/true marker when one is present.
+            row_flags = [field.strip().lower() for field in fields[5:]]
+            row_secure = len(fields) < 6 or any(
+                flag in {"secure", "true", "yes", "✓", "是", "ja", "да"}
+                for flag in row_flags
+            )
         elif "=" in line:
             name, _, value = line.partition("=")
+            row_domain, row_path, row_expiry, row_secure = domain, "/", "", True
         else:
             parts = line.split(None, 1)
             if len(parts) != 2:
                 continue
             name, value = parts[0], parts[1]
+            row_domain, row_path, row_expiry, row_secure = domain, "/", "", True
         name = name.strip()
         value = value.strip()
         if not name or name.lower() in {"name", "名称", "名前"} or "\t" in name or "\n" in value or "\r" in value:
             continue
+        expiration = 0
+        if row_expiry and row_expiry.lower() not in {"session", "session cookie", "会话"}:
+            try:
+                expiration = int(float(row_expiry))
+            except ValueError:
+                try:
+                    expiration = int(datetime.fromisoformat(row_expiry.replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    expiration = 0
         cookies.append(
             {
-                "domain": domain if domain.startswith(".") else f".{domain}",
-                "path": "/",
+                "domain": row_domain or domain,
+                "path": row_path or "/",
                 "name": name,
                 "value": value,
-                "secure": True,
-                "expirationDate": int(time.time()) + 30 * 86400,
+                "secure": row_secure,
+                "expirationDate": expiration,
             }
         )
     return cookies
@@ -869,6 +891,7 @@ class DelayedPlaylistPublisher:
         self.target_duration = 1
         self.media_sequence = 0
         self.pdt_epoch: float | None = None
+        self._private_edge_wall_time: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -897,6 +920,7 @@ class DelayedPlaylistPublisher:
                 "pendingSegments": len(self.pending),
                 "hiddenMediaSeconds": round(sum(segment.duration for segment in self.pending.values()), 3),
                 "privateMediaSeconds": round(self._media_seconds_total, 3),
+                "privateEdgeWallTime": self._private_edge_wall_time,
                 "sourceStallSeconds": round(max(0.0, time.monotonic() - self._last_new_segment_at), 1),
                 "targetDuration": self.target_duration,
                 "playlistReady": (self.public_dir / "live.m3u8").exists(),
@@ -923,6 +947,15 @@ class DelayedPlaylistPublisher:
             return
         now = time.monotonic()
         with self._lock:
+            # Follow the playlist's actual timestamps, including gaps. A sum
+            # of all observed durations cannot represent a skipped segment.
+            edge: float | None = None
+            for item in parsed:
+                if item.program_date_time:
+                    edge = self._parse_program_date_time(item.program_date_time)
+                if edge is not None:
+                    edge += item.duration
+            self._private_edge_wall_time = edge
             parsed_names = {item.name for item in parsed}
             for item in parsed:
                 if self.pdt_epoch is None and item.program_date_time:
