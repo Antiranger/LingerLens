@@ -8,6 +8,24 @@ binary frames. Soniox returns mutable non-final tokens plus final tokens; the
 special final tokens ``<end>`` and ``<fin>`` mark an utterance boundary and a
 manual-finalization boundary respectively. The adapter exposes the accumulated
 final prefix as LingerLens's interim text, and emits one final cue at each boundary.
+
+Translation (``stt-rt-v5``): adding a ``translation`` block to the first frame
+makes the same session emit translated text, and the official token stream then
+tags every token with ``translation_status``:
+
+    "original"     spoken text
+    "translation"  its translation
+    "none"         spoken text outside the configured language pair
+
+Translated tokens carry no ``start_ms``/``end_ms`` -- they are "generated after
+their spoken tokens and follow the same sequence" -- so this adapter never
+mixes them into the source timeline. It accumulates the confirmed translation
+and republishes the running total on the events that already carry the source,
+which is what SubtitlePipeline's session-backed translation resolves against.
+That sequence is also the only alignment on offer, so every time speech resumes
+after a translation chunk the adapter freezes the pair it implies into
+``ASREvent.translation_anchors``: the Provider's own statement of how much
+source the translation so far renders. See ``_track_translation_anchor``.
 """
 
 from __future__ import annotations
@@ -30,6 +48,7 @@ from .base import (
     ASRProvider,
     ASRStream,
     CaptionObservation,
+    NativeTranslationCapabilities,
     RecognitionToken,
     SourceLanguagePolicy,
 )
@@ -42,6 +61,7 @@ _SUPPORTED = (
     "sr", "sv", "sw", "ta", "te", "th", "tl", "tr", "uk", "ur", "vi", "zh",
 )
 _END_TOKENS = {"<end>", "<fin>"}
+_TRANSLATED = "translation"
 
 
 def _canonical_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
@@ -50,6 +70,39 @@ def _canonical_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
 
 def _hint(tag: str) -> str:
     return primary_subtag(tag)
+
+
+def _translation_mode(options: dict[str, Any]) -> str | None:
+    """Official ``translation.type`` from a profile's saved options, if any.
+
+    Profile options are camelCase everywhere else in this catalog, so the mode
+    is saved as ``translationType`` and translated to the wire value here. Any
+    other value -- including the empty string the UI writes for "off" -- means
+    the profile stays a plain transcription profile.
+    """
+    mode = options.get("translationType")
+    return mode if mode in {"one_way", "two_way"} else None
+
+
+def _translation_config(
+    options: dict[str, Any], policy: SourceLanguagePolicy, target_tag: str | None
+) -> dict[str, Any] | None:
+    """Build the first-frame ``translation`` block, or None to stay transcript-only.
+
+    One-way needs only the Target Language the viewer chose. Two-way needs both
+    sides; the source side falls back to the specified Source Language so a
+    two-way profile still works when only the viewer's target is known.
+    """
+    mode = _translation_mode(options)
+    if mode is None:
+        return None
+    if mode == "one_way":
+        return {"type": "one_way", "target_language": _hint(target_tag)} if target_tag else None
+    language_a = options.get("translationLanguageA") or policy.tag or target_tag
+    language_b = options.get("translationLanguageB") or target_tag
+    if not language_a or not language_b:
+        return None
+    return {"type": "two_way", "language_a": _hint(language_a), "language_b": _hint(language_b)}
 
 
 @register("soniox-realtime")
@@ -104,7 +157,39 @@ class SonioxRealtimeASRProvider(ASRProvider):
             preferred_sample_rate=16000,
             speaker_labels=bool(self.options.get("enableSpeakerDiarization", False)),
             caption_evidence=frozenset({"stable_token_delta", "token_snapshot", "utterance_final", "endpoint"}),
+            native_translation=self.native_translation,
         )
+
+    @property
+    def native_translation(self) -> NativeTranslationCapabilities:
+        """Whether this profile asked Soniox to translate on the same session.
+
+        Only ``stt-rt-v5`` is documented for realtime translation, and only when
+        the saved options actually carry a ``translation`` block -- an unset
+        option must leave the profile a plain transcription profile rather than
+        silently switching billing and output on.
+        """
+        mode = _translation_mode(self.options)
+        if self.model != "stt-rt-v5" or mode is None:
+            return NativeTranslationCapabilities()
+        return NativeTranslationCapabilities(
+            enabled=True,
+            # One-way always lands in the viewer's Target Language, so the
+            # documented Soniox language set is the honest target contract.
+            # Two-way picks the *other* side of the pair per utterance, which is
+            # not a target contract at all -- leave it open.
+            target_tags=_canonical_tags(_SUPPORTED) if mode == "one_way" else None,
+            two_way=mode == "two_way",
+            glossary=True,
+            tier="provider_claimed",
+        )
+
+    def set_translation_target(self, target_tag: str | None) -> None:
+        super().set_translation_target(target_tag)
+        if target_tag and primary_subtag(target_tag) not in _SUPPORTED:
+            raise LanguageNotSupportedError(
+                f"Soniox realtime translation cannot target {target_tag}"
+            )
 
     async def stream(
         self,
@@ -124,6 +209,23 @@ class SonioxRealtimeASRProvider(ASRProvider):
         stream = _SonioxStream(self, policy, sample_rate, context)
         await stream.connect()
         return stream
+
+
+@register("soniox-realtime-transcribe")
+class SonioxTranscribeOnlyASRProvider(SonioxRealtimeASRProvider):
+    """The same Soniox protocol with translating pinned off.
+
+    It exists as its own dropdown entry because the two things it can do are
+    billed and behave differently: on the bilingual entry the caption path pairs
+    each sentence with the translation Soniox returns on the same session, on
+    this one it gets a transcript and a second model does the translating. The
+    option is dropped rather than checked so a card cannot claim native
+    translation while the wire request never asked for it.
+    """
+
+    def __init__(self, config: dict[str, Any]):
+        super().__init__(config)
+        self.options = {**self.options, "translationType": ""}
 
 
 class _SonioxStream(ASRStream):
@@ -146,6 +248,18 @@ class _SonioxStream(ASRStream):
         self._emitted_final_token_keys: set[tuple[object, ...]] = set()
         self._emitted_lexical_tokens = 0
         self._utterance_start: float | None = None
+        self._reset_final_cache()
+        # Provider-side translation. Soniox returns transcribed and translated
+        # tokens in one ordered stream and gives the translated ones no
+        # timestamps, so the confirmed translation is accumulated as running
+        # text and handed out in the same sequence it arrived: everything since
+        # the last utterance boundary is the open utterance's translation.
+        self._translation_final = ""
+        self._translation_stash = ""
+        # Settled (source, translation) prefix pairs for the open utterance, and
+        # the pair waiting to settle. See ``_settle_translation_anchor``.
+        self._translation_anchors: list[tuple[str, str]] = []
+        self._translation_pending: tuple[str, str] | None = None
         self._audio_bytes_sent = 0
         self._last_audio_at = time.monotonic()
         self._keepalive_task: asyncio.Task | None = None
@@ -189,8 +303,27 @@ class _SonioxStream(ASRStream):
         if hints:
             config["language_hints"] = hints
             config["language_hints_strict"] = strict
-        if self.context:
-            config["context"] = {"terms": self.context}
+        translation = _translation_config(
+            options, self.policy, self.provider.translation_target
+        )
+        if translation is not None:
+            # Same session, same socket: Soniox transcribes AND translates, and
+            # tags every returned token with which of the two it is.
+            config["translation"] = translation
+        terms = [item for item in (options.get("translationTerms") or []) if isinstance(item, dict)]
+        if self.context or terms:
+            context: dict[str, Any] = {}
+            if self.context:
+                context["terms"] = self.context
+            if terms and translation is not None:
+                # Official context.translation_terms: [{source, target}].
+                context["translation_terms"] = [
+                    {"source": str(item.get("source", "")), "target": str(item.get("target", ""))}
+                    for item in terms
+                    if item.get("source") and item.get("target")
+                ]
+            if context:
+                config["context"] = context
         for source, target in (
             ("maxEndpointDelayMs", "max_endpoint_delay_ms"),
             ("endpointSensitivity", "endpoint_sensitivity"),
@@ -310,7 +443,11 @@ class _SonioxStream(ASRStream):
         if not isinstance(raw_tokens, list):
             raw = dict(raw)
             raw["tokens"] = []
-        tokens = self._project_token_clock(raw)
+        source_tokens, translation_tokens = _split_translation(raw["tokens"])
+        translation_before = self._translation_final
+        utterance_before = self._utterance
+        self._absorb_translation(translation_tokens)
+        tokens = self._project_token_clock({**raw, "tokens": source_tokens})
         events: list[ASREvent] = []
         non_final: list[dict[str, Any]] = []
         new_final_tokens: list[dict[str, Any]] = []
@@ -327,28 +464,56 @@ class _SonioxStream(ASRStream):
                 self._emitted_final_token_keys.add(key)
                 if self._utterance_start is None:
                     self._utterance_start = _seconds(token.get("start_ms"))
+                if len(self._final_tokens) >= 8192:
+                    return [ASREvent("error", message="ASR utterance exceeded the 8192-token safety bound")]
                 self._final_tokens.append(token)
                 new_final_tokens.append(token)
             else:
                 non_final.append(token)
 
+        stable_delta = self._update_final_cache()
+        if self._utterance == utterance_before:
+            # An utterance that closed inside this frame already claimed the
+            # running translation; the tokens left over belong to the next one.
+            self._track_translation_anchor(
+                source_advanced=bool(new_final_tokens),
+                translation_advanced=self._translation_final != translation_before,
+            )
         if self._final_tokens or non_final:
-            visible = self._final_tokens + non_final
-            text = "".join(str(token.get("text", "")) for token in visible).strip()
+            text = (self._final_text + "".join(str(token.get("text", "")) for token in non_final)).strip()
             if text:
-                stable_prefix = _closed_lexical_prefix(self._final_tokens)
-                stable_delta = stable_prefix[self._emitted_lexical_tokens:]
                 self._emitted_lexical_tokens += len(stable_delta)
+                languages = self._final_languages.copy()
+                speakers = self._final_speakers.copy()
+                confidence_sum, confidence_count = self._final_confidence
+                for token in non_final:
+                    language = canonicalize_tag_or_none(token.get("language"))
+                    if language:
+                        languages[language] += 1
+                    if token.get("speaker") is not None:
+                        speakers[str(token["speaker"])] += 1
+                    if isinstance(token.get("confidence"), (int, float)):
+                        confidence_sum += float(token["confidence"])
+                        confidence_count += 1
+                language = languages.most_common(1)[0][0] if languages else None
+                speaker = speakers.most_common(1)[0][0] if speakers else None
+                begin = self._utterance_start if self._utterance_start is not None else _token_start(non_final)
+                end = _token_end(non_final)
+                if end is None:
+                    end = self._final_end_pcm
                 events.append(ASREvent(
                     "interim",
                     text=text,
-                    begin_pcm=self._utterance_start or _token_start(visible),
-                    end_pcm=_token_end(visible),
-                    language=_dominant_language(visible),
+                    begin_pcm=begin,
+                    end_pcm=end,
+                    language=language,
                     item_id=str(self._utterance),
-                    speaker=_dominant_speaker(visible),
-                    confidence=_mean_confidence(visible),
+                    speaker=speaker,
+                    confidence=round(confidence_sum / confidence_count, 4) if confidence_count else None,
                     raw=raw,
+                    translation=self._open_translation,
+                    translation_stash=self._translation_stash,
+                    translation_anchors=tuple(self._translation_anchors),
                     # Mutable Soniox pieces are tokenizer output, not complete
                     # lexical snapshots. Publish only the immutable lexical
                     # prefix; an empty delta still suppresses the legacy mutable
@@ -358,15 +523,75 @@ class _SonioxStream(ASRStream):
                         0,
                         str(self._utterance),
                         tokens=tuple(stable_delta),
-                        begin_pcm=self._utterance_start or _token_start(visible),
-                        end_pcm=_token_end(visible),
-                        language=_dominant_language(visible),
-                        speaker=_dominant_speaker(visible),
+                        begin_pcm=begin,
+                        end_pcm=end,
+                        language=language,
+                        speaker=speaker,
                     ),
                 ))
         if raw.get("finished") and self._final_tokens:
             events.extend(self._finish_utterance(raw, None, new_final_tokens))
+        if translation_tokens and not any(event.type == "final" for event in events):
+            # Translation can advance without new source tokens. Preserve its
+            # latest snapshot; the native bus joins only complete source segments.
+            events.append(ASREvent(
+                "translation",
+                item_id=str(self._utterance),
+                translation=self._open_translation,
+                translation_stash=self._translation_stash,
+                translation_anchors=tuple(self._translation_anchors),
+                raw=raw,
+            ))
         return events
+
+    def _reset_final_cache(self) -> None:
+        self._processed_finals = 0
+        self._final_text = ""
+        self._final_languages: Counter[str] = Counter()
+        self._final_speakers: Counter[str] = Counter()
+        self._final_confidence = (0.0, 0)
+        self._final_end_pcm: float | None = None
+        self._lexical_tail: list[dict[str, Any]] = []
+
+    def _update_final_cache(self) -> list[RecognitionToken]:
+        """Append stable evidence once; only an unfinished whitespace word waits.
+
+        The complete provider segment remains available for final reconciliation,
+        but status frames and new deltas do not tokenize or recount its history.
+        """
+        new = self._final_tokens[self._processed_finals:]
+        self._processed_finals = len(self._final_tokens)
+        self._final_text += "".join(str(token.get("text", "")) for token in new)
+        delta: list[RecognitionToken] = []
+        confidence_sum, confidence_count = self._final_confidence
+        for token in new:
+            language = canonicalize_tag_or_none(token.get("language"))
+            if language:
+                self._final_languages[language] += 1
+            if token.get("speaker") is not None:
+                self._final_speakers[str(token["speaker"])] += 1
+            if isinstance(token.get("confidence"), (int, float)):
+                confidence_sum += float(token["confidence"])
+                confidence_count += 1
+            end = _seconds(token.get("end_ms"))
+            if end is not None:
+                self._final_end_pcm = end
+            text = str(token.get("text", ""))
+            if not text or text in _END_TOKENS:
+                continue
+            piece = bool(language and primary_subtag(language) in {"zh", "ja", "ko"})
+            boundary = self._lexical_tail and (
+                text[:1].isspace() or str(self._lexical_tail[-1].get("text", ""))[-1:].isspace()
+            )
+            if self._lexical_tail and (piece or boundary):
+                delta.append(_merge_lexical_token(self._lexical_tail, True))
+                self._lexical_tail = []
+            if piece:
+                delta.append(_merge_lexical_token([token], True, is_piece=True))
+            else:
+                self._lexical_tail.append(token)
+        self._final_confidence = (confidence_sum, confidence_count)
+        return delta
 
     def _project_token_clock(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
         """Convert Soniox response time onto the PCM bytes sent to this session."""
@@ -390,17 +615,87 @@ class _SonioxStream(ASRStream):
             projected.append(token)
         return projected
 
+    @property
+    def _open_translation(self) -> str:
+        """Confirmed translation received since the last utterance boundary."""
+        return self._translation_final
+
+    def _absorb_translation(self, tokens: list[dict[str, Any]]) -> None:
+        """Accumulate ``translation_status == "translation"`` tokens.
+
+        Only confirmed pieces are kept. A non-final translated token may still be
+        rewritten, and a cue that has already been shown cannot be taken back, so
+        the tentative tail is published separately and never resolved against.
+        """
+        for token in tokens:
+            text = str(token.get("text", ""))
+            if not text:
+                continue
+            if token.get("is_final"):
+                self._translation_final += text
+                # A confirmed piece supersedes whatever tentative tail preceded it.
+                self._translation_stash = ""
+            else:
+                self._translation_stash += text
+
+    def _track_translation_anchor(self, *, source_advanced: bool, translation_advanced: bool) -> None:
+        """Follow the Provider's own ordering between speech and translation.
+
+        Soniox states that transcription and translation chunks follow each
+        other, and gives a translated token no timestamp and no id for the words
+        it renders. So the only alignment that exists is which chunk came last:
+        once speech arrives after a translation chunk, the pair recorded at that
+        chunk's end is the Provider saying "what I just translated is exactly
+        this much source". A frame that carried both is no evidence of an order,
+        so it only moves the candidate forward.
+        """
+        if translation_advanced:
+            if self._translation_final:
+                self._translation_pending = (self._final_text, self._translation_final)
+            return
+        if source_advanced:
+            self._settle_translation_anchor()
+
+    def _settle_translation_anchor(self) -> None:
+        """Freeze the waiting pair as an anchor the pipeline may attribute to."""
+        pending, self._translation_pending = self._translation_pending, None
+        if pending is None or not pending[0]:
+            return
+        if not self._translation_anchors or self._translation_anchors[-1][1] != pending[1]:
+            self._translation_anchors.append(pending)
+            del self._translation_anchors[:-64]  # Diagnostic-only bounded history.
+
+    def _take_translation(self) -> str:
+        """Claim the open utterance's translation and start a fresh bucket.
+
+        Clearing rather than advancing a cursor keeps a multi-hour session from
+        holding every translation it has ever produced.
+        """
+        text = self._translation_final.strip()
+        self._translation_final = ""
+        self._translation_stash = ""
+        self._translation_pending = None
+        self._translation_anchors = []
+        return text
+
     def _finish_utterance(
         self,
         raw: dict[str, Any],
         endpoint_token: dict[str, Any] | None,
         finalized_delta: list[dict[str, Any]],
     ) -> list[ASREvent]:
+        # The utterance closing is the Provider's last word on where its
+        # translation ends and new speech begins; claim both before the buckets
+        # reset, since ``_take_translation`` clears them.
+        self._settle_translation_anchor()
+        anchors = tuple(self._translation_anchors)
+        translation = self._take_translation()
         tokens = self._final_tokens
         self._final_tokens = []
         self._emitted_final_token_keys.clear()
         emitted_lexical_tokens = self._emitted_lexical_tokens
         self._emitted_lexical_tokens = 0
+        self._reset_final_cache()
         item_id = str(self._utterance)
         self._utterance += 1
         begin = self._utterance_start if self._utterance_start is not None else _token_start(tokens)
@@ -431,6 +726,8 @@ class _SonioxStream(ASRStream):
                 language=language, item_id=item_id,
                 speaker=_dominant_speaker(tokens), confidence=_mean_confidence(tokens),
                 raw=raw,
+                translation=translation,
+                translation_anchors=anchors,
                 caption_observation=CaptionObservation(
                     "utterance_final", 0, item_id,
                     tokens=tuple(_lexical_tokens(tokens, True)[emitted_lexical_tokens:]),
@@ -461,6 +758,25 @@ class _SonioxStream(ASRStream):
             except asyncio.TimeoutError:
                 pass
         await self._release()
+
+
+def _split_translation(
+    tokens: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate the unified token stream by ``translation_status``.
+
+    Soniox returns transcription and translation in one array. Translated tokens
+    carry no timestamps and belong to the target language, so they must never
+    reach the source-token clock, the caption chunker, or language detection.
+    """
+    source: list[dict[str, Any]] = []
+    translated: list[dict[str, Any]] = []
+    for token in tokens:
+        if isinstance(token, dict) and token.get("translation_status") == _TRANSLATED:
+            translated.append(token)
+        else:
+            source.append(token)
+    return source, translated
 
 
 def _token_key(token: dict[str, Any]) -> tuple[object, ...]:

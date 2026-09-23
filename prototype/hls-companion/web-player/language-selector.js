@@ -13,6 +13,9 @@
   "use strict";
 
   let catalog = [];
+  // i18n.js publishes itself on window before this runs; the Chinese stays in the
+  // call so a missing key degrades to the text this file was written with.
+  const t = (key, text) => (window.I18N ? window.I18N.t(key, null, text) : text);
   const byTag = new Map();
   // Quick-access order for the empty-query list.
   const COMMON_TAGS = ["ja", "zh-Hans", "zh-Hant", "en", "ko"];
@@ -134,8 +137,8 @@
     input.setAttribute("aria-autocomplete", "list");
     input.autocomplete = "off";
     input.spellcheck = false;
-    input.placeholder = settings.placeholder || "搜索并选择语言…";
-    input.title = "点击展开语言列表，也可以直接输入名称或 BCP 47 tag 搜索";
+    input.placeholder = settings.placeholder || t("ph.languageSearch", "搜索并选择语言…");
+    input.title = t("ph.languageSearchHelp", "点击展开语言列表，也可以直接输入名称或 BCP 47 tag 搜索");
     const list = document.createElement("ul");
     list.className = "lang-combo-list";
     list.id = listId;
@@ -203,7 +206,7 @@
       if (!matches.length) {
         const empty = document.createElement("li");
         empty.className = "lang-combo-empty";
-        empty.textContent = "没有匹配的语言";
+        empty.textContent = t("lang.none", "没有匹配的语言");
         list.append(empty);
       }
     }

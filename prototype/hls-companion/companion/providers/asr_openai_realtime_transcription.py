@@ -167,6 +167,8 @@ class _OpenAIRealtimeStream(ASRStream):
         return [primary_subtag(tag) for tag in self.policy.candidates]
 
     def _turn_detection(self) -> dict[str, Any] | None:
+        if self.provider.model == "gpt-live-transcribe":
+            return None  # Requires client VAD/commit; production preflight blocks it.
         turn = self.provider.options.get("turnDetection", {"type": "server_vad"})
         if turn is None:
             return None

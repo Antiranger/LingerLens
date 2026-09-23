@@ -22,14 +22,27 @@ from .providers.base import CaptionCutReason, CaptionObservation, RecognitionTok
 GuaranteeTier = Literal["strict", "best_effort"]
 
 SOFT_TARGET_SPAN = 6.0
+# The rule every release decision below serves: a caption must be finished while
+# the viewer's playhead can still reach it. The tightest holdback the player
+# accepts is server.MIN_TARGET_DELAY_SECONDS, so that number is the release
+# budget, and ``tests/test_caption_chunker.py`` fails if the two ever drift.
+RELEASE_BUDGET_SECONDS = 11.0
 # The backstop the soft span never had. A caption whose text is confirmed but
-# which still offers no lexical boundary is emitted anyway once it has been
-# open this long. Without it a speaker who never pauses holds the caption open
-# indefinitely, and by the time a boundary finally arrives the cue is older
-# than the display budget: translation is then refused without a Provider call
-# and, because the renderer admits only finished translations, nothing at all
-# reaches the screen. Deliberately longer than SOFT_TARGET_SPAN, which only
-# counts an overshoot; this is the point at which waiting stops paying.
+# which still offers no lexical boundary is emitted anyway once it has been open
+# this long. It is not the Provider's job to bound a lane: measured on 2026-09-21
+# against both end-to-end bilingual Profiles on real Japanese, Qwen3.8
+# LiveTranslate's server VAD let a single utterance run to 15.7 s and 15.8 s at its
+# 500 ms silence threshold and to 36.4 s at 800 ms
+# (.scratch/qwen-livetranslate-live/events_*sil*.json), and when it does close it
+# closes at the *end* of that run — 0.27-0.47 s after the last sample. Soniox placed
+# every boundary inside 4.6 s of speech on the same content
+# (.scratch/bilingual-turn-deadline/out/), but that is behaviour, not a promise.
+# Without this deadline the cue is older than the release budget before the provider
+# boundary that would release it, translation is then refused without a Provider
+# call and, because the renderer admits only finished translations, nothing at all
+# reaches the screen. Deliberately longer than SOFT_TARGET_SPAN, which only counts
+# an overshoot, and short enough to leave the last seconds of the budget for the
+# audio->display path.
 HARD_DEADLINE_SECONDS = 7.0
 _CONTINUATION_GAP = 1.2
 # Arrival replay: <=0.6s recovered no cross-final continuations; 1.2s
@@ -73,12 +86,33 @@ class CaptionChunk:
     ends_mid_sentence: bool | None = None
     guarantee_tier: GuaranteeTier = "strict"
     exact_timing: bool = False
+    item_id: str = ""
+    """Dominant Provider utterance this chunk's evidence came from.
+
+    Carried so a caller can join the chunk back to whatever the Provider said
+    about that same utterance -- session-backed translation keys its segments
+    this way. Empty when the evidence carried no item id."""
 
 
 @dataclasses.dataclass(frozen=True)
 class ChunkerDecision:
     chunks: tuple[CaptionChunk, ...] = ()
     pending_evidence: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class PendingCaption:
+    """A lane's held text, positioned the way its eventual cue will be.
+
+    ``end_pcm`` is the further of the held text and the position the caller asked
+    to be cut at, so the window covers everything the projection is showing."""
+
+    item_id: str
+    text: str
+    begin_pcm: float
+    end_pcm: float
+    language: str | None = None
+    speaker: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -167,8 +201,18 @@ class _CaptionState:
 class CaptionChunker:
     """Convert normalized recognition evidence into immutable Caption Chunks."""
 
-    def __init__(self, *, realtime: bool = False) -> None:
+    def __init__(self, *, realtime: bool = False, segments_only: bool = False) -> None:
         self.realtime = realtime
+        # Session-backed translation (``segments_only``) makes the Provider's own
+        # segment the caption unit: no clause-level re-cutting, and no lane that
+        # merges two segments either. That Provider has already segmented the
+        # audio and emits one translation per segment, so a caption that covers
+        # anything else -- half a segment, or two joined segments -- is text its
+        # translation cannot be attributed to. The utterance endpoint path below
+        # still closes the caption, and HARD_DEADLINE_SECONDS still bounds a
+        # speaker who never pauses; ``ASREvent.translation_anchors`` is what
+        # rescues the translation across those two cuts.
+        self.segments_only = segments_only
         self.generation: int | None = None
         self._items: dict[str, _ItemState] = {}
         self._captions: dict[tuple[str, str | None], _CaptionState] = {}
@@ -245,12 +289,22 @@ class CaptionChunker:
             key = ("speaker:" + unit.speaker if unit.speaker else "item:" + unit.item_id,
                    _primary_language(unit.language))
             caption = self._captions.setdefault(key, _CaptionState())
-            if (caption.units and caption.units[-1].item_id != unit.item_id
-                    and unit.begin is not None and caption.last_end_pcm is not None
-                    and (unit.begin - caption.last_end_pcm > _CONTINUATION_GAP
-                         or unit.begin < caption.last_end_pcm - _TIMESTAMP_JITTER)):
-                chunks.append(self._close_caption(key))
-                caption = self._captions.setdefault(key, _CaptionState())
+            if caption.units and caption.units[-1].item_id != unit.item_id:
+                # A lane that carries two Provider segments can be resolved
+                # against neither: session-backed translation belongs to one
+                # segment, so the merged text matches no boundary. Under
+                # ``segments_only`` the segment IS the caption unit, so any item
+                # change closes the lane. Otherwise only a real gap or an
+                # overlap splits it, so continuous speech stays one caption.
+                separated = (
+                    unit.begin is None
+                    or caption.last_end_pcm is None
+                    or unit.begin - caption.last_end_pcm > _CONTINUATION_GAP
+                    or unit.begin < caption.last_end_pcm - _TIMESTAMP_JITTER
+                )
+                if self.segments_only or separated:
+                    chunks.extend(self._close_caption(key))
+                    caption = self._captions.setdefault(key, _CaptionState())
             caption.units.append(unit)
             caption.last_end_pcm = _maximum_time(caption.last_end_pcm, unit.end)
             caption.deadline = None
@@ -275,7 +329,7 @@ class CaptionChunker:
             # close the item: e.g. VAD stop can precede final transcription.
             if self.realtime and caption.units and observation.kind in {"endpoint", "utterance_final"}:
                 if all(u.item_id == observation.item_id for u in caption.units):
-                    chunks.append(self._emit(caption, len(caption.units) - 1, "utterance_endpoint"))
+                    chunks.extend(self._release(caption, "utterance_endpoint"))
             if caption.units and all(
                 self._items[u.item_id].closed for u in caption.units if u.item_id in self._items
             ):
@@ -377,25 +431,70 @@ class CaptionChunker:
                 # Confirmed text only: a lane that accumulated nothing is dropped
                 # rather than turned into an empty cue.
                 if caption.units:
-                    chunks.append(self._close_caption(key, "hard_deadline"))
+                    chunks.extend(self._cut_over_budget(key, now))
                 else:
                     del self._captions[key]
                 continue
             if caption.deadline is not None and now >= caption.deadline:
-                chunks.append(self._close_caption(key))
+                chunks.extend(self._close_caption(key))
         return ChunkerDecision(tuple(chunks))
+
+    def _cut_over_budget(self, key: tuple[str, str | None], now: float) -> list[CaptionChunk]:
+        """Give up on a lane the Provider will not close, in pieces one can read.
+
+        The wall-clock deadline decides *when* to stop waiting; it must not also
+        decide how much speech one caption carries. It used to, and on the four real
+        captures replayed 2026-09-22 that produced 11.1, 11.9 and 12.4 s captions,
+        because a stalled path delivers several seconds of evidence at once. Each
+        piece is therefore bounded in seconds of speech -- the same number, in the
+        unit the viewer reads against -- and a backlog drains in this one call
+        instead of one caption per deadline.
+        """
+        caption = self._captions[key]
+        chunks = self._release(caption, "hard_deadline")
+        del self._captions[key]
+        return chunks
+
+    def _release(self, caption: _CaptionState, reason: CaptionCutReason) -> list[CaptionChunk]:
+        """Hand a whole lane over, cut into pieces no longer than the span budget.
+
+        Used by every path that releases a lane the Provider finished or we gave up
+        on, because the size limit is about what fits on screen, not about who
+        decided the turn was over: a speaker who talks for twelve seconds without a
+        breath produces an unreadable caption whether the model closed it or the
+        deadline did. Outside ``segments_only`` a lane is cut at punctuation by the
+        clause machinery and one Provider utterance is meant to stay one cue, so the
+        mechanical cap is not imposed there.
+        """
+        if not self.segments_only:
+            if not caption.units:
+                return []
+            return [self._emit(caption, len(caption.units) - 1, reason)]
+        chunks = []
+        while caption.units:
+            index = _budget_prefix(caption.units)
+            if index == 0 and len(caption.units) > 1:
+                # The budget broke on this piece's very first unit, so the only cut
+                # available is one word off a sentence -- and a unit standing alone
+                # is not a point the Provider ever attested, which loses the Chinese
+                # on both halves where the whole line kept one cue's worth of it
+                # (default capture replayed 2026-09-22).
+                index = len(caption.units) - 1
+            chunks.append(self._emit(caption, index, reason))
+        return chunks
 
     def _close_caption(
         self,
         key: tuple[str, str | None],
         reason: CaptionCutReason = "utterance_endpoint",
-    ) -> CaptionChunk:
+    ) -> list[CaptionChunk]:
+        """Empty one lane, in pieces, and stop tracking it."""
         caption = self._captions.pop(key)
         if reason == "utterance_endpoint":
             # Residual flushes count their own path only; a hard-deadline cut is
             # visible as chunkCutReasons["hard_deadline"], incremented in _emit.
             self._residual_flushes += 1
-        return self._emit(caption, len(caption.units) - 1, reason)
+        return self._release(caption, reason)
 
     def advance_audio(self, frontier_pcm: float) -> ChunkerDecision:
         pending = False
@@ -427,12 +526,66 @@ class CaptionChunker:
                 continue
             if caption.units:
                 self._residual_flushes += 1
-                chunks.append(self._emit(caption, len(caption.units)-1, "utterance_endpoint"))
+                chunks.extend(self._release(caption, "utterance_endpoint"))
             del self._captions[key]
         for key, item in self._items.items():
             if item_id is None or key == item_id:
                 item.closed = True
         return ChunkerDecision(tuple(chunks))
+
+    def pending_caption(self, heard_pcm: float | None = None) -> PendingCaption | None:
+        """What an open lane holds right now: heard, safe to read, not released.
+
+        With ``segments_only`` nothing leaves a lane until the Provider ends its
+        own turn, so between the first stable word and that marker the viewer has
+        heard a whole sentence while the subtitle store has nothing to show. This
+        reads that held text back with the same join and the same timing the
+        eventual chunk will get, so a provisional line and the cue that replaces
+        it cannot disagree about where the sentence sits.
+
+        ``heard_pcm`` is the viewer's playhead on this same timeline. A lane's
+        text reaches as far as the audio the sender has pushed, which on a delayed
+        stream is seconds past what the viewer has heard, so the projection stops
+        at the playhead: units are kept in order only while they begin at or
+        before it. Nothing is kept from a lane that has not been reached yet.
+
+        It is a projection, not a cue: it is never stored, exported, or handed to
+        the translation bus. A cut the Provider never made is exactly the case its
+        session translation cannot be aligned to, which is why giving this text an
+        identity of its own would put the missing-translation bug back.
+        """
+        newest: _CaptionState | None = None
+        for caption in self._captions.values():
+            if caption.units and (newest is None or caption.last_touched > newest.last_touched):
+                newest = caption
+        if newest is None:
+            return None
+        units = newest.units
+        cutoff: float | None = None
+        if heard_pcm is not None:
+            kept = 0
+            for unit in units:
+                if unit.begin is None or unit.begin > heard_pcm + _TIMESTAMP_JITTER:
+                    break
+                kept += 1
+            units = units[:kept]
+            if not units:
+                return None
+            # The window ends where the viewer is, not where the last kept unit
+            # ended: text that has been heard stays on screen while the Provider
+            # still holds the turn, instead of blinking out mid-sentence.
+            cutoff = heard_pcm
+        begin, end = _chunk_times(units, newest)
+        if cutoff is not None:
+            end = max(end, cutoff)
+        return PendingCaption(
+            item_id=_dominant(unit.item_id for unit in units) or "",
+            text=_join_units(units),
+            begin_pcm=begin,
+            end_pcm=end,
+            language=_dominant(unit.language for unit in units),
+            speaker=_dominant(unit.speaker for unit in units),
+        )
 
     def telemetry(self) -> CaptionChunkerTelemetry:
         ordered = sorted(self._spans)
@@ -570,6 +723,8 @@ class CaptionChunker:
     def _drain_ready(self, state: _CaptionState) -> list[CaptionChunk]:
         if not state.units:
             return []
+        if self.segments_only:
+            return []
         text, edges = _unit_text_edges(state.units)
         endpoints = {edge for edge, unit in zip(edges, state.units) if unit.endpoint}
         language = _primary_language(_dominant(u.language for u in state.units))
@@ -649,6 +804,7 @@ class CaptionChunker:
             ends_mid_sentence=ends_mid,
             guarantee_tier="strict" if strict else "best_effort",
             exact_timing=all(unit.exact_timing for unit in selected),
+            item_id=_dominant(unit.item_id for unit in selected) or "",
         )
         state.last_chunk_ended_mid = ends_mid
         state.emitted_chunks += 1
@@ -665,6 +821,25 @@ class CaptionChunker:
                 if unit.begin is not None:
                     return unit.begin
         return state.begin_pcm
+
+
+def _budget_prefix(units: list[_Unit]) -> int:
+    """Index of the last unit this lane may release without exceeding the span cap.
+
+    A unit with no timestamps rides with its neighbours: without a position there
+    is nothing to bound, and dropping it would cut a caption out of a Provider that
+    reports no timing at all.
+    """
+    begins = [unit.begin for unit in units if unit.begin is not None]
+    if not begins:
+        return len(units) - 1
+    limit = min(begins) + HARD_DEADLINE_SECONDS
+    last = 0
+    for index, unit in enumerate(units):
+        if unit.end is not None and unit.end > limit:
+            break
+        last = index
+    return last
 
 
 def _chunk_times(units: list[_Unit], state: _CaptionState) -> tuple[float, float]:

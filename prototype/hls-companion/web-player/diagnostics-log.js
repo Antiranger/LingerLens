@@ -60,6 +60,14 @@
     return Object.entries(vars).reduce((text, [name, value]) => text.replace(`{${name}}`, value), fallback);
   }
 
+  /** A record's own text in the viewer's language, when a phrase table claims it.
+   *  Only the on-screen rendering goes through this: the downloadable report
+   *  keeps what was actually logged, so a record stays evidence in one language. */
+  function localize(text) {
+    const api = global.I18N;
+    return api && typeof api.localize === "function" ? api.localize(text) : text;
+  }
+
   /* 单行、限长。省略号算在 400 以内，这样截断后的长度仍然可预测。 */
   const MAX_MESSAGE = 400;
 
@@ -348,8 +356,8 @@
 
       /* 摘要与计数每次都重算：它们便宜，而且丢一次更新比多刷一次 DOM 更糟。 */
       if (summaryNode) {
-        summaryNode.textContent = lead ? lead.message : translate("diag.ok", "一切正常");
-        summaryNode.title = lead ? lead.message : "";
+        summaryNode.textContent = lead ? localize(lead.message) : translate("diag.ok", "一切正常");
+        summaryNode.title = lead ? localize(lead.message) : "";
       }
       if (countNode) {
         countNode.textContent = String(counts.total);
@@ -372,7 +380,7 @@
         + `<span class="diag-time mono">${formatClock(entry.t)}</span>`
         + `<span class="diag-level mono">${escapeHtml(levelLabel(entry.level))}</span>`
         + `<span class="diag-source mono">${escapeHtml(entry.source)}</span>`
-        + `<span class="diag-text" dir="auto">${escapeHtml(entry.message)}</span>`
+        + `<span class="diag-text" dir="auto">${escapeHtml(localize(entry.message))}</span>`
         + "</li>").join("");
       listNode.scrollTop = listNode.scrollHeight;
     }
@@ -512,7 +520,69 @@
     };
   }
 
+  // Opt-in, fixed-size aggregates. Never retain frames, message text or URLs.
+  // tick() uses the player's existing 100ms timer; no extra polling or trace.
+  function createPlaybackProbe({ video, enabled, emit, now = () => performance.now(), hidden = () => false }) {
+    const names = ["subtitle", "subtitleHistory", "chatOverlay", "chatHistory", "controls"];
+    const events = ["waiting", "stalled", "playing", "seeking", "seeked", "pause", "error", "emptied"];
+    let active = false, start = 0, last = 0, gap = 0, ticks = 0, base = null;
+    let counts = {}, costs = {}, lastTime = 0, wasHidden = false;
+    const quality = () => {
+      const q = video.getVideoPlaybackQuality?.();
+      return q ? [q.totalVideoFrames, q.droppedVideoFrames] : null;
+    };
+    function reset(t) {
+      start = last = t; gap = ticks = 0; counts = {}; costs = {};
+      base = quality(); lastTime = video.currentTime; wasHidden = hidden();
+    }
+    const listeners = events.map(name => {
+      const listener = () => {
+        if (!enabled()) return;
+        if (name === "emptied") base = null;
+        counts[name] = (counts[name] || 0) + 1;
+      };
+      video.addEventListener(name, listener);
+      return [name, listener];
+    });
+    return {
+      measure(name, run) {
+        if (!enabled() || !names.includes(name)) return run();
+        const t = now();
+        try { return run(); } finally {
+          const value = costs[name] || (costs[name] = [0, 0, 0]);
+          const ms = now() - t;
+          value[0]++; value[1] += ms; value[2] = Math.max(value[2], ms);
+        }
+      },
+      tick() {
+        if (!enabled()) { active = false; return; }
+        const t = now();
+        if (!active || wasHidden !== hidden()) { active = true; reset(t); return; }
+        gap = Math.max(gap, Math.max(0, t - last - 100)); last = t; ticks++;
+        if (t - start < 5000) return;
+        let ahead = 0;
+        for (let i = 0; i < video.buffered.length; i++) {
+          if (video.buffered.start(i) <= video.currentTime && video.buffered.end(i) >= video.currentTime) {
+            ahead = video.buffered.end(i) - video.currentTime; break;
+          }
+        }
+        const q = quality();
+        const frames = base && q && q.every((v, i) => v >= base[i]) ? q.map((v, i) => v - base[i]) : null;
+        const round = v => Math.round(v * 10) / 10;
+        emit({ ms: round(t - start), hidden: hidden(), paused: video.paused,
+          ready: video.readyState, rate: video.playbackRate, ahead: round(ahead),
+          mediaDelta: round(video.currentTime - lastTime), frames,
+          timerLateMs: round(gap), ticks, events: counts,
+          workMs: Object.fromEntries(Object.entries(costs).map(([k, v]) => [k, [v[0], round(v[1]), round(v[2])]])),
+        });
+        reset(t);
+      },
+      dispose() { for (const [name, listener] of listeners) video.removeEventListener(name, listener); },
+    };
+  }
+
   const exported = {
+    createPlaybackProbe,
     createDiagnosticsLog,
     createDiagnosticsClient,
     createDiagnosticsBar,

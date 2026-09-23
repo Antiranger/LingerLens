@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import json
 import tempfile
 from pathlib import Path
@@ -69,8 +70,10 @@ async def run() -> None:
     port = site._server.sockets[0].getsockname()[1]
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
-        page = await browser.new_page(viewport={"width": 2000, "height": 1100})
+        # The player opens in whatever language the browser reports, and every assertion
+        # below reads Chinese UI text, so this page has to say it speaks Chinese.
+        browser = await playwright.chromium.launch(headless=True, executable_path=os.environ.get("LINGERLENS_TEST_CHROMIUM") or None)
+        page = await browser.new_page(viewport={"width": 2000, "height": 1100}, locale="zh-CN")
         errors_seen: list[str] = []
         page.on("pageerror", lambda error: errors_seen.append(str(error)))
         await page.goto(f"http://127.0.0.1:{port}/")
@@ -91,6 +94,19 @@ async def run() -> None:
             assert option in role_check["fallbackOptions"], (option, role_check)
         assert not role_check["japaneseHeader"] and not role_check["capabilityHint"], role_check
         assert not role_check["fallbackSettings"], role_check
+        cookie_switch = await page.evaluate("""() => {
+            const platform = document.getElementById('cookiePlatform');
+            const payload = document.getElementById('cookiePayload');
+            platform.value = 'youtube';
+            payload.value = 'youtube-test-only';
+            platform.value = 'bilibili';
+            platform.dispatchEvent(new Event('change', { bubbles: true }));
+            const bilibiliValue = payload.value;
+            platform.value = 'youtube';
+            platform.dispatchEvent(new Event('change', { bubbles: true }));
+            return { bilibiliValue, restoredYoutubeDraft: payload.value };
+        }""")
+        assert cookie_switch == {"bilibiliValue": "", "restoredYoutubeDraft": "youtube-test-only"}, cookie_switch
         await page.get_by_role("button", name="模型设置", exact=True).click()
         await page.wait_for_timeout(200)
         settings_check = await page.evaluate("""() => ({
@@ -399,6 +415,7 @@ async def run() -> None:
         assert fake_translator.enabled is True
 
         control_state = {"state": "idle"}
+        stop_confirmed = asyncio.Event()
 
         async def status_route(route):
             state = control_state["state"]
@@ -433,6 +450,7 @@ async def run() -> None:
                 content_type="application/json",
                 body=json.dumps({"ok": True, "status": {"state": "idle"}}),
             )
+            stop_confirmed.set()
 
         await page.route("**/api/status", status_route)
         await page.route("**/api/start", start_route)
@@ -481,6 +499,8 @@ async def run() -> None:
         assert stop_feedback["sessionActive"] is False, stop_feedback
         await page.wait_for_function("!document.getElementById('stop').hasAttribute('aria-busy')")
         assert await page.locator("#stop").is_disabled()
+        # Keep the immediate assertion above; then drain the owned route.
+        await asyncio.wait_for(stop_confirmed.wait(), timeout=5)
         assert not errors_seen, errors_seen
         await browser.close()
 

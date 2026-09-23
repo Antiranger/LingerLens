@@ -41,6 +41,8 @@ import asyncio
 import base64
 import contextlib
 import json
+from collections import deque
+from urllib.parse import urlencode
 from typing import Any, AsyncIterator
 
 import aiohttp
@@ -105,7 +107,7 @@ class ElevenLabsScribeRealtimeASRProvider(ASRProvider):
 
     @property
     def _commit_strategy(self) -> str:
-        strategy = str(self.options.get("commitStrategy", "manual"))
+        strategy = str(self.options.get("commitStrategy", "vad"))
         return strategy if strategy in ("manual", "vad") else "manual"
 
     @property
@@ -165,7 +167,8 @@ class _ElevenLabsScribeStream(ASRStream):
         self.session: aiohttp.ClientSession | None = None
         self.ws: Any = None
         self.closed = False
-        self._last_committed_text: str | None = None
+        self._next_item = 0
+        self._pending_timestamp_copies = deque(maxlen=64)
 
     def _query(self) -> dict[str, str]:
         options = self.provider.options
@@ -200,7 +203,7 @@ class _ElevenLabsScribeStream(ASRStream):
 
     async def connect(self) -> None:
         self.session = aiohttp.ClientSession()
-        query = "&".join(f"{key}={value}" for key, value in self._query().items())
+        query = urlencode(self._query())
         try:
             self.ws = await self.session.ws_connect(
                 f"{self.provider.base_url}?{query}",
@@ -261,7 +264,7 @@ class _ElevenLabsScribeStream(ASRStream):
             text = str(raw.get("text", ""))
             if not text:
                 return None
-            item_id = str(raw.get("commit_id") or raw.get("session_id") or "0")
+            item_id = str(raw.get("commit_id") or f"scribe:{self._next_item}")
             return ASREvent(
                 "interim", text=text, language=canonicalize_tag_or_none(raw.get("language_code")), raw=raw,
                 item_id=item_id,
@@ -275,10 +278,16 @@ class _ElevenLabsScribeStream(ASRStream):
             # committed transcript and then a delayed timestamped copy of the
             # same commit. The second message enriches metadata; it must not
             # create a duplicate subtitle cue.
-            if message_type == "committed_transcript_with_timestamps" and text == self._last_committed_text:
-                return None
-            self._last_committed_text = text
-            item_id = str(raw.get("commit_id") or raw.get("session_id") or "0")
+            if message_type == 'committed_transcript_with_timestamps':
+                # Match one late metadata copy, not all equal spoken phrases.
+                for pending in self._pending_timestamp_copies:
+                    if pending[0] == text and (not raw.get('commit_id') or str(raw['commit_id']) == pending[1]):
+                        self._pending_timestamp_copies.remove(pending)
+                        return None
+            item_id = str(raw.get('commit_id') or f'scribe:{self._next_item}')
+            self._next_item += 1
+            if message_type == 'committed_transcript':
+                self._pending_timestamp_copies.append((text, item_id))
             return ASREvent(
                 "final",
                 text=text,

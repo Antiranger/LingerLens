@@ -25,16 +25,22 @@ from companion.providers.base import (
     TranslationResult,
 )
 import companion.subtitle_pipeline as pipeline_module
-from companion.subtitle_pipeline import SubtitlePipeline
+from companion.media_anchor import MediaAnchor
+from companion.subtitle_pipeline import (
+    VIEWER_POSITION_TTL_SECONDS,
+    SubtitlePipeline,
+)
 from companion.subtitle_store import Cue, CueStore
 
 
 class FakeStream(ASRStream):
     def __init__(self) -> None:
         self.commits = 0
+        self.pcm: list[float] = []
 
     async def push_pcm(self, chunk: bytes, pcm_offset: float) -> None:
-        del chunk, pcm_offset
+        del chunk
+        self.pcm.append(pcm_offset)
 
     async def flush(self) -> None:
         return None
@@ -447,6 +453,53 @@ class MinimalLatencyBreakdownTests(unittest.TestCase):
         self.assertEqual(status["latencyUnknown"], 1)
 
 class TranslationLatencyStatsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_processing_time_uses_monotonic_audio_send_and_expires(self) -> None:
+        now = [12.0]
+        pipeline = SubtitlePipeline(asr_provider=FakeASR(), cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"),
+            monotonic=lambda: now[0], wall_clock=lambda: 999999.0)
+        for cue_id, success in ((1, True), (2, False)):
+            pipeline._cue_latencies[cue_id] = pipeline_module._CueLatency(
+                2, 10, 10, 10, translation_started=10, provider_finished=12, audio_pushed=8)
+            pipeline._audio_end_walls[cue_id] = 900000
+            pipeline._record_ready_lag(cue_id, success=success)
+        status = pipeline.status()
+        self.assertEqual(status["translationProcessingSamples"], 1)
+        self.assertEqual(status["translationProcessingP95"], 4)
+        pipeline._record_translation_latency(2000)
+        now[0] = 73
+        status = pipeline.status()
+        self.assertIsNone(status["translationProcessingP95"])
+        self.assertEqual(status["translationProcessingSamples"], 0)
+        self.assertIsNone(status["avgTranslationLatencyMs"])
+        pipeline._record_translation_latency(100)
+        self.assertEqual(pipeline.status()["avgTranslationLatencyMs"], 100)
+
+    async def test_worker_measures_elapsed_time_instead_of_trusting_provider_latency(self) -> None:
+        now = [10.0]
+
+        class TimedTranslation(RecordingTranslation):
+            async def translate(self, request):
+                now[0] += 2.5
+                # This adapter reports 1 ms; the real wait was 2500 ms.
+                return await super().translate(request)
+
+        pipeline = SubtitlePipeline(asr_provider=FakeASR(),
+            translation_provider=TimedTranslation("timed"), cue_store=CueStore(),
+            meta=StreamMeta(None, None, None, "ja", "zh"), monotonic=lambda: now[0])
+        cue = pipeline.store.add(t_start=0, t_end=1, hold=1, src="hello", lang="ja", timing_source="asr")
+        pipeline._enqueue_translation(cue)
+        pipeline._running = True
+        worker = asyncio.create_task(pipeline._translation_worker())
+        try:
+            await asyncio.wait_for(pipeline._translation_queue.join(), 1)
+            self.assertEqual(pipeline.store.get(cue.id).state, "done")
+            self.assertEqual(pipeline.status()["avgTranslationLatencyMs"], 2500)
+        finally:
+            pipeline._running = False
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
     async def test_records_last_and_rolling_average_latency(self) -> None:
         pipeline = SubtitlePipeline(
             asr_provider=FakeASR(),
@@ -1188,6 +1241,101 @@ class TranslationContinuityPipelineTests(unittest.IsolatedAsyncioTestCase):
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
+    async def test_a_silent_provider_never_stalls_the_audio_feed(self) -> None:
+        """Evidence is speech-gated, so it cannot be a flow-control signal.
+
+        Both flow-control attempts on 2026-09-18 were measured wrong. Pacing to the
+        renderer's playhead drained the ASR queue but ate the caption's own margin
+        (median 0.66s late against 0.23s). Bounding the queue by the provider's
+        confirmation was worse: during music or game audio nothing is confirmed,
+        the feed was held back, and the next sentence reached a starved provider.
+        Same Bilibili room, same 125s: 34 captions with the bound off against 3
+        with it on, asrAdapterDelay P50 1.3s against 6.4s.
+
+        So the sender hands over everything the queue gives it, and reports the
+        queue instead of acting on it.
+        """
+        pipeline = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_provider=self.ControlledTranslation(),
+            cue_store=CueStore(),
+            meta=StreamMeta("title", "channel", "gaming", "en", "es"),
+            translation_workers=1,
+        )
+        stream = FakeStream()
+        pipeline._stream = stream
+        pipeline._pcm_queue = asyncio.Queue()
+        pipeline._running = True
+        # The provider confirmed a position long ago and has said nothing since --
+        # the case that used to hold the feed back.
+        pipeline._asr_evidence_pcm = -30.0
+        data = b"\x00\x01" * (pipeline_module.PCM_CHUNK_BYTES // 2)
+        for index in range(6):
+            pipeline._pcm_queue.put_nowait((data, index * pipeline_module.PCM_CHUNK_SECONDS))
+
+        sender = asyncio.ensure_future(pipeline._pcm_sender())
+        try:
+            for _ in range(200):
+                if len(stream.pcm) == 6:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(len(stream.pcm), 6, "a silent provider must not stall the feed")
+            self.assertAlmostEqual(pipeline._last_sent_pcm_offset, 6 * pipeline_module.PCM_CHUNK_SECONDS, places=6)
+            # The queue is still reported, so the measurement survives the removal.
+            self.assertEqual(
+                round(pipeline._last_sent_pcm_offset - pipeline._asr_evidence_pcm, 3),
+                round(6 * pipeline_module.PCM_CHUNK_SECONDS + 30.0, 3),
+            )
+        finally:
+            pipeline._running = False
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+
+    async def test_the_playhead_report_is_measurement_only(self) -> None:
+        """The stated playhead is what the caption's margin can be read from.
+
+        It arrives with the status poll the page already sends once a second, and
+        it throttles nothing: the feed's bound is the ASR's own queue.
+        """
+        clock = [100.0]
+        pipeline = SubtitlePipeline(
+            asr_provider=FakeASR(),
+            translation_provider=self.ControlledTranslation(),
+            cue_store=CueStore(),
+            meta=StreamMeta("title", "channel", "gaming", "en", "es"),
+            translation_workers=1,
+            wall_clock=lambda: 1_000.0 + (clock[0] - 100.0),
+            monotonic=lambda: clock[0],
+        )
+        pipeline.media_epoch = 1_000.0
+        pipeline.media_anchor = MediaAnchor()
+        pipeline.media_anchor.set_exact_offset(lambda: 5.0)
+        # Audio handed over to 300s of the PCM timeline == 1305s of wall clock.
+        pipeline._last_sent_pcm_offset = 300.0
+
+        # Playhead wall 1180 -> PCM 175: the feed leads the viewer by 125s.
+        pipeline.set_viewer_wall_time(1_180.0)
+        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
+
+        # A stale statement is not a reference: reporting reverts to "unknown"
+        # rather than describing a playhead from eight seconds ago.
+        clock[0] += VIEWER_POSITION_TTL_SECONDS + 0.1
+        self.assertIsNone(pipeline.viewer_lead_seconds())
+
+        # Garbage does not replace a trustworthy statement ...
+        clock[0] += 1.0
+        pipeline.set_viewer_wall_time(1_180.0)
+        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
+        pipeline.set_viewer_wall_time("not a number")
+        pipeline.set_viewer_wall_time(float("nan"))
+        self.assertEqual(pipeline.viewer_lead_seconds(), 125.0)
+
+        # ... and with nothing trustworthy on record, a wildly wrong clock is
+        # refused instead of becoming the reference (a reloaded page, a stale tab).
+        clock[0] += VIEWER_POSITION_TTL_SECONDS + 1.0
+        pipeline.set_viewer_wall_time(1_000.0 + 5_000.0)
+        self.assertIsNone(pipeline.viewer_lead_seconds())
+
     async def test_a_cue_past_its_estimated_window_still_reaches_the_provider(self) -> None:
         """The backend estimates lateness; only the renderer can know it.
 
@@ -1601,7 +1749,15 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([cue.chunk_order for cue in cues], list(range(1, len(cues) + 1)))
         self.assertEqual(pipeline.status()["captionChunks"], len(cues))
 
-    async def test_complete_stable_sentence_does_not_wait_for_utterance_final(self) -> None:
+    async def test_a_short_stable_sentence_waits_for_the_utterance_close(self) -> None:
+        """Below the cut floor a sentence is held, then published when the item closes.
+
+        The floor is 3.0s of audio (punctuation_boundaries.MIN_PUBLISH_SPAN_SECONDS),
+        so this complete 1.6s sentence no longer publishes on the interim that
+        carries it. It is not lost: expire() and flush_utterance() bypass the floor,
+        so the utterance close -- the next provider event -- publishes it, and the
+        hard deadline covers a provider that never closes the item.
+        """
         pipeline = self.make_pipeline()
         await pipeline._handle_asr_event(ASREvent("speech_started", begin_pcm=0.0, item_id="soniox"))
         await pipeline._handle_asr_event(ASREvent(
@@ -1620,7 +1776,7 @@ class CaptionChunkerPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await pipeline._handle_asr_event(ASREvent(
             "speech_stopped", end_pcm=1.6, item_id="soniox",
         ))
-        self.assertEqual([c.src for c in pipeline.store.query(after_seq=0)], ["Chat, listen to me."])
+        self.assertEqual([c.src for c in pipeline.store.query(after_seq=0)], [])
         await pipeline._handle_asr_event(ASREvent(
             "final", text="Chat, listen to me.", item_id="soniox", language="en",
             caption_observation=CaptionObservation(

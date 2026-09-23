@@ -392,3 +392,51 @@ test(
     assert.equal(h.context.attach.count(), 0);
   },
 );
+
+test(
+  "the status poll states the playhead, and omits it when the clock is unavailable",
+  { timeout: TEST_TIMEOUT_MS },
+  async () => {
+    // The backend feeds a realtime ASR and must know how far ahead of the viewer
+    // it is; it cannot get that from HLS requests, which hls.js issues 6-15s
+    // ahead of the playhead. So the page states it, on the poll it already sends.
+    const withClock = pendingRequests();
+    const h = session({
+      request: withClock,
+      overrides: { mediaClock: { playingWallTime: () => 1789724606.141 } },
+    });
+    const poll = h.call("refreshStatus");
+    const call = withClock.forPath("/api/status")[0];
+    assert.ok(call, "the poll must still be a plain status request");
+    assert.equal(call.path, "/api/status?playhead=1789724606.141");
+    call.resolve({ state: "idle", mediaSessionId: null });
+    await poll;
+
+    // No PDT yet (the clock returns null): report nothing rather than invent one.
+    const withoutClock = pendingRequests();
+    const other = session({
+      request: withoutClock,
+      overrides: { mediaClock: { playingWallTime: () => null } },
+    });
+    const secondPoll = other.call("refreshStatus");
+    const secondCall = withoutClock.forPath("/api/status")[0];
+    assert.equal(secondCall.path, "/api/status");
+    secondCall.resolve({ state: "idle", mediaSessionId: null });
+    await secondPoll;
+  },
+);
+
+// A request begun AFTER Stop has the new generation, but its server sample
+// can still describe the stopped session while cleanup is running.
+test('a post-Stop status sample cannot restore controls before cleanup confirms', async () => {
+  const request = pendingRequests();
+  const h = session({request, state:{lastSessionState:'running',observedMediaSessionId:'A'}});
+  h.call('stop');
+  const poll = h.call('refreshStatus');
+  request.forPath('/api/status')[0].resolve({state:'running',mediaSessionId:'A',playlistUrl:'/hls/live.m3u8'});
+  await poll;
+  assert.equal(h.read().lastSessionState,'idle','controls must retain local stop, not pending server state');
+  assert.equal(h.context.attach.count(),0);
+  request.forPath('/api/stop')[0].resolve({ok:true});
+  await settle();
+});

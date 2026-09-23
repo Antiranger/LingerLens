@@ -13,7 +13,8 @@
     "guard:tracked": "node scripts/check-repo-completeness.js",
     "guard:licences": "node scripts/check-licence-coverage.js",
     "guard:licences:frozen": "node scripts/check-licence-coverage.js --frozen",
-    "ci": "npm run guard:release && npm run guard:tracked && npm run guard:licences && npm run check:python && npm run check:js && npm run test:hls-companion && npm test",
+    "check:docs": "node scripts/check-repo-completeness.js --docs",
+    "ci": "npm run guard:release && npm run guard:tracked && npm run guard:python-imports && npm run guard:licences && npm run check:docs && npm run check:python && npm run check:js && npm run test:hls-companion && npm test",
     "prototype:delay": "python prototype/delayed_live_player.py",
     "prototype:hls": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File prototype/hls-companion/scripts/restart-companion.ps1",
     "soak:monitor": "python prototype/hls-companion/scripts/soak-live-monitor.py",
@@ -27,7 +28,8 @@
     "desktop:sync-ui": "node scripts/sync-web-player.js",
     "desktop:dist": "electron-builder --config desktop/builder.cjs --win nsis --x64 --publish never",
     "release:manifest": "node scripts/make-update-manifest.js",
-    "desktop:test": "node --test tests/desktop.test.js && .venv-desktop\\Scripts\\python.exe -m unittest discover -s desktop/tests -p test_*.py"
+    "desktop:test": "node --test tests/desktop.test.js && .venv-desktop\\Scripts\\python.exe -m unittest discover -s desktop/tests -p test_*.py",
+    "guard:python-imports": "python scripts/check-python-imports.py"
   },
   "engines": {
     "node": ">=22.12.0"

@@ -55,6 +55,7 @@ function isTrustedManifestUrl(value) {
   } catch {
     return false;
   }
+  if (parsed.username || parsed.password) return false;
   if (parsed.protocol === "https:") return true;
   if (parsed.protocol !== "http:") return false;
   return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname);
@@ -69,11 +70,18 @@ function isTrustedManifestUrl(value) {
  */
 function parseVersion(value) {
   const text = String(value || "").trim().replace(/^v/i, "");
-  if (!/^\d+(\.\d+)*([-+].*)?$/.test(text)) return null;
-  const [core, ...rest] = text.split(/[-+]/);
+  // Versions become part of the installer filename. Accept only version
+  // identifiers, never arbitrary suffixes containing paths or shell syntax.
+  const match = /^(0|[1-9]\d*)(?:\.(0|[1-9]\d*)){0,2}(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(text);
+  if (!match) return null;
+  const core = text.split(/[-+]/)[0];
+  const numbers = core.split(".").map(Number);
+  const prerelease = match[3] || "";
+  if (numbers.some(number => !Number.isSafeInteger(number))) return null;
+  if (prerelease.split(".").some(part => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0"))) return null;
   return {
-    numbers: core.split(".").map((part) => Number(part)),
-    prerelease: rest.length ? rest.join("-") : "",
+    numbers,
+    prerelease,
   };
 }
 
@@ -89,7 +97,21 @@ function compareVersions(left, right) {
   if (a.prerelease === b.prerelease) return 0;
   if (!a.prerelease) return 1;
   if (!b.prerelease) return -1;
-  return a.prerelease > b.prerelease ? 1 : -1;
+  const aParts = a.prerelease.split(".");
+  const bParts = b.prerelease.split(".");
+  for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
+    const x = aParts[index];
+    const y = bParts[index];
+    if (x === y) continue;
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xNumeric = /^\d+$/.test(x);
+    const yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) return BigInt(x) > BigInt(y) ? 1 : -1;
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x > y ? 1 : -1;
+  }
+  return 0;
 }
 
 function isNewer(candidate, current) {
@@ -108,8 +130,8 @@ function readManifest(payload) {
   if (!version || !installer || typeof installer !== "object") return null;
   if (!isTrustedManifestUrl(installer.url)) return null;
   if (!/^[a-f0-9]{64}$/i.test(String(installer.sha256 || ""))) return null;
-  const size = Number(installer.size);
-  if (!Number.isFinite(size) || size <= 0) return null;
+  const size = installer.size;
+  if (!Number.isSafeInteger(size) || size <= 0) return null;
   return {
     version: String(payload.version).trim().replace(/^v/i, ""),
     notes: typeof payload.notes === "string" ? payload.notes.slice(0, 2000) : "",
@@ -148,6 +170,9 @@ async function fetchJson(url, fetchImpl, timeoutMs = REQUEST_TIMEOUT_MS) {
  * does not exist or is a file whose bytes were verified.
  */
 async function downloadVerified({ url, sha256, size, destination, fetchImpl, onProgress, timeoutMs = 600000 }) {
+  if (!readManifest({ version: "0.0.0", installer: { url, sha256, size } })) {
+    throw new Error("invalid installer metadata");
+  }
   const partial = `${destination}.part`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -170,16 +195,21 @@ async function downloadVerified({ url, sha256, size, destination, fetchImpl, onP
     let written = 0;
     for await (const chunk of response.body) {
       const buffer = Buffer.from(chunk);
+      if (written + buffer.length > expected) {
+        controller.abort();
+        throw new Error("download exceeds manifest size");
+      }
       hash.update(buffer);
       written += buffer.length;
-      await handle.write(buffer);
+      // FileHandle.write is allowed to write fewer bytes than requested.
+      await handle.writeFile(buffer);
       if (onProgress) onProgress(written, expected);
     }
     await handle.close();
     handle = null;
     if (written !== expected) throw new Error(`short download: ${written} of ${expected} bytes`);
     const actual = hash.digest("hex");
-    if (actual !== sha256) throw new Error(`checksum mismatch: expected ${sha256}, got ${actual}`);
+    if (actual !== sha256.toLowerCase()) throw new Error(`checksum mismatch: expected ${sha256}, got ${actual}`);
     await fs.promises.rm(destination, { force: true });
     await fs.promises.rename(partial, destination);
     return { path: destination, bytes: written };
@@ -218,8 +248,9 @@ function createUpdater(options = {}) {
     getState: () => state,
 
     async check() {
+      if (["checking", "downloading", "ready"].includes(state.status)) return state;
       if (!fetchImpl) return set({ status: "failed", error: "no fetch available" });
-      set({ status: "checking", error: null });
+      set({ status: "checking", error: null, update: null, installerPath: null, progress: null });
       try {
         const payload = await fetchJson(manifestUrl(options.env), fetchImpl);
         const manifest = readManifest(payload);
@@ -235,9 +266,10 @@ function createUpdater(options = {}) {
 
     /* Download to `destination` and leave the verified installer path in state. */
     async download(destination) {
+      if (["checking", "downloading", "ready"].includes(state.status)) return state;
       const update = state.update;
       if (!update) return set({ status: "failed", error: "nothing to download" });
-      set({ status: "downloading", error: null, progress: { received: 0, total: update.installer.size } });
+      set({ status: "downloading", error: null, installerPath: null, progress: { received: 0, total: update.installer.size } });
       try {
         const result = await download({
           ...update.installer,

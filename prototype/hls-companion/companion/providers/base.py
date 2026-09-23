@@ -12,6 +12,7 @@ from ..languages import LanguageNotSupportedError, canonicalize_tag, primary_sub
 CNY_PROVIDER_KINDS = frozenset({
     "dashscope-qwen-realtime",
     "dashscope-task-asr",
+    "dashscope-livetranslate-realtime",
     "volcengine-sauc",
     "tencent-asr",
 })
@@ -271,6 +272,32 @@ class CaptionObservation:
 
 
 @dataclasses.dataclass(frozen=True)
+class NativeTranslationCapabilities:
+    """Provider-side translation on the ASR session itself.
+
+    A few realtime models (Soniox two-way translation, Qwen3-LiveTranslate)
+    recognise speech *and* emit its translation on the same WebSocket. When
+    ``enabled`` the Profile owns translation: LingerLens does not call a
+    separate translation Provider for these cues, and the Adapter's own target
+    language selection is what the Provider was configured with.
+
+    ``enabled`` is per *profile*, not per model: it is True only when the saved
+    options actually ask the Provider to translate, so the same model with the
+    option off stays a plain ASR profile.
+    """
+
+    enabled: bool = False
+    target_tags: tuple[str, ...] | None = None
+    """Targets the Profile will translate into; None means open-ended."""
+    two_way: bool = False
+    """Whether the Provider keeps both languages of a pair live at once."""
+    glossary: bool = False
+    """Whether the Profile's own term/context list steers the translation."""
+    reports_source_language: bool = True
+    tier: Literal["verified", "provider_claimed", "experimental"] = "experimental"
+
+
+@dataclasses.dataclass(frozen=True)
 class ASRCapabilities:
     streaming: bool
     interim_results: bool
@@ -304,6 +331,8 @@ class ASRCapabilities:
 
     The default preserves final-only fake/providers and positional
     constructors. Hybrid Adapters declare every kind they can emit."""
+    native_translation: NativeTranslationCapabilities = NativeTranslationCapabilities()
+    """Provider-side translation carried on the same session (see above)."""
 
 
 
@@ -355,7 +384,7 @@ def _tag_supported(tag: str, supported_tags: tuple[str, ...] | None) -> bool:
 
 ASREventType = Literal[
     "speech_started", "speech_stopped", "interim", "final", "usage", "error",
-    "speaker_revision",
+    "speaker_revision", "translation",
 ]
 
 
@@ -401,6 +430,31 @@ class ASREvent:
 
     Legacy fields remain authoritative for the current SubtitlePipeline until
     its separate integration ticket; adding this field is migration-safe."""
+    translation: str = ""
+    """Provider-side translation of this event's own evidence.
+
+    Only Adapters whose Profile reports ``capabilities.native_translation``
+    fill this. It is the confirmed translation text for the same speech the
+    event's ``text``/observation covers, on the Provider's own segment
+    boundaries -- the Adapter never splits or reorders it. Empty for every
+    other Adapter, which is why it is a separate field rather than a reuse of
+    ``stash`` (that one is a tentative *source* tail)."""
+    translation_stash: str = ""
+    """Tentative, still-revisable provider translation tail.
+
+    Published only for diagnostics and tests: the pipeline resolves cues from
+    ``translation`` alone, because a tentative tail may be rewritten after the
+    cue has already been shown."""
+    translation_anchors: tuple[tuple[str, str], ...] = ()
+    """(source text, translation text) pairs the Provider itself aligned.
+
+    Both sides are cumulative from the start of this utterance, in the order the
+    Provider's stream settled them. A realtime translation model gives a
+    translated token no timestamp and no id for the words it renders, so stream
+    order is the only alignment that exists -- which means a caption cut inside
+    one Provider segment can still be attributed, and only at these points.
+    Empty for Adapters with nothing to report; see
+    ``native_session.NativeTranslationBus``."""
 
 
 class ASRStream(abc.ABC):
@@ -443,6 +497,22 @@ class ASRProvider(abc.ABC):
     requires_api_key: bool = False
     """Cloud Providers set True so a missing key is reported before playback
     starts; local/self-hosted endpoints may accept an empty key."""
+    translation_target: str | None = None
+    """Canonical target Language Tag for Profile-side translation.
+
+    Set by SubtitlePipeline.set_translation_target before every session start
+    for Profiles whose ``capabilities.native_translation`` is enabled. It is
+    deliberately NOT a ``stream()`` keyword: that would make all twelve other
+    Adapters grow a parameter they must ignore, and the target is a saved
+    Profile setting (the viewer's Target Language) rather than something
+    negotiated per session."""
+
+    def set_translation_target(self, target_tag: str | None) -> None:
+        """Record the Target Language a native-translation Profile must use.
+
+        No-op for every Profile that does not translate on its own session.
+        """
+        self.translation_target = target_tag
 
     @property
     @abc.abstractmethod
@@ -542,6 +612,13 @@ class TranslationRequest:
     ends_mid_sentence: bool | None = None
     cut_reason: CaptionCutReason | None = None
     purpose: str = "subtitle"
+    item_id: str | None = None
+    """Provider utterance id the cue was built from, when the caller knows it.
+
+    Only session-backed translation (``native_translation``) reads this: the
+    Provider's own translation segments are keyed by the same item id the
+    caption evidence carried, so a cue can be resolved to the exact segment it
+    came from instead of guessing from text similarity."""
 
 
 @dataclasses.dataclass

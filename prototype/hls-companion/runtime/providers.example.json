@@ -9,7 +9,7 @@
         "kind": "dashscope-task-asr",
         "model": "fun-asr-realtime-2026-02-28",
         "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-        "apiKey": "",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
         "options": {
           "sampleRate": 16000,
           "languages": [
@@ -43,18 +43,39 @@
       },
       {
         "id": "soniox-stt-rt-v5",
-        "label": "Soniox STT RT v5（示例·未验证）",
+        "label": "Soniox STT RT v5（端到端双语）",
         "kind": "soniox-realtime",
         "model": "stt-rt-v5",
         "baseUrl": "wss://stt-rt.soniox.com/transcribe-websocket",
         "apiKeyEnv": "SONIOX_API_KEY",
+        "recommended": true,
         "options": {
           "enableLanguageIdentification": true,
           "enableEndpointDetection": true,
           "maxEndpointDelayMs": 700,
           "endpointSensitivity": 0.3,
           "keepAliveSeconds": 5,
-          "enableSpeakerDiarization": true
+          "enableSpeakerDiarization": true,
+          "translationType": "one_way",
+          "translationTerms": []
+        }
+      },
+      {
+        "id": "bailian-qwen38-livetranslate",
+        "label": "百炼 Qwen3.8-LiveTranslate（端到端双语）",
+        "kind": "dashscope-livetranslate-realtime",
+        "model": "qwen3.8-livetranslate-flash-realtime",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "options": {
+          "sampleRate": 16000,
+          "workspaceId": "",
+          "audioOutput": false,
+          "sourceLanguage": "",
+          "startTimeoutSeconds": 10,
+          "closeDrainTimeoutSeconds": 15.0,
+          "voice": "Tina",
+          "silenceDurationMs": 300
         }
       },
       {
@@ -100,7 +121,8 @@
         "options": {
           "mode": "balanced",
           "speakerLabels": true,
-          "maxSpeakers": 6
+          "maxSpeakers": 6,
+          "continuousPartials": true
         }
       },
       {
@@ -124,8 +146,9 @@
         "baseUrl": "wss://api.elevenlabs.io/v1/speech-to-text/realtime",
         "apiKeyEnv": "ELEVENLABS_API_KEY",
         "options": {
-          "commitStrategy": "manual",
-          "includeLanguageDetection": true
+          "commitStrategy": "vad",
+          "includeLanguageDetection": true,
+          "vadSilenceThresholdSecs": 0.5
         }
       },
       {
@@ -189,7 +212,7 @@
         "kind": "openai-compatible",
         "model": "qwen3.5-flash",
         "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "apiKey": "",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
         "options": {
           "temperature": 0.3,
           "maxTokens": 256,

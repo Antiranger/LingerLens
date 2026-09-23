@@ -6,6 +6,9 @@
   "use strict";
   const el = (id) => document.getElementById(id);
   const fire = (node, type) => node.dispatchEvent(new Event(type, { bubbles: true }));
+  // i18n.js publishes itself on window before any of this runs; the Chinese stays
+  // in the call so a missing key degrades to the text this file was written with.
+  const t = (key, text) => (window.I18N ? window.I18N.t(key, null, text) : text);
 
   /* ── 弹窗开关 ── */
   const POPS = [
@@ -104,8 +107,8 @@
   const qualityBtn = el("qualityBtn");
   const shortQuality = (text) => {
     const value = (text || "").trim();
-    if (!value) return "清晰度";
-    if (value.includes("自动")) return "自动";
+    if (!value) return t("pop.quality", "清晰度");
+    if (value.includes("自动")) return t("quality.auto", "自动");  // the test is on the vendor label, not the UI text
     const match = value.match(/\d{3,4}\s*p?\d*/i);
     return match ? match[0].replace(/\s+/g, "").toUpperCase() : value.slice(0, 8);
   };
@@ -123,7 +126,7 @@
     if (!options.length || qualitySelect.disabled) {
       const empty = document.createElement("span");
       empty.className = "pop-label";
-      empty.textContent = "先点「准备」获取清晰度";
+      empty.textContent = t("quality.pickPrepare", "先点「准备」获取清晰度");
       qualityPop.append(empty);
       return;
     }

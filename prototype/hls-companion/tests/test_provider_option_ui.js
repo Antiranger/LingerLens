@@ -38,7 +38,7 @@ function options() {
   globals.providerCatalog = { asr: { providers: [provider] }, translation: { providers: [] } };
   const context = playerContext({
     globals,
-    functions: ["asrOptionFields", "handleProviderInput"],
+    functions: ["asrOptionFields", "translationModeField", "handleProviderInput"],
   });
   return { ...context, globals, provider };
 }
@@ -85,6 +85,58 @@ test(
     });
     assert.match(dashscope, /data-option="vocabularyId"/, "the real hotword control must stay");
     assert.doesNotMatch(dashscope, /hotwordsEnabled/);
+  },
+);
+
+test(
+  "the bilingual profiles expose their own translation controls (G)",
+  { timeout: TEST_TIMEOUT_MS },
+  async () => {
+    const h = options();
+
+    // Soniox: the built-in translation must be reachable from the UI, because an
+    // option with no editor is an option nobody can turn on.
+    const soniox = h.call("asrOptionFields", {
+      kind: "soniox-realtime",
+      options: { translationType: "one_way", enableEndpointDetection: true },
+    });
+    assert.match(soniox, /data-option="translationType"/);
+    assert.match(soniox, /value="one_way" selected/, "the saved mode must be shown");
+    assert.match(soniox, /data-option="translationLanguageA"/);
+    assert.match(soniox, /opt\.translationHelp|这里控制 Soniox 是否/, "the mode must explain translation direction versus display mode");
+
+    const live = h.call("asrOptionFields", {
+      kind: "dashscope-livetranslate-realtime",
+      options: { audioOutput: true, sourceLanguage: "ja", workspaceId: "llm-abc" },
+    });
+    assert.match(live, /data-option="audioOutput"/);
+    assert.match(live, /data-option="sourceLanguage"/);
+    assert.match(live, /value="ja"/);
+    // The workspace id used to be a note telling the user to hand-edit the URL;
+    // it is now the field the adapter fills into that placeholder, so the fix has
+    // to be reachable rather than merely described.
+    assert.match(live, /data-option="workspaceId"/);
+    assert.match(live, /value="llm-abc"/, "the saved workspace id must be shown");
+    assert.match(
+      live, /3\.8/,
+      "pinning a source language does nothing on 3.8, and the field has to say so",
+    );
+  },
+);
+
+test(
+  "an empty translation mode is what 'off' looks like on the wire (G)",
+  { timeout: TEST_TIMEOUT_MS },
+  async () => {
+    const h = options();
+    const html = h.call("asrOptionFields", {
+      kind: "soniox-realtime",
+      options: { translationType: "off" },
+    });
+    // "off" is not a Soniox mode; it must render as the empty option rather
+    // than as a selected value the backend would send verbatim.
+    assert.doesNotMatch(html, /value="off"/);
+    assert.match(html, /<option value="" selected>/);
   },
 );
 

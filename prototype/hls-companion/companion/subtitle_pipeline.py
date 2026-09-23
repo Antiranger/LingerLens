@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import math
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from typing import Any, Protocol
 
 from .caption_chunker import CaptionChunk, CaptionChunker, ChunkerDecision
 from .context_manager import RollingContext
+from .providers.http import translation_session
 from .logbook import record as log_record
 from .media_anchor import MediaAnchor
 from .languages import canonicalize_tag_or_none, canonicalize_target_tag
@@ -46,6 +48,33 @@ from .translation_budget import TranslationBudget, TranslationBudgetPolicy
 PCM_BYTES_PER_SECOND = 16_000 * 2
 PCM_CHUNK_BYTES = 3_200
 PCM_CHUNK_SECONDS = PCM_CHUNK_BYTES / PCM_BYTES_PER_SECOND
+ASR_VIEWER_LEAD_ALLOWANCE_SECONDS = 1.0
+ASR_VIEWER_LEAD_POLL_SECONDS = 0.05
+
+# Flow control on the audio handed to the ASR was attempted twice and both
+# signals were measured wrong on 2026-09-18, so the feed is deliberately not
+# throttled. What that cost, and why, is recorded here because the same two ideas
+# will look attractive again:
+#
+#   * Pacing to the renderer's playhead (commit 49e8f8c) drained the ASR queue
+#     (asrAdapterDelay P50 2.4-5.8s -> 1.5s) but captions then arrived late, since
+#     the lead it removed IS the caption's margin: median 0.66s after the window
+#     start against 0.23s, P90 3.37s against 0.74s, 24 of 39 captions late
+#     against 4 of 16 and 10 of 34 before.
+#   * Bounding the queue by the provider's own confirmation (commit a27d08d) was
+#     worse, because evidence only advances while somebody is SPEAKING. During
+#     music or game audio the confirmation stops, the feed was held back, and the
+#     next sentence arrived at a starved provider. Same stream, same room, 125s:
+#     34 captions with the bound off against 3 with it on, and asrAdapterDelay P50
+#     1.3s against 6.4s. A silent provider is not a busy one.
+#
+# The measurements that showed this are still reported: `viewerLeadSeconds` (how
+# far the audio runs ahead of the viewer) and `asrQueueSeconds` (how much has been
+# handed over that the provider has not confirmed).
+VIEWER_POSITION_TTL_SECONDS = 8.0
+# A stated playhead this far from our own clock is not a playhead (a reloaded
+# page, a stale tab, a wrong system clock). Reject it rather than report it.
+VIEWER_POSITION_SANITY_SECONDS = 600.0
 
 # Finals held while the media timeline is unavailable. The count bound protects
 # memory; the grace lets a slightly late cue still be published once the
@@ -209,6 +238,11 @@ class PipelineStats:
     source_only_cues: int = 0
     unmapped_observations: int = 0
     speaker_revisions: int = 0
+    native_translation_updates: int = 0
+    """Provider-side translation refreshes for an utterance still in flight.
+
+    Counted so a session that is translating on the ASR Provider's own session
+    is visibly different from one that is not, rather than silently silent."""
     last_error: str | None = None
     last_translation_error: str | None = None
     last_translation_latency_ms: int | None = None
@@ -237,6 +271,7 @@ class _PendingFinal:
     starts_mid_sentence: bool | None = None
     ends_mid_sentence: bool | None = None
     cut_reason: CaptionCutReason | None = None
+    item_id: str | None = None
 
 
 @dataclasses.dataclass
@@ -289,6 +324,7 @@ class SubtitlePipeline:
         anchor_probe: Callable[[], float | None] | None = None,
         video_backlog: Callable[[], float | None] | None = None,
         source_pts_mapper: Callable[[float], float | None] | None = None,
+        native_translation_bus: Any | None = None,
     ) -> None:
         if pcm_queue_chunks < 1:
             raise ValueError("pcm_queue_chunks must be positive")
@@ -337,7 +373,19 @@ class SubtitlePipeline:
         self.subprocess_factory = subprocess_factory
         self.context = RollingContext(context_pairs, context_seconds)
         self.stats = PipelineStats()
-        self.caption_chunker = CaptionChunker(realtime=True)
+        # Provider-side translation (Soniox translation, Qwen3-LiveTranslate):
+        # the Adapter writes each utterance's own translation into this bus and
+        # the session-backed Translation Provider resolves cues from it. The
+        # Provider translated the speech it had segmented, so for these Profiles
+        # its segment is the caption unit -- ``segments_only`` turns off the
+        # punctuation cuts that would otherwise leave a cue covering half a
+        # segment, which is where the translation for a whole segment goes
+        # unclaimed. What the cut still cannot be attributed to is rescued by
+        # the Adapter's own ``translation_anchors``; see ``native_session``.
+        self.native_translation_bus = native_translation_bus
+        self.caption_chunker = CaptionChunker(
+            realtime=True, segments_only=native_translation_bus is not None
+        )
         self._caption_deadline_changed = asyncio.Event()
         self._generation = 0
         self._next_chunk_order = 1
@@ -384,6 +432,13 @@ class SubtitlePipeline:
         self._stopping = False
         self._pcm_offset = 0.0
         self._last_sent_pcm_offset = 0.0
+        # The renderer's playhead, on the caption timeline, as last stated with
+        # its status poll. Measurement only: see ASR_QUEUE_LIMIT_SECONDS.
+        self._viewer_wall_time: float | None = None
+        self._viewer_wall_time_at = 0.0
+        # The furthest position the ASR has confirmed. The sender compares the
+        # audio it is about to hand over against it.
+        self._asr_evidence_pcm: float | None = None
         # Stage-backlog correction the anchor adds to its window median, plus
         # the rolling minima it is derived from. Exposed in status so the
         # correction is visible instead of implicit.
@@ -392,6 +447,7 @@ class SubtitlePipeline:
         self._anchor_backlog_video: float | None = None
         self._anchor_backlog_audio: float | None = None
         self._anchor_correction: float | None = None
+        self._last_anchor_video_seconds: float | None = None
         if media_anchor is not None:
             # The window median differences two stage-output counters, so it is
             # short by the stages' backlogs. Supplied as a separate term rather
@@ -420,8 +476,17 @@ class SubtitlePipeline:
         self._audio_end_walls: dict[int, float] = {}
         self._source_ready_lags: deque[float] = deque(maxlen=60)
         self._translation_success_ready_lags: deque[float] = deque(maxlen=60)
+        # (finished monotonic time, elapsed since the cue's audio was sent).
+        # Unlike the legacy PCM-frontier estimate, this clock cannot jump when
+        # the download bursts, stalls or the wall clock is corrected.
+        self._translation_processing: deque[tuple[float, float]] = deque(maxlen=60)
+        self._translation_latency_at: float | None = None
         self._terminal_outcome_lags: deque[float] = deque(maxlen=60)
         self._cue_latencies: dict[int, _CueLatency] = {}
+        # Which Provider utterance a cue was built from. Kept beside the store
+        # rather than on Cue: the id is a session-local join key with no meaning
+        # to a renderer, and Cue is a serialized contract.
+        self._cue_item_ids: dict[int, str] = {}
         self._stage_lags: dict[str, deque[float]] = {
             "asrAdapter": deque(maxlen=60),
             "chunkerPolicy": deque(maxlen=60),
@@ -458,6 +523,10 @@ class SubtitlePipeline:
         self._caption_exact_timing.clear()
         self.caption_chunker.reset(self._generation)
         self._caption_deadline_changed.set()
+        if self.native_translation_bus is not None:
+            # A new Provider session renumbers its utterances from zero, so the
+            # previous session's segments must not be resolvable against them.
+            self.native_translation_bus.reset(self._generation)
 
     async def start(self, audio_url: str, media_epoch: float | None, input_format: str | None = None) -> None:
         """Start workers on the caption audio source.
@@ -634,8 +703,24 @@ class SubtitlePipeline:
             if self.media_anchor is None or self.anchor_probe is None:
                 return
             try:
-                self.media_anchor.add_sample(self.anchor_probe(), self._pcm_offset)
-                self._update_anchor_correction()
+                video_seconds = self.anchor_probe()
+                self.media_anchor.add_sample(video_seconds, self._pcm_offset)
+                # A stalled video leg has no new video timeline position. Its
+                # raw stage backlog grows while audio keeps arriving, but that
+                # growth is not a new audio/video clock relationship. Keep the
+                # last trusted correction until the video advances again;
+                # otherwise subtitles are remapped while the picture is frozen.
+                video_advanced = (
+                    video_seconds is not None
+                    and (
+                        self._last_anchor_video_seconds is None
+                        or float(video_seconds) > self._last_anchor_video_seconds + 1e-6
+                    )
+                )
+                if video_seconds is not None:
+                    self._last_anchor_video_seconds = float(video_seconds)
+                if video_advanced:
+                    self._update_anchor_correction()
             except Exception as exc:  # a bad probe must never kill the pipeline
                 self.stats.last_error = self._error_text(exc)
             if self.media_anchor.ready and self._pending_finals:
@@ -1041,19 +1126,69 @@ class SubtitlePipeline:
             pushed, offset = candidate_pushed, candidate_offset
         return offset + (server_seconds - pushed)
 
+    def set_viewer_wall_time(self, wall_time: float | str | None) -> None:
+        """Record where the renderer's playhead is, on the caption timeline.
+
+        The renderer states this with the status poll it already sends once a
+        second, and the value is the same playing wall clock the caption
+        scheduler compares cue windows against. Deriving it from HLS requests
+        instead is not possible: measured 2026-09-18, hls.js is 6-15s ahead of
+        the playhead when it fetches (median 11.9s), so a request only bounds the
+        playhead to a nine-second window.
+        """
+        if wall_time is None:
+            return
+        try:
+            value = float(wall_time)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(value) or value <= 0.0:
+            return
+        if abs(value - self.wall_clock()) > VIEWER_POSITION_SANITY_SECONDS:
+            return
+        self._viewer_wall_time = value
+        self._viewer_wall_time_at = self.monotonic()
+
+    def _viewer_pcm_position(self) -> float | None:
+        """The viewer's playhead on the audio leg's PCM timeline, or None.
+
+        None (never stated, stale, or no mapper ready yet) means "do not
+        throttle" -- exactly the behaviour that had no flow control at all, so a
+        missing or untrustworthy reference can only ever be conservative.
+        """
+        if self._viewer_wall_time is None:
+            return None
+        if self.monotonic() - self._viewer_wall_time_at > VIEWER_POSITION_TTL_SECONDS:
+            return None
+        epoch = self.media_epoch
+        anchor = self.media_anchor
+        if epoch is None or anchor is None or anchor.offset is None:
+            return None
+        return (self._viewer_wall_time - epoch) - anchor.offset
+
+    def viewer_lead_seconds(self) -> float | None:
+        """How far the audio handed to the ASR runs ahead of the viewer."""
+        position = self._viewer_pcm_position()
+        if position is None:
+            return None
+        return self._last_sent_pcm_offset - position
+
     async def _pcm_sender(self) -> None:
         assert self._pcm_queue is not None
         while self._running:
             chunk, offset = await self._pcm_queue.get()
             chunk_seconds = len(chunk) / self.pcm_bytes_per_second
-            self._last_sent_pcm_offset = offset + chunk_seconds
             stream = self._stream
             if stream is None:
                 continue
+            await self._wait_for_viewer_lead(stream)
+            if not self._running or self._stream is not stream:
+                continue
+            self._last_sent_pcm_offset = offset + chunk_seconds
             self._push_breadcrumbs.append((self._stream_pushed_seconds, offset))
             self._stream_pushed_seconds += len(chunk) / self.pcm_bytes_per_second
             try:
-                await stream.push_pcm(chunk, offset)
+                await asyncio.wait_for(stream.push_pcm(chunk, offset), timeout=5.0)
                 self._audio_push_times.append((self._last_sent_pcm_offset, self.monotonic()))
             except asyncio.CancelledError:
                 raise
@@ -1072,6 +1207,20 @@ class SubtitlePipeline:
             # chunker's back.
             await self._advance_caption_frontier(self._last_sent_pcm_offset, stream)
 
+    async def _wait_for_viewer_lead(self, stream: Any) -> None:
+        """Hold the independent audio leg while video playback is stalled."""
+        while self._running and self._stream is stream:
+            lead = self.viewer_lead_seconds()
+            if lead is None:
+                return
+            try:
+                target = max(0.0, float(self.playback_delay_seconds()))
+            except (TypeError, ValueError):
+                return
+            if lead <= target + ASR_VIEWER_LEAD_ALLOWANCE_SECONDS:
+                return
+            await asyncio.sleep(ASR_VIEWER_LEAD_POLL_SECONDS)
+
     async def _asr_manager(self) -> None:
         backoff = 0.5
         while self._running:
@@ -1079,6 +1228,11 @@ class SubtitlePipeline:
                 await asyncio.sleep(0.05)
                 continue
             try:
+                if self.native_translation_bus is not None:
+                    # The Provider needs the Target Language when its session
+                    # opens, because it emits translation rather than being
+                    # asked for it per cue.
+                    self.asr_provider.set_translation_target(self.meta.target_lang)
                 stream = await self.asr_provider.stream(
                     policy=self.source_policy,
                     sample_rate=self.sample_rate,
@@ -1143,6 +1297,23 @@ class SubtitlePipeline:
         return span
 
     async def _handle_asr_event(self, event: ASREvent) -> None:
+        if self.native_translation_bus is not None and event.item_id is not None:
+            # Provider-side translation arrives on the same frames as the
+            # recognition it belongs to, so it is recorded before the caption
+            # evidence below is chunked: a cue materialized from this event can
+            # already be resolved by the time its translation worker picks it up.
+            if event.type == "final":
+                self.native_translation_bus.close_item(
+                    event.item_id, source_text=event.text, translation=event.translation,
+                    anchors=event.translation_anchors,
+                )
+            elif event.translation or event.translation_stash or event.translation_anchors:
+                self.native_translation_bus.record(
+                    item_id=event.item_id,
+                    source_text=event.text,
+                    translation=event.translation,
+                    anchors=event.translation_anchors,
+                )
         if event.type == "speech_started":
             # The provider reports the true onset offset; no lag compensation.
             # Estimating this from _last_sent_pcm_offset was measured wrong by
@@ -1188,6 +1359,11 @@ class SubtitlePipeline:
             # speaker UI and no retroactive cue rewrite -- the event is counted
             # and logged so a later slice can own write-back.
             self.stats.speaker_revisions += 1
+        elif event.type == "translation":
+            # A Provider-side translation update for an utterance that is still
+            # open. The bus was already updated above; there is no caption
+            # evidence in this event, so it must not be counted as unmapped.
+            self.stats.native_translation_updates += 1
 
     def _map_caption_observation(self, observation: Any) -> Any | None:
         """Map Provider-session evidence onto the pipeline PCM timeline.
@@ -1264,7 +1440,12 @@ class SubtitlePipeline:
         if mapped.end_pcm is not None and mapped.kind in {"utterance_final", "stable_prefix_snapshot"}:
             evidence_positions.append(float(mapped.end_pcm))
         if evidence_positions:
-            self._evidence_times.append((max(evidence_positions), self.monotonic()))
+            confirmed = max(evidence_positions)
+            self._evidence_times.append((confirmed, self.monotonic()))
+            # How far the provider has actually listened. The sender keeps its
+            # queue in front of this instead of in front of the playhead.
+            if self._asr_evidence_pcm is None or confirmed > self._asr_evidence_pcm:
+                self._asr_evidence_pcm = confirmed
         decision = self.caption_chunker.observe(mapped, now=self.monotonic())
         self._materialize_caption_decision(decision, event, exact_timing=exact_timing)
         self._caption_deadline_changed.set()
@@ -1361,6 +1542,10 @@ class SubtitlePipeline:
             starts_mid_sentence=chunk.starts_mid_sentence,
             ends_mid_sentence=chunk.ends_mid_sentence,
             cut_reason=chunk.cut_reason,
+            # The chunk knows which Provider utterance its evidence came from;
+            # the triggering event is only a fallback for Adapters that predate
+            # the field and for deadline cuts that have no event at all.
+            item_id=chunk.item_id or (event.item_id if event is not None else None),
         )
         self._next_chunk_order += 1
         self._pending_finals.append(pending)
@@ -1487,6 +1672,10 @@ class SubtitlePipeline:
             cut_reason=pending.cut_reason,
         )
         self._timing_source_counts[pending.timing_source] = self._timing_source_counts.get(pending.timing_source, 0) + 1
+        if pending.item_id:
+            self._cue_item_ids[cue.id] = pending.item_id
+            if len(self._cue_item_ids) > 512:
+                self._cue_item_ids.pop(next(iter(self._cue_item_ids)), None)
         if pending.chunk_emitted_mono is not None:
             self._cue_latencies[cue.id] = _CueLatency(
                 end_pcm=pending.end_pcm,
@@ -1562,6 +1751,10 @@ class SubtitlePipeline:
         self._track_translation_pressure()
 
     async def _translation_worker(self) -> None:
+        async with translation_session():
+            await self._translation_worker_loop()
+
+    async def _translation_worker_loop(self) -> None:
         while self._running:
             try:
                 cue = await asyncio.wait_for(self._translation_queue.get(), timeout=1.0)
@@ -1640,6 +1833,10 @@ class SubtitlePipeline:
                     starts_mid_sentence=cue.starts_mid_sentence,
                     ends_mid_sentence=cue.ends_mid_sentence,
                     cut_reason=cue.cut_reason,
+                    # Session-backed translation resolves this cue against the
+                    # Provider utterance it was built from; every other Provider
+                    # ignores the field.
+                    item_id=self._cue_item_ids.get(cue.id),
                 )
                 with contextlib.suppress(KeyError, ValueError):
                     self.store.update(cue.id, state="translating")
@@ -1652,6 +1849,7 @@ class SubtitlePipeline:
                     raise TranslationDeadlineExpired("translation deadline expired before provider call")
                 self.stats.translation_attempts += 1
                 self.stats.last_translation_attempt_at = self.wall_clock()
+                request_started = self.monotonic()
                 result = await asyncio.wait_for(
                     provider.translate(request), timeout=max(0.001, remaining)
                 )
@@ -1661,7 +1859,7 @@ class SubtitlePipeline:
                     raise ValueError("translation provider returned empty text")
                 if latency is not None:
                     latency.provider_finished = self.monotonic()
-                self._record_translation_latency(result.latency_ms)
+                self._record_translation_latency(round(1000 * (self.monotonic() - request_started)))
                 if request.meta.target_lang != self.meta.target_lang:
                     # The user changed target language while this Provider call
                     # was in flight. Do not publish text in the stale language;
@@ -1749,6 +1947,12 @@ class SubtitlePipeline:
 
     def _record_ready_lag(self, cue_id: int, *, success: bool = False) -> None:
         """Record terminal readiness and the smallest useful stage breakdown."""
+        latency = self._cue_latencies.get(cue_id)
+        now = self.monotonic()
+        if success and latency is not None and latency.audio_pushed is not None:
+            elapsed = now - latency.audio_pushed
+            if math.isfinite(elapsed) and elapsed >= 0:
+                self._translation_processing.append((now, elapsed))
         self._record_stage_lags(cue_id)
         audio_end_wall = self._audio_end_walls.pop(cue_id, None)
         if audio_end_wall is None:
@@ -1806,8 +2010,11 @@ class SubtitlePipeline:
         return round(percentile(0.5), 3), round(percentile(0.95), 3)
 
     def _record_translation_latency(self, latency_ms: int) -> None:
+        now = self.monotonic()
+        fresh = self._translation_latency_at is not None and now - self._translation_latency_at <= 60
+        self._translation_latency_at = now
         self.stats.last_translation_latency_ms = int(latency_ms)
-        current = self.stats.avg_translation_latency_ms
+        current = self.stats.avg_translation_latency_ms if fresh else None
         self.stats.avg_translation_latency_ms = (
             float(latency_ms) if current is None else round(0.7 * current + 0.3 * float(latency_ms), 1)
         )
@@ -1924,8 +2131,66 @@ class SubtitlePipeline:
             return bool(status.get("sourceError") or status.get("source_error"))
         return bool(status)
 
+    def caption_draft(self) -> dict[str, Any] | None:
+        """The line the chunker is holding, so the player can draw it early.
+
+        A caption from a session-translating Provider waits for that Provider's
+        own turn end. Measured on a real LiveTranslate session that is 0.03-0.4s
+        of extra wait per turn, and up to the chunker's 7-second backstop when the
+        speaker does not pause -- during which the recognized text is already in
+        hand and the screen is empty. This hands the player what is held, so the
+        source line grows while the sentence is being heard and the cue with its
+        translation replaces it when the Provider closes the turn.
+
+        Never a cue, and never the cue's substitute: it is not stored, exported,
+        or offered to the translation bus, since the text it holds is one the
+        Provider has not aligned a translation to.
+        """
+        if not self.caption_chunker.segments_only or not self._running:
+            return None
+        if self.media_epoch is None:
+            return None
+        heard = self._viewer_pcm_position()
+        if self.media_anchor is not None and heard is None:
+            # The audio leg runs ahead of the playhead by the whole playback
+            # delay, so without a playhead there is no way to say which of the
+            # held words the viewer has heard. A cue is not stamped in this
+            # state either, and guessing here would spoil the stream.
+            return None
+        pending = self.caption_chunker.pending_caption(heard)
+        if pending is None:
+            return None
+        text = clean_subtitle_text(pending.text)
+        if not text:
+            return None
+        return {
+            "text": text,
+            "itemId": pending.item_id,
+            "tStart": self._draft_media_time(pending.begin_pcm),
+            "tEnd": self._draft_media_time(pending.end_pcm),
+            "lang": pending.language or self.source_language,
+            "speaker": pending.speaker,
+        }
+
+    def _draft_media_time(self, pcm: float) -> float | None:
+        mapped = None
+        if self.source_pts_mapper is not None:
+            mapped = self.source_pts_mapper(pcm)
+        if mapped is None and self.media_anchor is not None:
+            mapped = self.media_anchor.map_pcm(pcm)
+        if mapped is None:
+            # A cue cannot be stamped without an anchor; a provisional line can,
+            # because it is gone as soon as the cue that replaces it is stamped.
+            mapped = pcm
+        return None if self.media_epoch is None else self.media_epoch + mapped
+
     def status(self) -> dict[str, Any]:
         epoch = self.media_epoch
+        now = self.monotonic()
+        while self._translation_processing and now - self._translation_processing[0][0] > 60:
+            self._translation_processing.popleft()
+        processing_p50, processing_p95 = self._lag_percentiles(deque(value for _, value in self._translation_processing))
+        translation_latency_fresh = self._translation_latency_at is not None and now - self._translation_latency_at <= 60
         source_ready_p50, source_ready_p95 = self._lag_percentiles(self._source_ready_lags)
         success_ready_p50, success_ready_p95 = self._lag_percentiles(self._translation_success_ready_lags)
         terminal_ready_p50, terminal_ready_p95 = self._lag_percentiles(self._terminal_outcome_lags)
@@ -2011,6 +2276,20 @@ class SubtitlePipeline:
             "pendingFinalsDropped": self.stats.pending_finals_dropped,
             "pcmOffset": round(self._pcm_offset, 3),
             "asrSeconds": round(self._pcm_offset, 3),
+            # Audio handed over that the ASR has not confirmed yet: the quantity
+            # the sender holds at ASR_QUEUE_LIMIT_SECONDS. Null until the first
+            # confirmation arrives.
+            "asrQueueSeconds": (
+                round(self._last_sent_pcm_offset - self._asr_evidence_pcm, 3)
+                if self._asr_evidence_pcm is not None
+                else None
+            ),
+            # How far the audio handed to the ASR runs ahead of the renderer's
+            # playhead. Measurement only, and the margin a caption is published
+            # with. Null means no usable playhead was stated.
+            "viewerLeadSeconds": (
+                round(lead, 3) if (lead := self.viewer_lead_seconds()) is not None else None
+            ),
             # The stage backlog the anchor adds back to its median, and the two
             # rolling minima it comes from. `offset - windowOffset` is the
             # correction actually in force.
@@ -2064,6 +2343,9 @@ class SubtitlePipeline:
             "sourceReadyLagP95": source_ready_p95,
             "translationSuccessReadyLagP50": success_ready_p50,
             "translationSuccessReadyLagP95": success_ready_p95,
+            "translationProcessingP50": processing_p50,
+            "translationProcessingP95": processing_p95,
+            "translationProcessingSamples": len(self._translation_processing),
             "terminalOutcomeLagP50": terminal_ready_p50,
             "terminalOutcomeLagP95": terminal_ready_p95,
             "asrAdapterDelayP50": stage_percentiles["asrAdapter"][0],
@@ -2098,7 +2380,7 @@ class SubtitlePipeline:
             "lastTranslationAttemptAt": self.stats.last_translation_attempt_at,
             "lastTranslationError": self.stats.last_translation_error,
             "lastTranslationLatencyMs": self.stats.last_translation_latency_ms,
-            "avgTranslationLatencyMs": self.stats.avg_translation_latency_ms,
+            "avgTranslationLatencyMs": self.stats.avg_translation_latency_ms if translation_latency_fresh else None,
             "degradeLevel": self._degrade_level,
             "asrReconnects": self.stats.asr_reconnects,
             "asrProviderId": self.asr_provider.id,

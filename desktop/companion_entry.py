@@ -22,6 +22,25 @@ def runtime_paths(data: Path):
     return data / 'runtime' / 'media', data / 'runtime' / 'providers.json'
 
 
+def backend_arguments(media: Path, providers: Path, port: int = 0) -> argparse.Namespace:
+    """Arguments the embedded backend runs with.
+
+    `host` and `port` are not decoration: the subtitle pipeline rebuilds the
+    private HLS URL it reads the video timeline from
+    (`CompanionApplication._private_hls_url`). Any stream the backend has to
+    repackage first -- Bilibili live, for one -- goes through that method, and
+    without these fields the ASR start raised
+    `AttributeError: 'Namespace' object has no attribute 'host'`, so the whole
+    subtitle pipeline failed to start and no caption was ever produced.
+
+    Only the loopback address is ever served, and the port is dynamic, so the
+    real value is written back once the socket is bound.
+    """
+    return argparse.Namespace(runtime_dir=media, providers_file=providers,
+                              publish_delay=3.0, cookies_from_browser=None,
+                              host='127.0.0.1', port=port)
+
+
 def session_guard(token):
     from aiohttp import web
 
@@ -43,8 +62,7 @@ async def serve(data: Path, token: str, ready_output):
 
     media, providers = runtime_paths(data)
     providers.parent.mkdir(parents=True, exist_ok=True)
-    args = argparse.Namespace(runtime_dir=media, providers_file=providers,
-                              publish_delay=3.0, cookies_from_browser=None)
+    args = backend_arguments(media, providers)
     companion = CompanionApplication(args, enable_native_control=False)
     application = companion.routes()
     application.middlewares.extend([session_guard(token), errors])
@@ -64,6 +82,9 @@ async def serve(data: Path, token: str, ready_output):
         site = web.TCPSite(runner, '127.0.0.1', 0)
         await site.start()
         port = runner.addresses[0][1]
+        # The pipeline builds the private HLS URL it reads video from, so it has
+        # to name the port this socket actually bound.
+        args.port = port
         print(json.dumps({'event': 'ready', 'port': port, 'pid': os.getpid()}), file=ready_output, flush=True)
         threading.Thread(target=read_parent, daemon=True, name='desktop-parent').start()
         await stopping.wait()

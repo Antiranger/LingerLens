@@ -7,7 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from companion.caption_chunker import CaptionChunker
+from companion.caption_chunker import (
+    CaptionChunker,
+    HARD_DEADLINE_SECONDS,
+    RELEASE_BUDGET_SECONDS,
+)
 from companion.providers.base import CaptionObservation, RecognitionToken
 
 
@@ -365,10 +369,11 @@ class CaptionChunkerContractTests(unittest.TestCase):
         self.assertEqual(held.observe(stable(token("防災。", 0.0, 1.0, language="ja"))).chunks, ())
 
         # A genuine sentence end is unaffected: Japanese sentences end in an auxiliary,
-        # a verb or an adjective, not a noun, so it still cuts immediately.
+        # a verb or an adjective, not a noun, so it still cuts -- once the piece has
+        # the three seconds of audio the span floor asks for.
         verb_end = CaptionChunker(realtime=True)
         verb_end.open_item("u1", 0.0)
-        decision = verb_end.observe(stable(token("終わりました。", 0.0, 1.0, language="ja")))
+        decision = verb_end.observe(stable(token("終わりました。", 0.0, 3.0, language="ja")))
         self.assertEqual([chunk.text for chunk in decision.chunks], ["終わりました。"])
         self.assertEqual([chunk.cut_reason for chunk in decision.chunks], ["terminal_punctuation"])
 
@@ -541,6 +546,154 @@ class CaptionChunkerContractTests(unittest.TestCase):
         chunks.extend(chunker.flush_utterance("u1").chunks)
         self.assertNotIn("old", " ".join(chunk.text for chunk in chunks))
         self.assertEqual(len(chunks), 1)
+
+
+class ReleaseBudgetTests(unittest.TestCase):
+    """The rule the deadline constants exist to satisfy.
+
+    A bilingual lane waits for the Provider's own boundary, so the Provider is
+    what would have to bound it -- and neither one does. Measured on real Japanese
+    against Qwen3.8 LiveTranslate, one server-VAD utterance stayed open for 15.7 s
+    and another for 15.8 s at a 500 ms silence threshold, and 36.4 s at 800 ms
+    (.scratch/qwen-livetranslate-live/events_*sil*.json, 2026-09-21). The release
+    budget is therefore ours to enforce, and this is the test that keeps it honest.
+    """
+
+    def test_the_budget_is_the_tightest_holdback_the_player_allows(self) -> None:
+        # server.py owns the floor the viewer can dial down to. If it moves, the
+        # budget written into the chunker is a lie and must move with it.
+        from companion.server import MIN_TARGET_DELAY_SECONDS
+
+        self.assertEqual(RELEASE_BUDGET_SECONDS, MIN_TARGET_DELAY_SECONDS)
+
+    def test_a_lane_fed_without_a_provider_boundary_still_releases_in_time(self) -> None:
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        fired_at = None
+        held: tuple = ()
+        for index in range(12):
+            now = index + 0.9
+            decision = chunker.observe(
+                stable(token(f"word{index} ", float(index), now), item_id="one-long-turn"),
+                now=now,
+            )
+            held = decision.chunks or chunker.expire(now).chunks
+            if not held:
+                self.assertLess(
+                    now, HARD_DEADLINE_SECONDS,
+                    "the deadline passed and the lane is still held: under "
+                    "segments_only nothing releases it but the Provider's own "
+                    "segment end, and it never sent one",
+                )
+                continue
+            fired_at = now
+            break
+        self.assertIsNotNone(fired_at, "12 s of continuous speech must not hold a lane open")
+        self.assertLessEqual(fired_at, RELEASE_BUDGET_SECONDS,
+                             "released while the viewer can still be shown the line")
+        self.assertLess(HARD_DEADLINE_SECONDS, RELEASE_BUDGET_SECONDS,
+                        "the deadline has to leave room for the rest of the path")
+        self.assertEqual(held[0].cut_reason, "hard_deadline")
+        self.assertLessEqual(held[0].end_pcm, HARD_DEADLINE_SECONDS + 1.0,
+                             "the released line is bounded by the deadline, not by the run-on")
+
+    def test_a_backlog_releases_in_pieces_bounded_by_speech(self) -> None:
+        """Sixteen seconds arriving at once is not one subtitle.
+
+        This is what a stall costs the viewer: the deadline counts wall-clock
+        waiting, and a backlog that lands in one poll has waited only that long
+        while carrying everything said since. Measured on four real captures
+        replayed 2026-09-22, where the whole lane came out as one 11-12 s caption.
+        """
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        burst = stable(
+            *[token(f"w{index}", float(index), float(index) + 0.9, language="ja")
+              for index in range(16)],
+            item_id="backlog",
+        )
+        self.assertEqual(chunker.observe(burst, now=0.5).chunks, ())
+
+        cues = []
+        for tick in range(10):
+            cues.extend(chunker.expire(7.5 + float(tick)).chunks)
+
+        self.assertGreater(len(cues), 1, "the backlog has to drain, not pile up")
+        for cue in cues:
+            self.assertEqual(cue.cut_reason, "hard_deadline")
+            self.assertLessEqual(
+                cue.end_pcm - cue.begin_pcm, HARD_DEADLINE_SECONDS + 1e-6,
+                f"a cue covering {cue.end_pcm - cue.begin_pcm:.1f} s of speech is "
+                "not readable at 1x no matter how long we waited for it",
+            )
+        self.assertEqual(
+            "".join(cue.text.replace(" ", "") for cue in cues),
+            "".join(f"w{index}" for index in range(16)),
+            "slicing may rearrange when text appears, never what appears",
+        )
+
+    def test_a_budget_that_breaks_on_the_first_word_releases_the_lane_whole(self) -> None:
+        """One word off a sentence is not a point the Provider ever stood on.
+
+        Cutting where the lane's first unit already overshoots strands both halves:
+        the stub matches no boundary the model stated, and the remainder is then
+        measured against a cursor nothing advanced -- so the lane loses its Chinese
+        on two captions where it had lost it on one (default capture 2026-09-22).
+        """
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        chunker.observe(stable(
+            token("長いまま来た", 0.0, 9.0, language="ja"),
+            token("残り", 9.0, 10.5, language="ja"),
+            item_id="long-first-unit",
+        ), now=0.5)
+        cues = chunker.expire(7.5).chunks
+        self.assertEqual([cue.text for cue in cues], ["長いまま来た残り"])
+        self.assertEqual(cues[0].cut_reason, "hard_deadline")
+
+
+class PendingCaptionTests(unittest.TestCase):
+    """The projection the player draws before the Provider closes its turn."""
+
+    def test_a_held_lane_is_projected_and_grows_until_the_turn_closes(self) -> None:
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        self.assertIsNone(chunker.pending_caption())
+
+        chunker.observe(stable(token("こんにちは", 0.0, 1.5, language="ja"), item_id="u1"), now=1.0)
+        self.assertEqual(chunker.observe(stable(token("世界", 1.6, 2.4, language="ja"), item_id="u1"), now=2.0).chunks, ())
+        held = chunker.pending_caption()
+        self.assertIsNotNone(held)
+        self.assertEqual(held.text, "こんにちは世界")
+        self.assertEqual(held.item_id, "u1")
+        self.assertEqual((held.begin_pcm, held.end_pcm), (0.0, 2.4))
+        self.assertEqual(held.language, "ja")
+
+        released = chunker.observe(CaptionObservation(
+            "utterance_final", 1, "u1", stable_text="こんにちは世界", begin_pcm=0.0, end_pcm=2.4, language="ja",
+        ), now=3.0)
+        self.assertEqual([chunk.text for chunk in released.chunks], ["こんにちは世界"])
+        self.assertIsNone(
+            chunker.pending_caption(),
+            "the cue replaced the projection, so drawing both would duplicate the line",
+        )
+
+    def test_projection_stops_at_the_position_the_viewer_has_heard(self) -> None:
+        """A lane runs to the pushed audio, which leads the playhead by the app delay."""
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        chunker.observe(stable(token("すでに聞いた", 0.0, 1.5, language="ja"), item_id="u1"), now=1.0)
+        chunker.observe(stable(token("まだ先の言葉", 5.0, 6.0, language="ja"), item_id="u1"), now=6.0)
+        self.assertEqual(chunker.pending_caption(heard_pcm=2.0).text, "すでに聞いた")
+        self.assertEqual(chunker.pending_caption().text, "すでに聞いたまだ先の言葉")
+        # A unit already under the playhead is kept even if it is not finished,
+        # which is how a cue displays from the moment its window opens.
+        self.assertEqual(chunker.pending_caption(heard_pcm=0.5).text, "すでに聞いた")
+        self.assertIsNone(chunker.pending_caption(heard_pcm=-0.5))
+
+    def test_projection_reports_the_newest_lane_only(self) -> None:
+        """One line on screen: the sentence being heard now, not an old stub."""
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        chunker.observe(stable(token("first", 0.0, 1.0, speaker="1"), item_id="u1"), now=1.0)
+        chunker.observe(stable(token("second", 2.0, 3.0, speaker="2"), item_id="u2"), now=3.0)
+        held = chunker.pending_caption()
+        self.assertEqual(held.text, "second")
+        self.assertEqual(held.speaker, "2")
 
 
 if __name__ == "__main__":

@@ -59,6 +59,7 @@ from typing import Any, AsyncIterator
 import aiohttp
 
 from . import register
+from .bounded import RecentIds
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none
 from .base import (
     ASRCapabilities,
@@ -173,6 +174,7 @@ class _TencentAsrStream(ASRStream):
         self.session: aiohttp.ClientSession | None = None
         self.ws: Any = None
         self.closed = False
+        self._started_items = RecentIds()
 
     def _signed_url(self) -> str:
         """Build the HMAC-SHA1 signed handshake URL.
@@ -203,8 +205,9 @@ class _TencentAsrStream(ASRStream):
             params["max_speak_time"] = str(int(options["maxSpeakTimeMs"]))
         if options.get("filterEmptyResult") is not None:
             params["filter_empty_result"] = str(int(options["filterEmptyResult"]))
+        base_url = self.provider.base_url.replace("<appid>", str(options["appId"]))
         canonical = (
-            self.provider.base_url.split("://", 1)[1]
+            base_url.split("://", 1)[1]
             + "?"
             + "&".join(f"{key}={params[key]}" for key in sorted(params))
         )
@@ -214,7 +217,6 @@ class _TencentAsrStream(ASRStream):
             f"{key}={urllib_parse_quote(value, safe='')}" if key == "signature" else f"{key}={value}"
             for key, value in params.items()
         )
-        base_url = self.provider.base_url.replace("<appid>", str(options["appId"]))
         return f"{base_url}?{query}"
 
     async def connect(self) -> None:

@@ -38,6 +38,7 @@ class ProviderRegistryTests(unittest.TestCase):
             {
                 "dashscope-qwen-realtime",
                 "dashscope-task-asr",
+                "dashscope-livetranslate-realtime",
                 "assemblyai-streaming",
                 "volcengine-sauc",
                 "elevenlabs-scribe-realtime",
@@ -46,6 +47,7 @@ class ProviderRegistryTests(unittest.TestCase):
                 "openai-audio-transcriptions",
                 "deepgram-streaming",
                 "soniox-realtime",
+                "soniox-realtime-transcribe",
                 "openai-realtime-transcription",
                 "openai-compatible",
                 "anthropic-messages",
@@ -89,11 +91,11 @@ class ConfigTests(unittest.TestCase):
             path = Path(raw) / "providers.json"
             config = load_config(path, env={"DASHSCOPE_API_KEY": "env-secret"})
             self.assertTrue(path.exists())
-            self.assertEqual(config["asr"]["providers"][0]["_apiKey"], "")
+            self.assertEqual(config["asr"]["providers"][0]["_apiKey"], "env-secret")
             view = masked_config(config)
             rendered = json.dumps(view, ensure_ascii=False)
             self.assertNotIn("env-secret", rendered)
-            self.assertFalse(view["asr"]["providers"][0]["apiKeyConfigured"])
+            self.assertTrue(view["asr"]["providers"][0]["apiKeyConfigured"])
 
     def test_inline_key_is_removed_from_runtime_record_and_masked(self) -> None:
         config = copy.deepcopy(DEFAULT_CONFIG)

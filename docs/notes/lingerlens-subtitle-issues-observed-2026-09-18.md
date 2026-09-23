@@ -18,7 +18,7 @@
 | 页面 | `lingerlens://app/`（**这个页面本身就是播放器**，无 iframe；元素 `#video` `#url` `#probe` `#start` `#stop` `#stateBadge`） |
 | 调试通道 | CDP `http://127.0.0.1:9222`；页面内 `fetch('/api/status')`、`fetch('/api/subtitles?afterSeq=0')` 可直接取后端数据 |
 | Python 环境 | `py -3.10` 有 psutil / websocket-client / Sudachi；`.venv-desktop`（3.11）**没有** psutil / websocket / pytest |
-| 测试运行器 | `py -3.10 scripts/run-hls-tests.py`（55 文件 / 696 测试）、`node scripts/run-hls-js-tests.js`（172）、`npm test`（31）、`npm run ci`（以上全部 + 守卫） |
+| 测试运行器 | `py -3.10 scripts/run-hls-tests.py`（55 文件 / 695 测试）、`node scripts/run-hls-js-tests.js`（176）、`npm test`（31）、`npm run ci`（以上全部 + 守卫） |
 
 **关键常量（代码事实）**
 
@@ -249,6 +249,26 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 - R7（回退后）：82 条全部有译文（除会话头 1 条），但助词开头 19.5%、≤4 字 18.3%、含 `、。` 1 条、空档 28.7 秒。
 - 即：**"文本切得好不好"与"这条会不会被显示"两组指标可以反向变化**；只看其中一组会得出相反结论。
 
+### P11 停止会话偶发 400，页面从此"点了没反应"
+
+- 观测（2026-09-18 19:0x，本执行者用 CDP 驱动）：`POST /api/stop` 返回 **HTTP 400**，body `{"error": "subtitle decoder teardown did not finish: decoder process, stdout drain"}`；同一时刻 `/api/status` 的 `state` 已经是 `idle`，`ffmpeg`/`yt-dlp` 进程数为 0。即**报错与真实状态不一致（拆除其实完成了）**。
+- 后果：页面停在"已停止。可以重新解析…"，此后点 `#probe`（解析）**不发任何请求、不报任何错、按钮也不进入忙碌态**——与 `probe()` 开头的 `if (controlsBusy || sessionAction || lastSessionState === "running") return;`（`web-player/player.js:670`）吻合：`sessionAction` 被上一次未正常收尾的 Stop 留在非 null 上。
+- 只有**整页重载**能恢复（本次实测：重载后同一段脚本立刻成功；不重载时空等 80 秒无任何状态变化）。
+- 对排查的影响：这会让"驱动脚本没生效"看起来像"直播/后端坏了"。本执行者据此浪费了三轮实验。
+- 复现：跑一场会话 → 点停止 → 若返回 400（本次 3 次里出现 1 次）→ 点解析。
+
+### P12 字幕仓库跨会话保留旧 cue，且 id 会撞车
+
+- 观测（2026-09-18 18:54 会话，采样文件 `.scratch/l2-pacing-tbs5.jsonl`）：会话开始后的 `/api/subtitles` 里**同时存在 19 分钟前那场会话的 cue**（`tStart = 1789727744.85`，而本场 `wall` 从 `1789728899.96` 起算），且**同一个 `id` 在不同时刻指向不同的 `tStart`**（新会话的 id 从 1 重新开始，与旧会话残留的 id 重叠）。
+- 影响（本执行者亲历）：按 `id` 缓存的分析脚本会把两场直播的字幕混成一条时间线，第一版因此把 39 条字幕全部算成"晚了 1140 秒"。任何按 `id` 做缓存/统计的渲染或诊断代码都有同样的风险。
+- 相关：`subtitle-scheduler.js` 的 `stats` 只统计 `droppedLateCues` 等计数（§3 已记录其虚高问题），不区分会话。
+
+### P13 无人声直播与代码故障在状态里无法区分
+
+- 观测（2026-09-18 18:31–18:33）：`@ANNnewsCH/live` 当时在播"亚马逊雨林环境音"（用 `/api/probe` 读到的标题为 `【LIVE】癒しの熱帯 アマゾンのジャングルから配信 … 夜の川に響くカエルと昆虫の声`）。该会话 127 秒里 `captionChunks = 0`、`translationAttempts = 0`、`pendingEvidenceOverSoftSpan = 0`、`asrReconnects = 0`、`latencyUnknownReasons` 为空，`/api/logs` 只有 3 条 ingest 启动记录；`asrSeconds = 125.1` / `uptime = 127.6` 证明音频确实在推。
+- 即：**"ASR 一条证据都没回来"在状态里没有任何直接指示**（既没有"无人声/静音"、也没有"provider 无响应"的字段），只能靠反推。本执行者据此怀疑过刚做的改动，并做了一次无意义的 A/B。
+- 教训（方法论）：**测试素材必须先用 `/api/probe` 的标题确认有人声**；本执行者已把这一步固化进 `.scratch/l2-probe-streams.py`。
+
 ---
 
 ## 4. 本执行者做过的代码改动与回退
@@ -294,6 +314,56 @@ R7 的 100 个样本（每 2 秒一帧，`.scratch/lag-timeline.jsonl`）：**�
 |---|---|---|
 | `bc91c8b` | 本文件 | 更正三处证据不实的说法（stage lag 的采样人群、item 与 lane 的区别、P95 例子的索引与那组未落盘的数字、0.060 秒的来源） |
 | `7966c12` | `web-player/subtitle-scheduler.js`、`player.js`、`style.css`、`tests/test_cue_scheduler.js`、`tests/test_web_assets.js` | 原文兜底：把"这条字幕能不能显示"的规则收进一个函数 `subtitleLines(cue)`（只有 `done` 才算译文，其余状态保留原文；两者都没有 ⇒ 不显示），调度器的准入、浮层渲染、历史面板过滤都改用同一规则；浮层的译文行/原文行身份不变，没有译文的行打上 `data-source-only`，由 CSS 让原文行在"仅译文"模式下顶到主行；历史面板按 `seq/revision` 就地重写行正文，译文到达时同一条 DOM 行从原文升级为译文 |
+| `49e8f8c` | `companion/subtitle_pipeline.py`、`companion/server.py`、`web-player/player.js`、3 个测试文件 | 第一次流控：渲染端把 `mediaClock.playingWallTime()` 作为 `?playhead=` 挂在它本来就每秒发一次的 `/api/status` 上，后台换算成音频腿 PCM 位置并**把领先观众的秒数压在 8 秒**。**这次控制量选错了，见下节对照数据**；播放头上报本身保留下来做测量 |
+| `a27d08d` | `companion/subtitle_pipeline.py`、`tests/test_subtitle_pipeline.py` | 第二次流控：控制量改为 **provider 自己的确认位置**（`_asr_evidence_pcm`，取 `_evidence_times` 里最远的已确认位置），发送端在"即将交出的位置 − 已确认位置 > 2 秒"时按住这个 chunk。**这次也被实测否掉了，见下节数据** |
+| `fae9256` | `companion/subtitle_pipeline.py`、`tests/test_subtitle_pipeline.py` | **当前生效**：拆掉上面那条规则（发送端不再等待），保留两个测量字段 `asrQueueSeconds` / `viewerLeadSeconds`；新增回归测试"provider 长期不确认时，送端仍把队列里的音频全部送出" |
+
+#### 两次流控都被实测否掉：数据与机理
+
+第一次（按领先观众量压，`49e8f8c`）在 TBS NEWS DIG 新闻直播上实测 200 秒、39 条字幕；对照组是同一天改动前的两次 ANN 录像：
+
+| 指标 | 改动前 R-a（16 条） | 改动前 R-b（34 条） | 压领先量（39 条） |
+|---|---|---|---|
+| 字幕首次出现比窗口起点晚：P50 / P90 / 最大 | 0.23 / 0.81 / 0.91 秒 | 0.26 / 0.74 / 1.39 秒 | **0.66 / 3.37 / 5.45 秒** |
+| 晚于窗口起点 0.5 秒以上的条数 | 4/16 | 10/34 | **24/39** |
+| 首次出现时只有原文的条数 | 2/16 | 2/34 | **9/39** |
+| `asrAdapterDelay` P50（队列） | 2.4–5.8 秒 | 2.4–5.8 秒 | **1.5 秒** |
+
+- 第一次的结论：**队列确实被压下去了，但字幕整体变晚**——"领先观众量"本身就是这条字幕的安全余量（要先喂进 ASR、再翻完，观众才走到那句话）。同一场录像内部也印证：领先量被压到 10–14 秒的那 19 个采样里"只有原文"占 17.6%，>14 秒的 180 个采样里只占 6.9%；`viewerLeadSeconds` 从 21.124 单调衰减到 8.19。
+
+第二次（按 provider 确认位置压，`a27d08d`）在 B 站 `live.bilibili.com/7734200` 上同流对照（同一房间、同一时间窗、都是会话头 125 秒左右）：
+
+| 指标 | 上界＝2 秒 | 上界＝关闭（`fae9256`） |
+|---|---|---|
+| 字幕条数 | **3** | **34 → 27**（第二次复测 100 秒 27 条） |
+| `asrSeconds` / uptime（音频消费速率） | **0.16×** | **0.97×** |
+| `asrAdapterDelay` P50 / P95 | 6.4 / 10.4（更早一次 31.3 / 72.5） | **2.4 / 8.4** |
+| `readyLag` P50 | 7.6 | 4.9 |
+| `chunkSpan` P50 / P95 | **0.24 / 1.92 秒**（碎片） | **2.76 / 4.92 秒** |
+| 字幕正文 | "但这"、"容。" | "看到机不可失,终于有机会杀一个人…" |
+
+- **机理（这是根子上的错误）**：`evidence` 是**只在有人说话时才前进**的信号。解说一停（音乐/团战音效），provider 什么都不确认 ⇒ 发送端按住馈送 ⇒ 解说再开口时 provider 已被饿住 ⇒ **字幕更少、延迟更高**，与意图完全相反。也就是说 **provider 的"确认"不能当作"消费量"来测量**；用静音门控的信号做流控是自锁。
+- 因此当前生效的行为是：**不做任何馈送限流**，只保留 `viewerLeadSeconds` / `asrQueueSeconds` 两个测量字段（这次实验正是靠它们判定的）。为什么两次都错，已写进 `subtitle_pipeline.py` 里 `VIEWER_POSITION_TTL_SECONDS` 上方的注释。
+- 附带发现（同一轮 B 站排查）：桌面端 `desktop/companion_entry.py` 的参数缺 `host`/`port`，导致**任何需要重新打包的直播（B 站即其一）字幕流水线根本不启动**（`startError: AttributeError: 'Namespace' object has no attribute 'host'`），已修（`a3d5eb2`）；B 站这条私有 HLS 没有 PDT，所以客户端报不出播放头（`viewerLeadSeconds: null`，测量字段在该平台不可用，但不影响字幕）；`_apply_request_proxy` 只写环境变量、永不清除（一次设过代理后，后端进程内所有 yt-dlp 都带 `--proxy`，直到重启）；以及用户 Windows 环境里本身有 `ALL_PROXY=127.0.0.1:7890`，所有 yt-dlp 都会走 Clash（±代理 A/B 因 yt-dlp 拒收 fmp4 格式而未能测出下载速率差异，此项**未定论**）。
+
+#### 修掉上面两个 bug 之后，B 站的真实状态（2026-09-18 20:2x，`live.bilibili.com/7734200`，中文→英文）
+
+| 现场读数 | 值 | 判读 |
+|---|---|---|
+| `state` / `lastError` | `running` / null | 没有崩溃 |
+| `captionChunks` / `translationAttempts` / `failures` / `expired` | 94 / 94 / 0 / 0 | 字幕在正常产出与翻译 |
+| `asrSeconds` / uptime | 276.9 / 279.3 | 音频消费 **0.99×**（上界拆除后不再饿死） |
+| 页面 `#subtitleLayer` | `display: grid`、`visibility: visible`、1522×261、`.subtitle-content` 有文字 | **屏幕上确实在显示** |
+| 屏幕上当时的内容 | `and also, JunJia, as you just mentioned earlier, maybe your overall form through` | 译文行 |
+| `asrAdapterDelayP50 / P95` | 3.391 / **16.016** | 中位数正常，**长尾 16 秒** |
+| `sourceReadyLagP95` / `totalReadyDelayP50 / P95` | 17.941 / 5.172 / **20.032** | 因此会有十几秒的"空窗" |
+| `mediaAnchor` 及全部 anchor 字段 | **null** | 该平台用 `timelineSource: "private-hls"` + `timelineEpoch`（= `pdtEpoch`）直接给 cue 打时间戳，**不建音频→视频锚点** ⇒ `viewerLeadSeconds` 在该平台结构上不可用（不是上报丢了） |
+| `timingSourceCounts` | `{asr: 94}` | 时间戳全部来自 ASR 自身 |
+
+- 因此"好多字幕 ASR 根本没输出"的实测解释是：**中位数 3.4 秒没问题，P95 16–20 秒的空窗才是看到的"没输出"**——即最初那条"队列长尾"问题，两次流控都没能解决（都已拆除）。
+- 复现：`py -3.10 .scratch\l2-session-api.py start https://live.bilibili.com/7734200 15 source=zh-Hans target=en`（走接口驱动，绕开 P11 的页面卡死），再用 `__lingerlensSoakProbe()`（`player.js:2659`）读屏幕真实内容——注意浮层元素是 `#subtitleLayer`（**不是** `subtitleOverlay`；写错 id 会得到 `null` 并误判成"屏幕空白"，本执行者踩过这个坑）。
+- 已完成的验证：`py -3.10 scripts/run-hls-tests.py` → `PASS=55 | tests run=695`；`node scripts/run-hls-js-tests.js` → 176 项全绿（含新增"状态轮询是否带上播放头"一项）；`npm run check:js` 通过。
+- 复现仪器（均在 `.scratch/`，未入库）：`l2-probe-streams.py`（先确认直播有人声）、`l2-session-api.py start|stop|state`（走 `/api/probe` + `/api/start` 驱动会话，绕开 P11 的页面卡死）、`l2-watch-live.py`（只读采样，记录 cue 窗口与 `shown`）、`l2-phase-analysis.py`（按 `viewerLeadSeconds` 分段统计字幕准点率）、`l2-start-session.py`（走 UI 的旧路径，遇到 P11 会静默失败）。
 
 - **明确没动**：字幕锚点、目标延迟、6 秒翻译预算、切分规则、迟到/丢弃策略。超过 `maxLateSeconds` 的 cue 仍被丢弃，且不会因为后来有了译文或原文被重新拉回屏幕；`failed` 仍是后端终态；没有任何地方把原文写进 `zh`。
 - **验证（JS）**：`node scripts/run-hls-js-tests.js` → 201 项全绿；`npm run check:js` 通过。

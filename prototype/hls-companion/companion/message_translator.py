@@ -12,6 +12,7 @@ from .live_messages import LiveMessage, LiveMessageStore
 from .logbook import record as log_record
 from .providers.base import StreamMeta, TranslationProvider, TranslationRequest, ProviderRateLimitError, ProviderAuthError
 from .subtitle_pipeline import normalize_translation_usage
+from .providers.http import translation_session
 
 URL_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.IGNORECASE)
 WORD_RE = re.compile(r"[A-Za-z0-9\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
@@ -129,6 +130,10 @@ class MessageTranslationPipeline:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _worker(self) -> None:
+        async with translation_session():
+            await self._worker_loop()
+
+    async def _worker_loop(self) -> None:
         loop = asyncio.get_running_loop()
         while self._running:
             if not self._queue:

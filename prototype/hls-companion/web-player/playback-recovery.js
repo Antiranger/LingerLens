@@ -57,9 +57,9 @@
    * and no backoff, a stream that keeps producing media errors re-enters the
    * rebuild forever -- "video is stuttery" was largely this loop feeding itself.
    *
-   * Escalation ladder, reset whenever playback actually makes progress:
+   * Escalation ladder, reset after sustained playback (not a seek):
    *   media  #1-#2 -> recover-media   (cheapest rebuild)
-   *   media  #3    -> swap-codec      (different failure mode, no rebuild)
+   *   media  #3    -> swap-codec      (swap then rebuild decoding)
    *   media  #4+   -> reload          (full manifest reload)
    *   network      -> reload
    *   attempts >= MSE_RECOVERY_MAX_ATTEMPTS within the window -> give-up
@@ -247,6 +247,7 @@
   } else {
     global.decidePlaybackRecovery = decidePlaybackRecovery;
     global.classifySourceHealth = classifySourceHealth;
+    global.decideMseErrorRecovery = decideMseErrorRecovery;
     global.LingerLensPlaybackRecovery = exported;
   }
 })(typeof window !== "undefined" ? window : globalThis);

@@ -89,6 +89,8 @@ class StatusContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(key, payload)
         for key in SURVIVING_KEYS:
             self.assertIn(key, payload)
+        self.assertEqual(payload["sessionRecovery"]["state"], "idle")
+        self.assertEqual(payload["sessionRecovery"]["attempts"], 0)
 
     async def test_a_running_but_silent_source_publishes_no_recovery_projection(self) -> None:
         """D: this is the branch that built the block from the policy's decision."""
@@ -137,6 +139,18 @@ class StatusContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ingest.calls, [])
         self.assertEqual(application.session.status()["state"], "idle")
+
+    async def test_unknown_broadcast_delay_is_not_fabricated_from_the_target(self) -> None:
+        application = self._application()
+        application.target_delay_seconds = 20
+        application.session.status = lambda: {
+            "state": "running", "hiddenMediaSeconds": 8, "privateEdgeWallTime": 1234.5,
+        }
+        payload = await self._status(application)
+        self.assertEqual(payload["privateEdgeWallTime"], 1234.5)
+        self.assertEqual(payload["targetDelaySeconds"], 20)
+        self.assertIsNone(payload["sourceDelaySeconds"])
+        self.assertIsNone(payload["estimatedTotalDelaySeconds"])
 
 
 class WiringRemovalTests(unittest.TestCase):

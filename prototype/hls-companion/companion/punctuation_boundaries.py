@@ -18,6 +18,9 @@ PUNCT = TERMINALS | WEAK
 URL = re.compile(r'(?:https?://|www\.)\S+$|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}[.!?]?$', re.I)
 ABBR = re.compile(r'(?:[A-Za-z]\.){2,}$')
 TITLES = {'en': {'mr','mrs','ms','dr','prof'}, 'es': {'sr','sra','dr','dra'}, 'pt': {'sr','sra','dr','dra'}}
+# The shortest caption a cut may publish, unless the provider marked an endpoint
+# where the cut falls. See the use site for the measurement behind the number.
+MIN_PUBLISH_SPAN_SECONDS = 3.0
 
 
 def _ja_vetoes(text, edges):
@@ -100,7 +103,20 @@ def select_boundaries(text, edges, begins, ends, language, endpoints):
         right = text[edge:].lstrip()
         mark = prefix[-1]
         begin, end = begins[start], ends[i]
-        if mark in WEAK and (begin is None or end is None or end-begin < 4.0-1e-9): continue
+        # No cut publishes a caption shorter than this, whatever the punctuation.
+        # The requirement is "at least a few seconds of audio before a cut", and
+        # before 2026-09-18 only WEAK marks were held to it, so terminal
+        # punctuation published whatever it found: with Soniox endpoint tuning on
+        # (endpointLatencyAdjustmentLevel 2, endpointSensitivity 0.3, measured on
+        # live.bilibili.com/7734200) the provider handed over more, shorter pieces
+        # and chunkSpanP50 fell to 1.08-1.38s -- a median caption of about one
+        # second. The floor is 3.0s rather than 4.0s so that a genuinely short
+        # finished sentence waits about three seconds of audio instead of the
+        # seven the hard deadline allows, and an endpoint stays an exception:
+        # there the provider is stating the utterance itself ended, which is a
+        # sentence boundary rather than a fragment being cut.
+        if (begin is None or end is None or end - begin < MIN_PUBLISH_SPAN_SECONDS - 1e-9) and edge not in endpoints:
+            continue
         reason = None
         word = unicodedata.normalize('NFKC',prefix.split()[-1])
         if right and right[0] in PUNCT | set(CLOSERS): reason='attach_punctuation'

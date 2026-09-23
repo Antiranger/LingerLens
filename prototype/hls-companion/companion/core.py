@@ -323,8 +323,10 @@ def parse_header_cookies(header: str, domain: str = ".youtube.com") -> list[dict
 def parse_name_value_lines(text: str, domain: str = ".youtube.com") -> list[dict[str, Any]]:
     """Parse pasted `name<TAB>value`, `name=value`, or `name value` rows.
 
-    This matches the TSV that DevTools' cookie table copies to the clipboard
-    ("Name<TAB>Value" per selected row, optional localized header row).
+    This matches both the short ``Name<TAB>Value`` form and the full cookie
+    table rows that Chromium/Firefox copy (name, value, domain, path, expiry,
+    and flags).  Keeping the original domain matters for YouTube: some login
+    cookies belong to ``google.com`` rather than ``youtube.com``.
     """
     cookies: list[dict[str, Any]] = []
     for raw_line in text.splitlines():
@@ -332,31 +334,51 @@ def parse_name_value_lines(text: str, domain: str = ".youtube.com") -> list[dict
         if not line or line.startswith("#"):
             continue
         if "\t" in line:
-            # DevTools copies full cookie-table rows (name, value, domain, path,
-            # expiry, size, flags, ...). Keep only the first two columns.
             fields = line.split("\t")
             if len(fields) < 2:
                 continue
             name, value = fields[0], fields[1]
+            row_domain = fields[2].strip() if len(fields) >= 3 else domain
+            row_path = fields[3].strip() if len(fields) >= 4 else "/"
+            row_expiry = fields[4].strip() if len(fields) >= 5 else ""
+            # The exact flag columns differ between browsers and locales.  A
+            # short two-column paste is treated as secure as before; a full
+            # row keeps an explicit secure/true marker when one is present.
+            row_flags = [field.strip().lower() for field in fields[5:]]
+            row_secure = len(fields) < 6 or any(
+                flag in {"secure", "true", "yes", "✓", "是", "ja", "да"}
+                for flag in row_flags
+            )
         elif "=" in line:
             name, _, value = line.partition("=")
+            row_domain, row_path, row_expiry, row_secure = domain, "/", "", True
         else:
             parts = line.split(None, 1)
             if len(parts) != 2:
                 continue
             name, value = parts[0], parts[1]
+            row_domain, row_path, row_expiry, row_secure = domain, "/", "", True
         name = name.strip()
         value = value.strip()
         if not name or name.lower() in {"name", "名称", "名前"} or "\t" in name or "\n" in value or "\r" in value:
             continue
+        expiration = 0
+        if row_expiry and row_expiry.lower() not in {"session", "session cookie", "会话"}:
+            try:
+                expiration = int(float(row_expiry))
+            except ValueError:
+                try:
+                    expiration = int(datetime.fromisoformat(row_expiry.replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    expiration = 0
         cookies.append(
             {
-                "domain": domain if domain.startswith(".") else f".{domain}",
-                "path": "/",
+                "domain": row_domain or domain,
+                "path": row_path or "/",
                 "name": name,
                 "value": value,
-                "secure": True,
-                "expirationDate": int(time.time()) + 30 * 86400,
+                "secure": row_secure,
+                "expirationDate": expiration,
             }
         )
     return cookies
@@ -392,6 +414,64 @@ def normalize_imported_cookies(cookies: list[dict[str, Any]]) -> list[dict[str, 
     return accepted
 
 
+# The probe asks yt-dlp for these fields and nothing else. It used to ask for the
+# whole info document, which on a DVR live stream carries every media fragment
+# since the broadcast started: 88,456 fragments / 153MB / 16.2s on a two-hour
+# stream (2026-09-19), against a hard 15s deadline that the same stream still met
+# at twenty minutes old. No code here reads `fragments`, so that payload was
+# carried across the pipe only to be discarded. Everything below is read:
+# build_quality_options and _build_muxed_live_quality_options (height, width, fps,
+# vcodec, acodec, tbr, abr, format_id, protocol, ext, quality, format_note),
+# best_aac_audio (abr, tbr, protocol, format_id), selected_inputs (format_id, url,
+# http_headers), ProbeInfoSnapshot (extractor_key, formats[].ext), server.py
+# (title, channel, uploader, categories, is_live) and the live gate below
+# (is_live, live_status).
+PROBE_INFO_FIELDS = (
+    "id", "title", "channel", "uploader", "categories", "is_live", "live_status",
+    "extractor", "extractor_key", "webpage_url", "duration", "http_headers",
+)
+PROBE_FORMAT_FIELDS = (
+    "format_id", "url", "ext", "protocol", "vcodec", "acodec", "height", "width",
+    "fps", "tbr", "abr", "vbr", "audio_channels", "quality", "format_note",
+    "filesize", "http_headers",
+)
+
+
+def _projection(fields: tuple[str, ...], prefix: str = "") -> str:
+    """An output template that prints exactly `fields` as one JSON value."""
+    return "%(" + prefix + ".{" + ",".join(fields) + "})j"
+
+
+def parse_probe_output(text: str) -> dict[str, Any]:
+    """The info dict from the probe's two projected JSON lines.
+
+    yt-dlp prints one line per requested projection, so the metadata object comes
+    first and the format list second. A single full document is still accepted,
+    which keeps an older invocation working.
+    """
+    top: dict[str, Any] | None = None
+    formats: list[dict[str, Any]] | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            if "formats" in value:
+                return value
+            top = top or value
+        elif isinstance(value, list) and formats is None:
+            formats = value
+    if top is None:
+        raise RuntimeError("yt-dlp returned invalid JSON")
+    # A missing format list is not an error here: the caller gates on `is_live`
+    # first, and an empty list already fails as "no compatible quality".
+    return {**top, "formats": formats or []}
+
+
 class YtDlpProbe:
     def __init__(self, yt_dlp: str | None = None):
         if yt_dlp:
@@ -416,7 +496,10 @@ class YtDlpProbe:
             "1",
             "--extractor-retries",
             "1",
-            "-J",
+            "--print",
+            _projection(PROBE_INFO_FIELDS),
+            "--print",
+            _projection(PROBE_FORMAT_FIELDS, "formats.:"),
             *([] if auth is None else auth.yt_dlp_args()),
             page_url,
         ]
@@ -429,14 +512,13 @@ class YtDlpProbe:
                 errors="replace", timeout=15, check=False,
             )
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError("读取直播信息超时：网络或代理未能连接 YouTube。请检查系统代理是否已启动。") from error
+            # yt-dlp exceeding 15s says nothing about the proxy in particular:
+            # it is the slowest thing on this path, so name the timeout itself.
+            raise RuntimeError("读取直播信息超时：yt-dlp 15 秒内没有返回。请重试，或检查网络与系统代理。") from error
         if completed.returncode != 0:
             tail = "\n".join(completed.stderr.strip().splitlines()[-8:])
             raise RuntimeError(f"yt-dlp format probe failed (exit {completed.returncode}): {tail or 'no diagnostic'}")
-        try:
-            info = json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("yt-dlp returned invalid JSON") from error
+        info = parse_probe_output(completed.stdout)
         if info.get("is_live") is not True and info.get("live_status") != "is_live":
             raise RuntimeError("仅支持正在进行的直播 / Only currently ongoing live streams are supported")
         return info
@@ -627,29 +709,13 @@ def ffmpeg_headers(headers: dict[str, str]) -> str:
     return "\r\n".join(clean) + ("\r\n" if clean else "")
 
 
-# The yt-dlp MPEG-TS pipe routinely contains timestamp discontinuities: its
-# internal ffmpeg HLS reader skips expired live segments (audio holes of ~5s),
-# re-extraction rewinds the PTS, and long-running streams re-base PTS by hours.
-# With -c copy those jumps land in fMP4 tfdt and shatter the MSE timeline
-# (hls.js stalls, then force-seeks). setts rebuilds a continuous timeline per
-# track: sane per-packet deltas are preserved, any discontinuity collapses to
-# one frame duration. Stream copy only; no transcoding. Commas inside the
-# expressions must stay escaped (\,) for FFmpeg's filter-chain parser.
-_VIDEO_SETTS = (
-    "setts="
-    "dts=if(eq(N\,0)\,DTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)):"
-    "pts=if(eq(N\,0)\,PTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)+PTS-DTS):"
-    # Live-TS discontinuities can yield negative packet durations; the fMP4
-    # muxer treats one as fatal and kills the whole session (2026-09-09:
-    # "Packet duration: -1 ... out of range" at media 57s). Re-stamp them.
-    "duration=if(lt(DURATION\,0)\,PREV_OUTDURATION\,DURATION)"
-)
-_AUDIO_SETTS = (
-    "setts="
-    "ts=if(eq(N\,0)\,PTS\,PREV_OUTPTS+if(between(PTS-PREV_INPTS\,1\,3*PREV_OUTDURATION)\,PTS-PREV_INPTS\,PREV_OUTDURATION)):"
-    "duration=if(lt(DURATION\,0)\,PREV_OUTDURATION\,DURATION)"
-    ",aac_adtstoasc"
-)
+# Source PTS/DTS gaps belong to one shared timeline. Independently compressing
+# them per track desynchronizes audio/video and invalidates the ASR origin.
+# Keep stream-copy timestamps; only repair invalid negative packet durations.
+# A source clock reset is recovered by the session owner, not hidden here.
+_VIDEO_SETTS = r"setts=pts=PTS:dts=DTS:duration=if(lt(DURATION\,0)\,max(PREV_OUTDURATION\,1)\,DURATION)"
+_AUDIO_SETTS = _VIDEO_SETTS + ",aac_adtstoasc"
+MAX_INTERLEAVE_MICROSECONDS = 1_000_000
 
 
 # Private-window list size: must hold the public window (180s) plus the largest
@@ -722,7 +788,7 @@ def build_ffmpeg_command(
     if pipe_input_count:
         urls = [f"pipe:{index}" for index in range(pipe_input_count)]
     headers_by_input = [inputs.video_headers, *([inputs.audio_headers] if inputs.audio_url else [])]
-    for url, headers in zip(urls, headers_by_input):
+    for input_index, (url, headers) in enumerate(zip(urls, headers_by_input)):
         if not url:
             continue
         local_tcp = url.startswith("tcp://")
@@ -742,6 +808,10 @@ def build_ffmpeg_command(
             command.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
         elif pipe_format:
             command.extend(["-f", pipe_format])
+        # Independent local legs retain the same source clock (-copyts upstream).
+        # Align their start times to video input 0 instead of zeroing each leg.
+        if input_index and local_tcp:
+            command.extend(["-isync", "0"])
         command.extend(["-i", url])
     command.extend(["-map", "0:v:0"])
     command.extend(["-map", "0:a:0" if pipe_input_count else ("1:a:0" if inputs.audio_url else "0:a:0")])
@@ -754,7 +824,9 @@ def build_ffmpeg_command(
             "-bsf:a",
             _AUDIO_SETTS,
             "-max_interleave_delta",
-            "0",
+            str(MAX_INTERLEAVE_MICROSECONDS),
+            "-max_muxing_queue_size", "1024",
+            "-muxing_queue_data_threshold", "8388608",
         ]
     )
     command.extend(hls_output_args(private_dir))
@@ -809,6 +881,7 @@ class DelayedPlaylistPublisher:
         self.target_duration = 1
         self.media_sequence = 0
         self.pdt_epoch: float | None = None
+        self._private_edge_wall_time: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -837,6 +910,7 @@ class DelayedPlaylistPublisher:
                 "pendingSegments": len(self.pending),
                 "hiddenMediaSeconds": round(sum(segment.duration for segment in self.pending.values()), 3),
                 "privateMediaSeconds": round(self._media_seconds_total, 3),
+                "privateEdgeWallTime": self._private_edge_wall_time,
                 "sourceStallSeconds": round(max(0.0, time.monotonic() - self._last_new_segment_at), 1),
                 "targetDuration": self.target_duration,
                 "playlistReady": (self.public_dir / "live.m3u8").exists(),
@@ -863,6 +937,15 @@ class DelayedPlaylistPublisher:
             return
         now = time.monotonic()
         with self._lock:
+            # Follow the playlist's actual timestamps, including gaps. A sum
+            # of all observed durations cannot represent a skipped segment.
+            edge: float | None = None
+            for item in parsed:
+                if item.program_date_time:
+                    edge = self._parse_program_date_time(item.program_date_time)
+                if edge is not None:
+                    edge += item.duration
+            self._private_edge_wall_time = edge
             parsed_names = {item.name for item in parsed}
             for item in parsed:
                 if self.pdt_epoch is None and item.program_date_time:

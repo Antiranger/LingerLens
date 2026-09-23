@@ -40,7 +40,6 @@
       <div id="diagBody" class="diagbar-body" hidden>
         <p id="diagHint" class="diag-hint" hidden></p>
         <div class="diag-actions">
-          <button id="diagUpdate" class="btn btn-go btn-compact" type="button" hidden>检查更新</button>
           <button id="diagCopy" class="btn btn-secondary btn-compact" type="button">复制诊断信息</button>
           <button id="diagLogToggle" class="btn btn-secondary btn-compact" type="button">记录日志到文件</button>
           <button id="diagLogOpen" class="btn btn-ghost btn-compact" type="button" hidden>打开日志文件夹</button>
@@ -65,6 +64,7 @@
         <option value="ru">Русский</option>
       </select>
     </label>
+    <button id="appUpdateButton" class="btn btn-go btn-compact" type="button" hidden>检查更新</button>
     <button id="openCookieImport" class="btn btn-secondary btn-compact" type="button">导入 Cookie</button>
     <button id="openModelSettings" class="btn btn-primary btn-compact" type="button">连接与密钥</button>
   </nav>
@@ -142,6 +142,7 @@
 
           <div id="subtitleLayer" class="subtitle-layer off" data-mode="bilingual" data-size="medium" aria-live="off" role="group" tabindex="0" aria-label="字幕窗口；拖动字幕移动，方向键微调位置">
             <div class="subtitle-content"></div>
+            <div id="subtitleDraft" class="subtitle-draft" aria-hidden="true" hidden></div>
             <button id="subtitleResizeHandle" class="subtitle-resize-handle" type="button" aria-label="拖动缩放字幕"></button>
           </div>
 
@@ -157,10 +158,20 @@
                 </label>
                 <button id="probe" class="btn btn-primary" type="button">解析</button>
               </div>
-              <label class="field">
-                <span class="field-label">外部网络代理（可选）</span>
-                <input id="proxy" type="url" autocomplete="off" spellcheck="false" placeholder="自动使用系统代理；例如 http://127.0.0.1:7890">
-              </label>
+              <div class="setup-row proxy-row">
+                <label class="field field-grow">
+                  <span id="proxyModeLabel" class="field-label">网络连接方式</span>
+                  <select id="proxyMode">
+                    <option value="system" selected>使用系统代理（推荐）</option>
+                    <option value="direct">直连</option>
+                    <option value="manual">手动代理</option>
+                  </select>
+                </label>
+                <label id="proxyManualField" class="field field-grow" hidden>
+                  <span id="proxyAddressLabel" class="field-label">代理地址</span>
+                  <input id="proxy" type="url" autocomplete="off" spellcheck="false" placeholder="例如 http://127.0.0.1:7890">
+                </label>
+              </div>
               <div id="setupPlayback" class="setup-row setup-playback" hidden>
                 <label class="field field-grow">
                   <span class="field-label">清晰度</span>
@@ -268,11 +279,11 @@
             <span class="now-label mono"><i class="now-dot"></i>NOW · 当前状态</span>
             <strong id="streamTitle" class="now-title">等待直播地址</strong>
             <p id="message" class="now-msg">在画面中输入直播链接即可开始。</p>
-            <button id="applyDelayButton" class="btn btn-danger btn-compact warn" hidden type="button">增加 5 秒缓冲</button>
+            <button id="applyDelayButton" class="btn btn-danger btn-compact warn" hidden type="button">调整目标延迟</button>
           </div>
-          <div class="now-delay delay-comparison" title="这里只是 LingerLens 本地缓冲，不包含直播源本身的延迟">
+          <div class="now-delay delay-comparison" title="当前值是最新完整本地分片到播放画面的距离，不含直播平台延迟和未完成的分片">
             <label class="delay-field delay-target-compact"><span class="field-label">目标延迟</span><span class="delay-input"><input id="targetDelay" type="number" min="11" step="1" value="15" inputmode="numeric"><i>秒</i></span></label>
-            <div class="delay-est delay-estimate"><span class="field-label">当前实测延迟</span><b id="totalDelay" class="mono">—</b></div>
+            <div class="delay-est delay-estimate"><span class="field-label">本地分片延迟</span><b id="totalDelay" class="mono">—</b></div>
           </div>
           <button id="stop" class="btn btn-danger stop-session" type="button" disabled><span class="button-label">停止 ■</span></button>
         </aside>
@@ -316,10 +327,11 @@
     </header>
     <div class="role-grid">
       <label class="field role-field"><span class="field-label">语音识别</span><select id="roleAsr"></select></label>
-      <label class="field role-field"><span class="field-label">字幕翻译</span><select id="roleSubtitle"></select></label>
-      <label class="field role-field"><span class="field-label">字幕翻译兜底</span><select id="roleFallback"></select></label>
+      <label class="field role-field"><span class="field-label">字幕翻译</span><select id="roleSubtitle"></select><small id="roleSubtitleStatus" class="role-availability" hidden></small></label>
+      <label class="field role-field"><span class="field-label">字幕翻译兜底</span><select id="roleFallback"></select><small id="roleFallbackStatus" class="role-availability" hidden></small></label>
       <label class="field role-field"><span class="field-label">弹幕翻译</span><select id="roleChat"></select></label>
     </div>
+    <p id="roleModeHint" class="deck-feedback role-mode-hint" role="status"></p>
     <p id="roleFeedback" class="deck-feedback" role="status"></p>
   </section>
 
@@ -433,14 +445,14 @@
     </header>
     <div class="telemetry-grid">
       <div class="tcard tcard-indigo">
-        <span class="tcard-label">预留缓冲时长</span>
+        <span class="tcard-label">暂未发布时长</span>
         <b class="tcard-value mono" id="hiddenDelay">—</b>
-        <span class="tcard-desc">本地已下载、为维持延时目标而暂未播放的时长</span>
+        <span class="tcard-desc">已封装但尚未交给播放器的完整分片时长</span>
       </div>
       <div class="tcard tcard-lime">
         <span class="tcard-label">播放落后时长</span>
         <b class="tcard-value mono" id="playerDelay">—</b>
-        <span class="tcard-desc">播放画面落后于最新已下载画面的时间差</span>
+        <span class="tcard-desc">播放画面到播放器已知的最新可播放位置的距离</span>
       </div>
       <div class="tcard">
         <span class="tcard-label">播放器就绪缓冲</span>
@@ -478,29 +490,29 @@
         <span class="tcard-desc">ASR 与翻译都可估算时显示</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">翻译延迟</span>
+        <span class="tcard-label">翻译等待耗时</span>
         <b class="tcard-value mono" id="translationLatency">—</b>
-        <span class="tcard-desc">单句请求到返回平均耗时</span>
+        <span class="tcard-desc">近期成功请求从发起到返回的平滑耗时；无近期样本显示空值</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">字幕处理耗时（中位/极值）</span>
+        <span class="tcard-label">字幕处理耗时（中位/95分位）</span>
         <b class="tcard-value mono" id="subtitleReadyLag">—</b>
-        <span class="tcard-desc">从声音说完到字幕翻译完成的时间；95% 的句子在此时间内交付</span>
+        <span class="tcard-desc">近一分钟成功译文：句尾音频送出到译文存好；不含语句长度和下载时间</span>
       </div>
       <div class="tcard tcard-yellow">
-        <span class="tcard-label">字幕显示余量</span>
+        <span class="tcard-label">译文到达余量</span>
         <b class="tcard-value mono" id="budgetMargin">—</b>
-        <span class="tcard-desc">延时设定减去字幕处理与说话时长；大于 0 说明字幕能赶在发音前就绪</span>
+        <span class="tcard-desc">近一分钟正常播放样本中偏紧的余量；正值为提前，负值为迟到。少于5条或10秒无新样本时不显示</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">单句时长（中位/极值）</span>
+        <span class="tcard-label">单句时长（中位/95分位）</span>
         <b class="tcard-value mono" id="cueDuration">—</b>
         <span class="tcard-desc">语音识别检测到的连续说话句子时长</span>
       </div>
       <div class="tcard">
-        <span class="tcard-label">时间轴对齐基准</span>
+        <span class="tcard-label">字幕时间来源</span>
         <b class="tcard-value mono" id="timingSources">—</b>
-        <span class="tcard-desc">官方节目时间戳（PDT）与本地时钟对齐的比例</span>
+        <span class="tcard-desc">asr：识别返回的逐词时间；vad：根据语音段边界或音频进度估计</span>
       </div>
       <div class="tcard">
         <span class="tcard-label">超时跳过字幕</span>
@@ -559,6 +571,7 @@
         <div id="translationProfiles" class="provider-profiles"></div>
       </section>
     </div>
+    <details class="settings-section"><summary id="effectiveConfigTitle">已保存配置（下次启动使用）</summary><pre id="effectiveConfig" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
     <div id="modelSettingsFeedback" class="settings-feedback dialog-feedback" role="status"></div>
     <footer class="dialog-foot settings-footer">
       <button id="cancelModelSettings" class="btn btn-ghost" type="button" data-close>取消</button>
@@ -578,7 +591,7 @@
       <button id="closeCookieImport" class="icon-button dialog-close" type="button" aria-label="关闭" data-close>×</button>
     </header>
     <div class="dialog-body">
-      <p id="cookieImportIntro" class="dialog-intro settings-intro">选择平台后，粘贴对应站点的 Cookie。内容按平台保存在本机；探测/启动时只为目标 URL 生成临时文件并立即删除。</p>
+      <p id="cookieImportIntro" class="dialog-intro settings-intro">建议优先导出 Netscape cookies.txt。导入只表示已保存，不代表登录一定有效；导入后请点击“解析”做实际验证。Cookie 只在本机使用，不要发到日志、工单或聊天中。</p>
       <div class="setup-row">
         <label class="field field-grow"><span class="field-label">平台</span>
           <select id="cookiePlatform"><option value="youtube" selected>YouTube</option><option value="bilibili">Bilibili</option><option value="twitch">Twitch</option></select>
@@ -587,7 +600,12 @@
           <select id="cookieFormat"><option value="lines" selected>名称/值 多行（DevTools 复制行）</option><option value="netscape">Netscape cookies.txt</option><option value="header">请求头 Cookie 串</option></select>
         </label>
       </div>
-      <label class="field"><span class="field-label">粘贴内容</span><textarea id="cookiePayload" rows="8" autocomplete="off" spellcheck="false" placeholder="SID　xxxxxxxx…&#10;HSID　yyyyyyyy…&#10;（直接从 DevTools Cookie 列表全选复制粘贴即可）" required></textarea><small class="cookie-hint">每行一个 Cookie：名称 + 制表符/空格/等号 + 值；也兼容 cookies.txt 和请求头格式。</small></label>
+      <ol class="cookie-steps">
+        <li id="cookieStep1">在浏览器登录目标平台，导出 Netscape 格式的 <code>cookies.txt</code>（最可靠，能保留域名和有效期）。</li>
+        <li id="cookieStep2">选择上面的格式并粘贴内容。DevTools 复制表格也可以，但请复制完整行；请求头字符串只适合临时备用。</li>
+        <li id="cookieStep3">导入后回到直播入口，点击“解析”。只有解析成功，才说明这组 Cookie 对当前直播真正可用。</li>
+      </ol>
+      <label class="field"><span class="field-label">粘贴内容</span><textarea id="cookiePayload" rows="8" autocomplete="off" spellcheck="false" placeholder="SID　xxxxxxxx…&#10;HSID　yyyyyyyy…&#10;（推荐粘贴 cookies.txt）" required></textarea><small class="cookie-hint">Cookie 会按平台保存在本机；不会显示 Cookie 值。导入成功不等于账号验证成功。</small></label>
     </div>
     <div id="cookieImportFeedback" class="settings-feedback dialog-feedback" role="status"></div>
     <footer class="dialog-foot settings-footer">

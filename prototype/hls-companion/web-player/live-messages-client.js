@@ -1,5 +1,8 @@
 (function (global) {
   "use strict";
+  // i18n.js publishes itself on window before this runs; the Chinese stays in the
+  // call so a missing key degrades to the text this file was written with.
+  const t = (key, text) => (window.I18N ? window.I18N.t(key, null, text) : text);
 
   function createLiveMessagesClient(options = {}) {
     const fetchFn = options.fetch || (typeof window !== "undefined" ? window.fetch.bind(window) : null);
@@ -12,6 +15,7 @@
     let afterSeq = 0;
     let maxSeq = 0;
     let stats = null;
+    let storeVersion = 0;
     let timer = null;
     let polling = false;
     let pollingGeneration = 0;
@@ -46,6 +50,7 @@
         const mediaTime = Number(message?.mediaTime);
         if ((Number.isFinite(cutoff) && Number.isFinite(mediaTime) && mediaTime < cutoff) || store.size > maxMessages) {
           store.delete(id);
+          storeVersion += 1;
         }
       }
     }
@@ -58,6 +63,7 @@
             const current = store.get(incoming.id);
             if (!current || Number(incoming.seq) > Number(current.seq) || Number(incoming.revision) >= Number(current.revision)) {
               store.set(incoming.id, current ? { ...current, ...incoming } : incoming);
+              storeVersion += 1;
             }
           }
           if (Number.isFinite(Number(data.maxSeq))) {
@@ -98,6 +104,7 @@
         return data;
       },
       getStore: () => store,
+      getVersion: () => storeVersion,
       getStats: () => stats,
       getMaxSeq: () => maxSeq,
       reset() {
@@ -105,6 +112,7 @@
         maxSeq = 0;
         stats = null;
         store.clear();
+        storeVersion += 1;
       },
     };
     return api;
@@ -136,17 +144,40 @@
     let source = options.source || (() => []);
     let filterPureEmoji = Boolean(options.filterPureEmoji);
     let lastSignature = null;
+    // The store is polled much more often than its ordering changes. Keep a
+    // sorted snapshot so moving the playback clock does not sort hundreds of
+    // messages again on every UI tick.
+    let sortedSource = [];
+    let sourceSignature = null;
+    let sourceVersion = null;
 
-    function visible(messages, playbackWallTime) {
+    function prepare(messages, version = null) {
+      if (!Array.isArray(messages)) return [];
+      if (version !== null && version === sourceVersion) return sortedSource;
+      const signature = messages.map((message) => `${message?.id}:${message?.seq}:${message?.revision}:${message?.mediaTime}:${message?.kind || ""}`).join("|");
+      if (signature !== sourceSignature || (version !== null && version !== sourceVersion)) {
+        sortedSource = messages.slice().sort((a, b) => Number(a.mediaTime) - Number(b.mediaTime) || Number(a.seq) - Number(b.seq));
+        sourceSignature = signature;
+      }
+      sourceVersion = version;
+      return sortedSource;
+    }
+
+    function visible(messages, playbackWallTime, version = null) {
       if (!Array.isArray(messages) || !Number.isFinite(playbackWallTime)) return [];
-      return messages
-        .filter((message) => {
-          if (message?.kind && message.kind !== "text") return false;
-          if (Number(message.mediaTime) > playbackWallTime + 0.25) return false;
-          if (filterPureEmoji && isPureEmojiText(message.text)) return false;
-          return true;
-        })
-        .sort((a, b) => Number(a.mediaTime) - Number(b.mediaTime) || Number(a.seq) - Number(b.seq))
+      const sorted = prepare(messages, version);
+      const cutoff = playbackWallTime + 0.25;
+      // Find the first future message without scanning and sorting the tail.
+      let low = 0;
+      let high = sorted.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (Number(sorted[middle].mediaTime) <= cutoff) low = middle + 1;
+        else high = middle;
+      }
+      return sorted.slice(0, low)
+        .filter((message) => (!message?.kind || message.kind === "text")
+          && (!filterPureEmoji || !isPureEmojiText(message.text)))
         .slice(-maxDomItems);
     }
 
@@ -154,8 +185,8 @@
       setSource(nextSource) { source = nextSource; },
       setFilterPureEmoji(enabled) { filterPureEmoji = Boolean(enabled); },
       getVisibleMessages: visible,
-      render(playbackWallTime, messages = source()) {
-        const rows = visible(messages, playbackWallTime);
+      render(playbackWallTime, messages = source(), options = {}) {
+        const rows = visible(messages, playbackWallTime, options.version ?? null);
         const signature = rows.map((message) => `${message.id}:${message.seq}:${message.revision}:${message.translationState || ""}`).join("|");
         const changed = signature !== lastSignature;
         lastSignature = signature;
@@ -164,7 +195,7 @@
         const keep = new Set(rows.map((message) => message.id));
         for (const [id, node] of existing) if (!keep.has(id)) node.remove();
         if (!rows.length) {
-          if (!container.querySelector(".timeline-empty")) container.innerHTML = '<div class="timeline-empty">当前画面尚无直播消息</div>';
+          if (!container.querySelector(".timeline-empty")) container.innerHTML = `<div class="timeline-empty">${t("empty.chat.none", "当前画面尚无直播消息")}</div>`;
           return { rows, changed };
         }
         container.querySelector(".timeline-empty")?.remove();
@@ -189,7 +220,7 @@
       },
       clear() {
         lastSignature = null;
-        if (container) container.innerHTML = '<div class="timeline-empty">等待直播消息…</div>';
+        if (container) container.innerHTML = `<div class="timeline-empty">${t("empty.chat.waiting", "等待直播消息…")}</div>`;
       },
     };
   }

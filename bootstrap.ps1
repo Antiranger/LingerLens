@@ -64,7 +64,7 @@ $checksumFile = "$ytDlp.sha256"
 if (-not (Test-Path $ytDlp -PathType Leaf) -or -not (Test-Path $checksumFile -PathType Leaf)) {
     Add-Failure "Vendored yt-dlp or its checksum file is missing."
 } else {
-    $expected = ((Get-Content $checksumFile -Raw).Trim().Split()[0]).ToLowerInvariant()
+    $expected = ((Get-Content $checksumFile -Encoding utf8 -Raw).Trim().Split()[0]).ToLowerInvariant()
     $actual = (Get-FileHash $ytDlp -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { Add-Failure "Vendored yt-dlp checksum mismatch. Restore the tracked binary before continuing." }
     else { Write-Host "[ok] vendored yt-dlp SHA-256 verified ($(& $ytDlp --version))" }
@@ -80,7 +80,7 @@ if ($CheckOnly) {
     exit 0
 }
 
-Write-Host "Installing locked Python dependencies..."
+Write-Host "Installing declared Python dependencies..."
 & $Python -m pip install --requirement "prototype\hls-companion\companion\requirements.txt"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -94,4 +94,4 @@ Write-Host "Running deterministic release guard..."
 & node "scripts\release-guard.js"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "LingerLens bootstrap completed. Start with .\start-lingerlens.cmd"
+Write-Host "LingerLens bootstrap completed. Start browser mode with .\start-lingerlens.cmd -Prototype"

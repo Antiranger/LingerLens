@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import errno
 import json
 import os
@@ -34,6 +35,7 @@ try:
     from .providers.base import SourceLanguagePolicy, StreamMeta, provider_currency, validate_source_policy, validate_translation_pair  # type: ignore[import-not-found]
     from .providers.config import load_config, masked_config, model_settings_view, update_config, update_model_settings  # type: ignore[import-not-found]
     from .providers.fallback import FallbackChain  # type: ignore[import-not-found]
+    from .providers.native_session import NativeSessionTranslation, NativeTranslationBus  # type: ignore[import-not-found]
     from .subtitle_pipeline import SubtitlePipeline  # type: ignore[import-not-found]
     from .subtitle_store import CueStore  # type: ignore[import-not-found]
     from .capture_clock import CaptureClock  # type: ignore[import-not-found]
@@ -116,6 +118,23 @@ PLAYER_LIVE_SYNC_SECONDS = 12.0
 # exactly on the streams most likely to be slow (2026-09-08 perf experiment).
 PRIVATE_HLS_READY_TIMEOUT_SECONDS = 30.0
 
+# A healthy live stream can legitimately be quiet for one segment interval.
+# The supervisor waits beyond the same segment-scaled threshold used by the
+# browser before rebuilding the *whole* session. Rebuilding one leg alone would
+# give the subtitle mapper a new clock and could shift every later cue.
+SESSION_RECOVERY_POLL_SECONDS = 2.0
+SESSION_RECOVERY_MAX_ATTEMPTS = 3
+SESSION_RECOVERY_BACKOFF_SECONDS = (2.0, 5.0, 10.0)
+SESSION_RECOVERY_STARTUP_GRACE_SECONDS = PRIVATE_HLS_READY_TIMEOUT_SECONDS + 15.0
+SESSION_START_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+
+# The desktop launcher may seed these variables with the Windows system proxy.
+# Each probe/start request then chooses one explicit mode.  Restoring this
+# snapshot lets "system proxy" work while still making "direct" remove a
+# proxy selected for an earlier session.
+_PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+_INITIAL_PROXY_ENV = {name: os.environ.get(name) for name in _PROXY_ENV_NAMES}
+
 # Without `-copyts`, yt-dlp's ffmpeg downloader lets its mpegts muxer re-base
 # each leg's output to the muxer's own default origin -- measured at exactly
 # 1.400s for video and 1.3787s for audio (one AAC frame earlier, 1024/48000).
@@ -181,6 +200,7 @@ class CompanionApplication:
         self.info_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.auth_snapshots: dict[str, list[dict[str, Any]]] = {}
         self.auth_lock = threading.Lock()
+        self._session_lock = asyncio.Lock()
         self.control = ControlServer(self.handle_control) if enable_native_control else None
         self.source_ingest: YtDlpLiveIngest | None = None
         # P3-B: dedicated tiny audio-only download leg feeding the subtitle
@@ -191,6 +211,7 @@ class CompanionApplication:
         # latched from; a later mismatch means a leg re-based and the exact
         # offset is refused for the rest of the session.
         self._source_clock_origins: tuple[float, float] | None = None
+        self._source_clock_logged = False
         # R1: why this session's source clock was declared unusable, if it was.
         # None means "not refused" -- which covers both "trustworthy" and "not
         # measured yet", and the sampled fallback depends on that difference.
@@ -212,9 +233,24 @@ class CompanionApplication:
         self.message_generation = 0
         self.auth_lease: SessionAuthLease | None = None
         self.private_hls_token: str | None = None
+        # The supervisor replays only this non-secret start description. Cookie
+        # values stay in the short-lived in-memory auth fields below; they are
+        # never copied into status, logs, or the replay body.
+        self._active_start_body: dict[str, Any] | None = None
+        self._recovery_auth_cookies: list[dict[str, Any]] | None = None
+        self._recovery_auth_browser: str | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
+        self._recovery_in_progress = False
+        self._recovery_attempts = 0
+        self._recovery_state = "idle"
+        self._recovery_reason: str | None = None
+        self._recovery_error: str | None = None
+        # Low-rate subtitle timing snapshots make a real live delay traceable
+        # without flooding the diagnostics ring or recording caption content.
+        self._last_subtitle_diag_monotonic = 0.0
 
     def routes(self) -> web.Application:
-        app = web.Application(client_max_size=4 * 1024 * 1024)
+        app = web.Application(client_max_size=4 * 1024 * 1024, middlewares=[local_request_guard])
         app["companion"] = self
         app.router.add_get("/", self.index)
         app.router.add_get("/favicon.ico", self.favicon)
@@ -320,10 +356,18 @@ class CompanionApplication:
         headers = {"Cache-Control": "no-store, max-age=0"} if name.endswith(".m3u8") else {"Cache-Control": "private, max-age=30"}
         return web.FileResponse(path, headers=headers)
 
-    async def status(self, _: web.Request) -> web.Response:
+    async def status(self, request: web.Request) -> web.Response:
         status = self.session.status()
+        # The renderer states its playhead with this poll, once a second. It is
+        # the only trustworthy source for it: hls.js fetches segments 6-15s ahead
+        # of the playhead (measured 2026-09-18), so request paths cannot stand in
+        # for it. A poll without the parameter leaves the last value in place.
+        if self.subtitle_pipeline is not None:
+            self.subtitle_pipeline.set_viewer_wall_time(request.query.get("playhead"))
         ingest_snapshot = self.source_ingest.snapshot() if self.source_ingest else None
-        status["sourceDelaySeconds"] = 0.0
+        # The local re-packaged PDT is not the broadcaster's capture clock.
+        # Neither a missing measurement nor the 12s player setting proves zero.
+        status["sourceDelaySeconds"] = None
         # The content position the subtitle anchor samples for the video side,
         # next to privateMediaSeconds (the packaged counter) so the difference
         # between them -- the packaging backlog -- is readable from status.
@@ -333,31 +377,51 @@ class CompanionApplication:
         if self.asr_audio_ingest is not None:
             ingest_list.append(dict(self.asr_audio_ingest.snapshot(), role="asr-audio"))
         status["sourceIngest"] = ingest_list
-        # No `sourceRecovery` block. It published a state and an action
-        # ("reconnecting", "reconnect-and-report") that nothing in this repo or in
-        # the browser extension ever read -- a recovery promise no code kept, next
-        # to real fields a reader could act on. It is deleted rather than wired up:
-        # acting on it would mean automatically restarting a download leg, and a
-        # leg restart resets `source_pts_first`, which drops the exact subtitle
-        # anchor to a path measured 4.44s wrong. Everything a reader does use stays
-        # here: sourceIngest, sourceDelaySeconds, videoContentSeconds, state/error.
+        status["sessionRecovery"] = self._recovery_status()
+        # `sessionRecovery` is deliberately separate from source telemetry. It
+        # reports the bounded whole-session supervisor above; it never promises
+        # that a single download leg was restarted. Rebuilding one leg alone
+        # would reset its source clock and could shift later subtitle cues.
         subtitle_status = self._subtitle_status()
         message_status = self._messages_status()
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_subtitle_diag_monotonic >= 5.0:
+            self._last_subtitle_diag_monotonic = now_monotonic
+            logbook.record(
+                "info",
+                "subtitle-timing",
+                json.dumps(
+                    {
+                        "backlog": subtitle_status.get("translationBacklog"),
+                        "queueP95": subtitle_status.get("translationQueueDelayP95"),
+                        "providerP95": subtitle_status.get("translationProviderDelayP95"),
+                        "processingP95": subtitle_status.get("translationProcessingP95"),
+                        "readyP95": subtitle_status.get("translationSuccessReadyLagP95"),
+                        "totalReadyP95": subtitle_status.get("totalReadyDelayP95"),
+                        "viewerLead": subtitle_status.get("viewerLeadSeconds"),
+                        "anchor": subtitle_status.get("anchorCorrection"),
+                        "anchorOffset": (subtitle_status.get("mediaAnchor") or {}).get("offset")
+                        if isinstance(subtitle_status.get("mediaAnchor"), dict)
+                        else None,
+                        "workers": subtitle_status.get("translationWorkersAlive"),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
         status["subtitles"] = subtitle_status
         status["mediaClock"] = self._media_clock_status()
         status["liveMessages"] = message_status
         status["usage"] = self._usage_status(subtitle_status, message_status)
         status["targetDelaySeconds"] = self.target_delay_seconds
-        status["estimatedTotalDelaySeconds"] = round(
-            float(status.get("sourceDelaySeconds") or 0.0)
-            + float(status.get("hiddenMediaSeconds") or 0.0)
-            + PLAYER_LIVE_SYNC_SECONDS,
-            3,
-        )
+        status["estimatedTotalDelaySeconds"] = None
         status.pop("publishDelaySeconds", None)
         if ingest_snapshot and ingest_snapshot.get("sourceError") and status.get("state") == "running":
             status["state"] = "error"
             status["error"] = ingest_snapshot["sourceError"]
+        if status.get("state") == "idle" and self._recovery_state == "failed":
+            status["state"] = "error"
+            status["error"] = self._recovery_error or "直播会话恢复失败，请重新开始播放"
         return web.json_response(status, headers={"Cache-Control": "no-store"})
 
     async def handle_logs(self, request: web.Request) -> web.Response:
@@ -380,12 +444,17 @@ class CompanionApplication:
         if after_seq < 0:
             raise ValueError("invalid subtitle cursor")
         pipeline_status = self._subtitle_status()
+        pipeline = self.subtitle_pipeline
         return web.json_response(
             {
                 "now": time.time(),
                 "pdtEpoch": pipeline_status.get("pdtEpoch"),
+                "mediaSessionId": self.session.media_session_id,
                 "cues": [cue.to_dict() for cue in self.subtitle_store.query(after_seq=after_seq)],
                 "maxSeq": self.subtitle_store.max_seq,
+                # Recognized but not yet released: the player may draw this, but it
+                # is not a cue and never reaches the subtitle list or an export.
+                "draft": pipeline.caption_draft() if pipeline is not None else None,
                 "stats": pipeline_status,
             },
             headers={"Cache-Control": "no-store"},
@@ -505,24 +574,12 @@ class CompanionApplication:
         )
 
     def _require_local_request(self, request: web.Request) -> None:
-        """Reject cross-site imports: loopback host plus same-origin Origin check."""
-        origin = request.headers.get("Origin")
-        if origin:
-            origin_host = urllib.parse.urlparse(origin).hostname or ""
-            if origin_host not in {"127.0.0.1", "localhost", "::1"}:
-                raise web.HTTPForbidden(text=json.dumps({"error": "Cross-origin cookie import is not allowed"}), content_type="application/json")
-        host_header = request.headers.get("Host", "")
-        if host_header.startswith("["):
-            host_name = host_header.split("]", 1)[0].lstrip("[")
-        else:
-            host_name = host_header.split(":", 1)[0]
-        if host_name.lower() not in {"127.0.0.1", "localhost", "::1"}:
-            raise web.HTTPForbidden(text=json.dumps({"error": "Only loopback requests may import cookies"}), content_type="application/json")
+        require_local_request(request)
 
     async def handle_get_model_settings(self, request: web.Request) -> web.Response:
         self._require_local_request(request)
         self.providers_config = load_config(self.providers_path)
-        return web.json_response(model_settings_view(self.providers_config), headers={"Cache-Control": "no-store"})
+        return web.json_response(model_settings_view(self.providers_config, path=self.providers_path), headers={"Cache-Control": "no-store"})
 
     async def handle_update_model_settings(self, request: web.Request) -> web.Response:
         self._require_local_request(request)
@@ -530,7 +587,7 @@ class CompanionApplication:
         if not isinstance(settings, dict):
             raise ValueError("model settings must be an object")
         self.providers_config = update_model_settings(self.providers_path, settings)
-        return web.json_response(model_settings_view(self.providers_config), headers={"Cache-Control": "no-store"})
+        return web.json_response(model_settings_view(self.providers_config, path=self.providers_path), headers={"Cache-Control": "no-store"})
 
     async def handle_get_providers(self, _: web.Request) -> web.Response:
         self.providers_config = load_config(self.providers_path)
@@ -547,7 +604,20 @@ class CompanionApplication:
         asr_record = self._provider_record(config["asr"], config["asr"]["active"])
         translation_record = self._provider_record(config["translation"], config["translation"]["active"])
         asr_provider = create_asr(asr_record)
-        translation_provider = create_translation(translation_record)
+        native = asr_provider.capabilities.native_translation
+        if native.enabled:
+            # The Profile translates on its own session, so the effective
+            # translation capability the UI must validate against is the one the
+            # session-backed Provider will assert -- not the idle LLM profile's.
+            translation_provider = NativeSessionTranslation(
+                NativeTranslationBus(),
+                provider_id=f"{asr_provider.id}:native",
+                label=f"{asr_provider.label}（Provider 内置翻译）",
+                model=asr_provider.model,
+                target_tags=native.target_tags,
+            )
+        else:
+            translation_provider = create_translation(translation_record)
         subtitle = config.get("subtitle", {})
         asr_language = asr_provider.capabilities.language
         translation_language = translation_provider.capabilities.language
@@ -576,6 +646,10 @@ class CompanionApplication:
                     "providerId": translation_provider.id,
                     "model": translation_provider.model,
                     "label": translation_provider.label,
+                    # True when the ASR Profile translates on its own session
+                    # (Soniox translation, Qwen LiveTranslate). The UI uses it to
+                    # say that no translation model is being called.
+                    "native": bool(native.enabled),
                     "language": {
                         "sourceTags": list(translation_language.source_tags) if translation_language.source_tags is not None else None,
                         "targetTags": list(translation_language.target_tags) if translation_language.target_tags is not None else None,
@@ -642,7 +716,7 @@ class CompanionApplication:
 
     async def handle_probe(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._apply_request_proxy(body.get("proxy"))
+        self._apply_request_proxy(body.get("proxy"), body.get("proxyMode"))
         url = validate_page_url(str(body.get("url") or ""))
         auth = self._authentication(body, consume=False)
         try:
@@ -669,10 +743,79 @@ class CompanionApplication:
         )
 
     async def handle_start(self, request: web.Request) -> web.Response:
+        # The operation owns the lock even if an HTTP caller disconnects.
+        # Cancellation cannot abandon a to_thread spawn and let Stop race it.
+        return await asyncio.shield(self._session_operation(self._start_session, request))
+
+    async def _session_operation(self, operation: Any, *args: Any, **kwargs: Any) -> Any:
+        async with self._session_lock:
+            return await operation(*args, **kwargs)
+
+    async def _start_session(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._apply_request_proxy(body.get("proxy"))
+        try:
+            return await self._start_session_body(body)
+        except asyncio.CancelledError:
+            raise
+        except (web.HTTPException, ValueError, LanguageNotSupportedError):
+            raise
+        except (OSError, RuntimeError, asyncio.TimeoutError) as first_error:
+            # A failure before a stable session exists has no browser poll to
+            # trigger the supervisor. Retry the complete start twice with a
+            # fresh probe. This covers an FFmpeg launch failure or a downloader
+            # that dies during the first segment without turning validation
+            # errors into a slow retry loop.
+            replay = self._replayable_start_body(body)
+            last_error: BaseException = first_error
+            for delay in SESSION_START_RETRY_BACKOFF_SECONDS:
+                await asyncio.sleep(delay)
+                try:
+                    response = await self._start_session_body(
+                        copy.deepcopy(replay), automatic=True, force_probe=True
+                    )
+                    self._active_start_body = replay
+                    self._recovery_state = "monitoring"
+                    self._ensure_recovery_monitor()
+                    logbook.record("info", "media", "启动阶段故障已通过整场重试恢复")
+                    return response
+                except asyncio.CancelledError:
+                    raise
+                except (web.HTTPException, ValueError, LanguageNotSupportedError):
+                    raise
+                except (OSError, RuntimeError, asyncio.TimeoutError) as error:
+                    last_error = error
+                    logbook.record("warn", "media", f"启动阶段整场重试失败：{type(error).__name__}: {error}")
+            self._recovery_auth_cookies = None
+            self._recovery_auth_browser = None
+            raise last_error
+
+    async def _start_session_body(
+        self,
+        body: dict[str, Any],
+        *,
+        automatic: bool = False,
+        force_probe: bool = False,
+    ) -> web.Response:
+        """Start one complete media/subtitle/chat session from a JSON body.
+
+        Manual starts and supervisor starts share this path so a recovery gets
+        the same auth, provider, cleanup, and timestamp handling as the first
+        start. ``automatic`` only changes ownership bookkeeping; it never
+        restarts an individual download leg.
+        """
+        if not automatic:
+            await self._stop_recovery_monitor()
+            self._recovery_attempts = 0
+            self._recovery_state = "idle"
+            self._recovery_reason = None
+            self._recovery_error = None
+        self._apply_request_proxy(body.get("proxy"), body.get("proxyMode"))
         url = validate_page_url(str(body.get("url") or ""))
-        auth = self._authentication(body, consume=True)
+        auth = self._authentication_for_recovery() if automatic else self._authentication(body, consume=True)
+        # Keep a normalized in-memory copy available if a pre-session failure
+        # needs the fresh-probe retry above. It is cleared after all retries or
+        # when the user stops the session; it never enters the request/status.
+        self._remember_recovery_auth(auth)
         probe_snapshot: ProbeInfoSnapshot | None = None
         auth_lease: SessionAuthLease | None = None
         pending_subtitle_pipeline: SubtitlePipeline | None = None
@@ -688,7 +831,7 @@ class CompanionApplication:
             # The UI always probes before it can offer a quality to start, so
             # the extraction this used to repeat is normally seconds old. Live
             # manifests carry signed, expiring URLs, hence the short TTL.
-            info = self._fresh_probe_info(url)
+            info = None if force_probe else self._fresh_probe_info(url)
             if info is None:
                 probe_consumer = auth_lease.acquire("start_probe")
                 try:
@@ -697,7 +840,11 @@ class CompanionApplication:
                     probe_consumer.release()
                 self.info_cache[url] = (time.monotonic(), info)
             live_message_request = body.get("liveMessages") or {}
-            if live_message_request.get("enabled", True) and not bool(info.get("is_live")):
+            # Automatic recovery must reject an ended source even when chat was
+            # disabled, otherwise it could keep retrying a stale VOD URL forever.
+            # Preserve the existing manual API contract for callers that use the
+            # media path without the optional live-message sidecar.
+            if (live_message_request.get("enabled", True) or automatic) and not bool(info.get("is_live")):
                 raise ValueError("仅支持正在直播 / Live messages only support a currently ongoing live stream")
             options = build_quality_options(info)
             quality = select_quality(options, str(body.get("qualityId") or "auto"), int(body.get("maxHeight") or 1080))
@@ -780,7 +927,12 @@ class CompanionApplication:
             start_tasks = [asyncio.to_thread(self.source_ingest.start)]
             if self.asr_audio_ingest is not None:
                 start_tasks.append(asyncio.to_thread(self.asr_audio_ingest.start))
-            await asyncio.gather(*start_tasks)
+            # to_thread cannot stop its thread when a sibling raises. Await
+            # both outcomes before rollback so no late spawn escapes cleanup.
+            started = await asyncio.gather(*start_tasks, return_exceptions=True)
+            for result in started:
+                if isinstance(result, BaseException):
+                    raise result
             # The ingest owns acquisition on independent per-format legs and
             # exposes them as localhost MPEG-TS TCP endpoints; the packaging
             # ffmpeg reads those instead of a single muxed pipe.
@@ -881,17 +1033,230 @@ class CompanionApplication:
         status = self.session.status()
         status.pop("publishDelaySeconds", None)
         status["targetDelaySeconds"] = self.target_delay_seconds
+        self._remember_recovery_auth(auth)
+        if not automatic:
+            self._active_start_body = self._replayable_start_body(body)
+            self._recovery_state = "monitoring"
+            self._ensure_recovery_monitor()
+        elif self._recovery_state != "failed":
+            self._recovery_state = "monitoring"
         return web.json_response({"ok": True, "quality": asdict(quality), "status": status})
 
+    def _replayable_start_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Copy only the non-secret controls needed for an automatic retry."""
+        replay = copy.deepcopy(body)
+        replay.pop("authToken", None)
+        # Cookie values are accepted only through the imported auth-token path;
+        # never retain an accidentally supplied raw cookie field in a replay.
+        replay.pop("cookies", None)
+        return replay
+
+    def _remember_recovery_auth(self, provider: AuthenticationProvider) -> None:
+        cookies = getattr(provider, "cookies", None)
+        self._recovery_auth_cookies = [dict(item) for item in cookies] if cookies else None
+        browser = getattr(provider, "browser", None)
+        self._recovery_auth_browser = str(browser) if browser else None
+
+    def _authentication_for_recovery(self) -> AuthenticationProvider:
+        if self._recovery_auth_cookies:
+            return BrowserCookieSnapshot(self._recovery_auth_cookies)
+        if self._recovery_auth_browser:
+            return DevelopmentBrowserProfileFallback(self._recovery_auth_browser)
+        # Persisted platform cookies are selected from the original URL. This
+        # also covers a normal restart after the temporary imported snapshot was
+        # successfully written to the user's private auth file.
+        return self._authentication(self._active_start_body or {}, consume=False)
+
+    def _recovery_status(self) -> dict[str, Any]:
+        return {
+            "state": self._recovery_state,
+            "attempts": self._recovery_attempts,
+            "maxAttempts": SESSION_RECOVERY_MAX_ATTEMPTS,
+            "reason": self._recovery_reason,
+            "error": self._recovery_error,
+        }
+
     @staticmethod
-    def _apply_request_proxy(value: Any) -> None:
-        proxy = str(value or "").strip()
-        if not proxy:
+    def _session_recovery_reason(session_status: dict[str, Any], ingest_snapshot: dict[str, Any] | None) -> str | None:
+        """Classify a failure that warrants rebuilding the complete session."""
+        if session_status.get("state") == "error":
+            return str(session_status.get("error") or "媒体封装进程已退出")
+        if not ingest_snapshot:
+            return "下载器状态消失"
+        if ingest_snapshot.get("sourceError"):
+            return str(ingest_snapshot["sourceError"])
+        if ingest_snapshot.get("running") is False:
+            return "直播下载进程已退出"
+        clock_reason = ingest_snapshot.get("sourceClockReason")
+        if ingest_snapshot.get("sourceClockValid") is False and clock_reason not in (None, "no-legs", "no-pts-probe"):
+            return f"source-clock-invalid:{clock_reason}"
+
+        try:
+            target_duration = max(1, int(float(session_status.get("targetDuration") or 0)))
+        except (TypeError, ValueError):
+            target_duration = 1
+        threshold = max(5, target_duration + 2)
+        idle = ingest_snapshot.get("sourceIdleSeconds")
+        if idle is not None:
+            try:
+                if float(idle) > threshold:
+                    return f"直播下载连续 {float(idle):.1f} 秒没有媒体数据"
+            except (TypeError, ValueError):
+                pass
+        if not session_status.get("playlistReady"):
+            uptime = float(session_status.get("uptimeSeconds") or 0)
+            if uptime > SESSION_RECOVERY_STARTUP_GRACE_SECONDS:
+                return "媒体封装长时间没有产生可播放分片"
+            return None
+        publisher_stall = session_status.get("sourceStallSeconds")
+        try:
+            if publisher_stall is not None and float(publisher_stall) > threshold:
+                return f"媒体分片连续 {float(publisher_stall):.1f} 秒没有推进"
+        except (TypeError, ValueError):
+            pass
+        return None
+
+    def _ensure_recovery_monitor(self) -> None:
+        if self._recovery_task is None or self._recovery_task.done():
+            self._recovery_task = asyncio.create_task(self._recovery_loop(), name="lingerlens-session-recovery")
+
+    async def _stop_recovery_monitor(self) -> None:
+        task = self._recovery_task
+        if task is None or task is asyncio.current_task():
             return
+        self._recovery_task = None
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _recovery_loop(self) -> None:
+        try:
+            while self._active_start_body is not None:
+                await asyncio.sleep(SESSION_RECOVERY_POLL_SECONDS)
+                if self._recovery_in_progress or self._active_start_body is None:
+                    continue
+                session_status = self.session.status()
+                ingest_snapshot = self.source_ingest.snapshot() if self.source_ingest else None
+                reason = self._session_recovery_reason(session_status, ingest_snapshot)
+                if not reason and self.asr_audio_ingest is not None:
+                    audio = self.asr_audio_ingest.snapshot()
+                    # Audio can be intentionally backpressured while the viewer
+                    # pauses. Only terminal failures or a measured invalid clock
+                    # trigger recovery, never ASR idle time alone.
+                    audio_check = {k: v for k, v in audio.items() if k in ("running", "sourceError", "sourceClockValid", "sourceClockReason")}
+                    reason = self._session_recovery_reason({"state": "running", "playlistReady": True}, audio_check)
+                if not reason and self._exact_mapping_refused:
+                    reason = f"subtitle-clock-invalid:{self._exact_mapping_refused}"
+                if reason:
+                    await self._recover_session(reason)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._recovery_state = "failed"
+            self._recovery_error = f"恢复监控异常：{type(error).__name__}: {error}"
+            logbook.record("error", "media", self._recovery_error)
+        finally:
+            if self._recovery_task is asyncio.current_task():
+                self._recovery_task = None
+
+    async def _recover_session(self, reason: str) -> None:
+        if self._recovery_in_progress or self._active_start_body is None:
+            return
+        self._recovery_in_progress = True
+        self._recovery_state = "reconnecting"
+        self._recovery_reason = reason
+        self._recovery_error = None
+        body = copy.deepcopy(self._active_start_body)
+        try:
+            # Repeated apparently successful starts must not reset the budget
+            # and create an infinite fail/restart cycle. Manual Start resets it.
+            for attempt in range(self._recovery_attempts + 1, SESSION_RECOVERY_MAX_ATTEMPTS + 1):
+                self._recovery_attempts = attempt
+                if attempt > 1:
+                    await asyncio.sleep(SESSION_RECOVERY_BACKOFF_SECONDS[attempt - 2])
+                if self._active_start_body is None:
+                    return
+                try:
+                    # A recovery always re-probes. Signed media URLs and live
+                    # status can both expire while a stale /probe result still
+                    # sits inside the normal 90-second cache.
+                    await self._session_operation(
+                        self._start_session_body,
+                        copy.deepcopy(body),
+                        automatic=True,
+                        force_probe=True,
+                    )
+                    logbook.record("info", "media", f"直播会话已自动恢复（第 {attempt} 次）：{reason}")
+                    self._recovery_state = "monitoring"
+                    self._recovery_error = None
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    detail = f"第 {attempt} 次失败：{type(error).__name__}: {error}"
+                    self._recovery_error = detail
+                    logbook.record("warn", "media", f"直播会话自动恢复失败：{detail}")
+            # Stop a dead session after the bounded attempts. Keeping its old
+            # processes around would make a later manual start race them.
+            try:
+                await self._session_operation(self._stop_session_after_recovery_failure)
+            except Exception as error:
+                # A decoder that still holds a live task or process refuses to
+                # report a clean teardown. That is its contract, and it must not
+                # read as a fresh supervisor crash: the loop would otherwise die
+                # here and every later status poll would keep echoing it.
+                logbook.record(
+                    "error", "media", f"直播会话恢复后清理未完成：{type(error).__name__}: {error}"
+                )
+            self._recovery_state = "failed"
+            self._recovery_error = f"直播会话无法自动恢复（已尝试 {SESSION_RECOVERY_MAX_ATTEMPTS} 次）：{reason}"
+            logbook.record("error", "media", self._recovery_error)
+        finally:
+            self._recovery_in_progress = False
+
+    async def _stop_session_after_recovery_failure(self) -> None:
+        # Ownership is released even when the teardown refuses to finish. Left
+        # set, the supervisor would immediately re-detect the same dead session
+        # and burn another bounded round of attempts on top of handles it was
+        # just told not to stack a decoder onto.
+        try:
+            await self._teardown_session()
+        finally:
+            self._active_start_body = None
+            self._recovery_auth_cookies = None
+            self._recovery_auth_browser = None
+
+    @staticmethod
+    def _apply_request_proxy(value: Any, mode: Any = None) -> None:
+        """Apply the selected network mode without carrying stale proxy state.
+
+        ``direct`` clears all proxy variables, ``system`` restores the values
+        present when this backend started, and ``manual`` validates and applies
+        the address supplied by the UI.  A legacy request with only ``proxy``
+        keeps the old manual behavior; an empty legacy value means direct.
+        """
+        selected = str(mode or ("manual" if str(value or "").strip() else "direct")).strip().lower()
+        if selected == "system":
+            for name in _PROXY_ENV_NAMES:
+                original = _INITIAL_PROXY_ENV.get(name)
+                if original is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = original
+            return
+        if selected == "direct":
+            for name in _PROXY_ENV_NAMES:
+                os.environ.pop(name, None)
+            return
+        if selected != "manual":
+            raise ValueError("代理模式必须是 direct、system 或 manual")
+        proxy = str(value or "").strip()
         parsed = urllib.parse.urlparse(proxy)
         if parsed.scheme not in {"http", "https", "socks5"} or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("代理地址必须是 http(s)://host:port 或 socks5://host:port")
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        for name in _PROXY_ENV_NAMES:
             os.environ[name] = proxy
 
     def _fresh_probe_info(self, url: str) -> dict[str, Any] | None:
@@ -910,12 +1275,23 @@ class CompanionApplication:
         return info
 
     async def handle_stop(self, _: web.Request) -> web.Response:
+        return await asyncio.shield(self._session_operation(self._stop_session))
+
+    async def _stop_session(self) -> web.Response:
         """End the session in one round trip, with the legs torn down in parallel.
 
         See ``_teardown_session``: the ordering constraint that matters lives
         there, and the legs it starts together are disjoint from one another.
         """
+        await self._stop_recovery_monitor()
         await self._teardown_session()
+        self._active_start_body = None
+        self._recovery_auth_cookies = None
+        self._recovery_auth_browser = None
+        self._recovery_state = "idle"
+        self._recovery_attempts = 0
+        self._recovery_reason = None
+        self._recovery_error = None
         return web.json_response({"ok": True, "status": self.session.status()})
 
     async def _stop_source_ingest(self) -> None:
@@ -939,21 +1315,9 @@ class CompanionApplication:
             for provider_id in config["translation"].get("fallback", [])
             if provider_id != translation_id
         )
+        from companion.providers.readiness import validate_asr_start
+        validate_asr_start(asr_config)
         asr_provider = create_asr(asr_config)
-        translation_providers = [create_translation(item) for item in translation_configs]
-        translation_pricing = {
-            item["id"]: {
-                "input": item.get("pricePerMillionInputTokensCny"),
-                "cachedInput": item.get("pricePerMillionCachedInputTokensCny"),
-                "cacheWrite": item.get("pricePerMillionCacheWriteTokensCny"),
-                "output": item.get("pricePerMillionOutputTokensCny"),
-                # The stored field names say Cny for historical reasons; this is
-                # what those numbers are actually denominated in.
-                "currency": provider_currency(item.get("kind"), item.get("currency")),
-            }
-            for item in translation_configs
-        }
-        primary_translation = FallbackChain(translation_providers) if len(translation_providers) > 1 else translation_providers[0]
         subtitle = {**config.get("subtitle", {}), **request}
         source_policy = SourceLanguagePolicy.from_json(
             subtitle.get("sourceLanguage", {"mode": "specified", "tag": "ja"})
@@ -962,6 +1326,50 @@ class CompanionApplication:
         # Pre-start capability check: reject language settings the active
         # profiles cannot honor instead of failing silently mid-stream.
         validate_source_policy(source_policy, asr_provider.capabilities.language)
+
+        # Provider-side translation (Soniox translation, Qwen LiveTranslate): the
+        # ASR Profile translates on its own session, so no translation model is
+        # called at all. The bus is the seam -- the Adapter writes each
+        # utterance's translation into it and the session-backed Provider
+        # resolves cues from it, which reuses the pipeline's existing worker,
+        # deadline and cue-state machinery instead of adding a second path.
+        native_translation_bus: NativeTranslationBus | None = None
+        native = asr_provider.capabilities.native_translation
+        if native.enabled:
+            native_translation_bus = NativeTranslationBus()
+            asr_provider.set_translation_target(target_language)
+            translation_providers = [
+                NativeSessionTranslation(
+                    native_translation_bus,
+                    provider_id=f"{asr_id}:native",
+                    label=f"{asr_provider.label}（Provider 内置翻译）",
+                    model=asr_provider.model,
+                    target_tags=native.target_tags,
+                )
+            ]
+            translation_configs = [asr_config]
+            translation_pricing = {}
+        else:
+            translation_configs = [self._provider_record(config["translation"], translation_id)]
+            translation_configs.extend(
+                self._provider_record(config["translation"], provider_id)
+                for provider_id in config["translation"].get("fallback", [])
+                if provider_id != translation_id
+            )
+            translation_providers = [create_translation(item) for item in translation_configs]
+            translation_pricing = {
+                item["id"]: {
+                    "input": item.get("pricePerMillionInputTokensCny"),
+                    "cachedInput": item.get("pricePerMillionCachedInputTokensCny"),
+                    "cacheWrite": item.get("pricePerMillionCacheWriteTokensCny"),
+                    "output": item.get("pricePerMillionOutputTokensCny"),
+                    # The stored field names say Cny for historical reasons; this is
+                    # what those numbers are actually denominated in.
+                    "currency": provider_currency(item.get("kind"), item.get("currency")),
+                }
+                for item in translation_configs
+            }
+        primary_translation = FallbackChain(translation_providers) if len(translation_providers) > 1 else translation_providers[0]
         validate_translation_pair(
             source_policy.fallback_language,
             target_language,
@@ -1025,6 +1433,15 @@ class CompanionApplication:
             anchor_probe = None
             source_pts_mapper = None
 
+        # Some native ASR profiles (for example Qwen LiveTranslate) use a
+        # provider-specific string for turn detection, while the shared
+        # caption chunker only understands the optional dictionary used by the
+        # OpenAI-shaped profiles.  Do not let a catalog value from one
+        # protocol crash subtitle startup for every other profile.
+        turn_detection = asr_config.get("options", {}).get("turnDetection")
+        if not isinstance(turn_detection, dict):
+            turn_detection = {}
+
         pipeline = SubtitlePipeline(
             asr_provider=asr_provider,
             translation_provider=primary_translation,
@@ -1049,9 +1466,18 @@ class CompanionApplication:
             hold_minimum=float(subtitle.get("holdSecondsMin", 1.2)),
             hold_maximum=float(subtitle.get("holdSecondsMax", 7.0)),
             hold_seconds_per_char=float(subtitle.get("holdSecondsPerChar", 0.06)),
-            silence_duration_ms=int(asr_config.get("options", {}).get("turnDetection", {}).get("silenceDurationMs", 400)),
+            silence_duration_ms=int(turn_detection.get("silenceDurationMs", 400)),
             translation_workers=int(subtitle.get("translationWorkers", 4)),
-            translation_timeout_seconds=float(translation_configs[0].get("options", {}).get("timeoutSeconds", 6)),
+            # Session-backed translation waits for the Provider's own translation
+            # to be generated after the utterance is committed, so its budget is
+            # the Profile's own setting rather than a translation model's HTTP
+            # timeout.
+            translation_timeout_seconds=(
+                float(asr_config.get("options", {}).get("nativeTranslationTimeoutSeconds", 15.0))
+                if native_translation_bus is not None
+                else float(translation_configs[0].get("options", {}).get("timeoutSeconds", 6))
+            ),
+            native_translation_bus=native_translation_bus,
             context_pairs=int(translation_configs[0].get("options", {}).get("contextPairs", 10)),
             context_seconds=float(translation_configs[0].get("options", {}).get("contextSeconds", 90)),
             playback_delay_seconds=lambda: self.target_delay_seconds,
@@ -1122,6 +1548,7 @@ class CompanionApplication:
         clock that no longer exists.
         """
         self._source_clock_origins = None
+        self._source_clock_logged = False
         self._exact_mapping_refused = None
 
     def _leg_clock_state(self) -> tuple[str, str | None]:
@@ -1247,6 +1674,13 @@ class CompanionApplication:
         if self._source_clock_origins is None:
             # Latch the first pair that was valid. Later reads must match it.
             self._source_clock_origins = (audio_first, video_first)
+            if not self._source_clock_logged:
+                self._source_clock_logged = True
+                logbook.record(
+                    "info",
+                    "subtitle-clock",
+                    f"字幕源时钟已锁定：audio-video={offset:.3f}s",
+                )
         elif (audio_first, video_first) != self._source_clock_origins:
             # A leg re-based mid-session. The origins move but `_pcm_offset` does
             # not restart with them, so a fresh subtraction no longer describes
@@ -1669,7 +2103,8 @@ class CompanionApplication:
         }
 
     async def cleanup(self, _: web.Application) -> None:
-        await self._teardown_session()
+        await self._stop_recovery_monitor()
+        await asyncio.shield(self._session_operation(self._stop_session))
         if self.control is not None:
             await asyncio.to_thread(self.control.stop)
         with self.auth_lock:
@@ -1686,15 +2121,58 @@ class CompanionApplication:
         """
         self.session.request_stop()
         # Independent legs: sequential teardown only ever added their waits up.
-        await asyncio.gather(
+        outcomes = await asyncio.gather(
             self._stop_messages(),
             self._stop_subtitles(),
             self._stop_source_ingest(),
+            return_exceptions=True,
         )
-        await asyncio.to_thread(self.session.stop)
-        lease, self.auth_lease = self.auth_lease, None
-        if lease is not None:
-            lease.force_close()
+        try:
+            await asyncio.to_thread(self.session.stop)
+        finally:
+            lease, self.auth_lease = self.auth_lease, None
+            if lease is not None:
+                lease.force_close()
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
+
+
+def require_local_request(request: web.Request) -> None:
+    """Protect every local route against rebinding and cross-origin control.
+
+    Loopback is a bind boundary, not a browser-origin boundary: another site
+    can submit a simple POST without CORS permission. A different localhost
+    port is also a different origin. Non-browser clients (including FFmpeg and
+    the desktop proxy) may omit Origin; desktop requests additionally require
+    their private session token.
+    """
+    def origin_tuple(value: str) -> tuple[str, str | None, int]:
+        parsed = urllib.parse.urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or parsed.username is not None
+                or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
+                or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}):
+            raise ValueError("invalid local origin")
+        return parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    try:
+        target = origin_tuple(f"{request.scheme}://{request.headers.get('Host', '')}")
+        origin = request.headers.get("Origin")
+        if origin is not None and origin_tuple(origin) != target:
+            raise ValueError("different origin")
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":
+            raise ValueError("cross-site request")
+    except ValueError:
+        raise web.HTTPForbidden(
+            text=json.dumps({"error": "Only same-origin loopback requests are allowed"}),
+            content_type="application/json",
+        ) from None
+
+
+@web.middleware
+async def local_request_guard(request: web.Request, handler: Any) -> web.StreamResponse:
+    require_local_request(request)
+    return await handler(request)
 
 
 def _request_target(request: web.Request) -> str:
@@ -1757,7 +2235,7 @@ def main() -> int:
     app.middlewares.append(errors)
     print(f"[LingerLens] Prototype 2 player: http://{args.host}:{args.port}/")
     print(f"[LingerLens] Target total live delay: {DEFAULT_TARGET_DELAY_SECONDS:g}s")
-    print("[LingerLens] Cookies are accepted only through Native Messaging or the explicit development browser fallback.")
+    print("[LingerLens] Import Cookies in the player, through Native Messaging, or the explicit development browser fallback.")
     try:
         web.run_app(app, host=args.host, port=args.port, print=None, handle_signals=True)
     except OSError as error:
@@ -1767,7 +2245,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             print(
-                "[LingerLens] Close the other instance (or run: taskkill /IM python.exe /F) or start this one with --port 8766.",
+                "[LingerLens] Close the other Companion instance, or start this one with --port 8766.",
                 file=sys.stderr,
             )
             return 1

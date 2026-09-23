@@ -575,6 +575,9 @@ button[aria-busy="true"]::before {
 }
 .deck-actions { display: flex; gap: var(--s2); }
 .deck-feedback { margin: 0; padding: 0 var(--s4) var(--s3); font-size: 13px; color: var(--ink-70); }
+.role-mode-hint { padding-bottom: var(--s2); }
+.role-mode-hint[data-tone="native"] { color: var(--green); font-weight: 700; }
+.role-mode-hint[data-tone="separate"] { color: var(--ink-70); }
 
 /* ════════════ 选项卡（原型 362-380） ════════════ */
 .tabs {
@@ -1048,6 +1051,22 @@ video::-webkit-media-controls-fullscreen-button { display: none; }
   color: var(--speaker-color);
 }
 
+/* 草稿行：已经听到、但还没有成为字幕的话（Provider 自己还没结束这一轮）。
+   它是原文，所以用原文的字体和颜色，只压暗一档：读起来是“正在说”，不是“已定稿”。
+   它不是字幕条目，所以不进 .subtitle-content（那里按 cueId 对账会把它删掉）。 */
+.subtitle-draft {
+  font-family: var(--font-jp);
+  font-size: 1em;
+  font-weight: 700;
+  color: var(--subtitle-source-color);
+  opacity: .62;
+  justify-self: center;
+  max-width: 100%;
+  pointer-events: none;
+  unicode-bidi: isolate;
+}
+.subtitle-draft[hidden] { display: none; }
+
 /* 缓冲横幅（原型 657-677） */
 .stall-banner {
   position: absolute;
@@ -1331,13 +1350,15 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   transition: opacity var(--t-med) ease, transform var(--t-med) ease;
   z-index: 6;
 }
-.stage:hover .stage-controls,
+/* 全屏时指针必然落在舞台上，:hover 会一直为真，控制条就再也收不回去。所以这条
+   只对窗口模式生效；全屏下靠 player.js 的 pointermove -> controls-visible 走。 */
+.stage:not(:fullscreen):hover .stage-controls,
 .stage-controls:focus-within { opacity: 1; transform: translateY(0); }
-/* player.js 契约：controls-visible / is-paused / fullscreen 都要露出控制条，
-   并且 1.6 秒无操作后由脚本收回。这一段没有原型对应物，是纯行为规则。 */
+/* player.js 契约：controls-visible / is-paused 露出控制条，1.6 秒无操作后由脚本
+   收回。全屏不在这里常驻露出 —— fullscreenchange 时脚本已经先亮一次，常驻会把
+   全屏下的控制条钉死在屏幕上。这一段没有原型对应物，是纯行为规则。 */
 .player-stage.controls-visible .player-controls,
-.player-stage.is-paused .player-controls,
-.player-stage:fullscreen .player-controls { opacity: 1; transform: translateY(0); }
+.player-stage.is-paused .player-controls { opacity: 1; transform: translateY(0); }
 .seek-row {
   display: flex;
   align-items: center;
@@ -1433,7 +1454,9 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   letter-spacing: .06em;
   color: var(--ink-70);
 }
-.vol-pop { min-width: 0; }
+/* 音量按钮是控制行里最靠左的一个，弹层若沿用 .ctl-pop 的右对齐，216px 的小板会
+   从按钮左边缘继续往左伸，直接压到播放器外面去。改成与按钮左边缘对齐。 */
+.vol-pop { min-width: 0; left: 0; right: auto; }
 .vol-pop-row { display: flex; align-items: center; gap: var(--s2); }
 .vol-pop-row input[type="range"] { width: 132px; height: 32px; flex: none; }
 .vol-pop-row b { font-size: 12px; min-width: 44px; text-align: right; }
@@ -1569,6 +1592,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   padding: var(--s4) var(--s5);
 }
 .role-field select { font-weight: 700; }
+.role-availability { color: var(--rose); font-size: 11px; font-weight: 800; line-height: 1.3; }
 
 /* ════════════ 03 设置组：三列同构（原型 1042-1120） ════════════ */
 .settings-grid {
@@ -1834,6 +1858,20 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
 .provider-profile-head strong { font-size: 14px; font-weight: 900; }
 .provider-profile-head code { color: var(--ink-45); font-size: 11px; }
 .provider-profile-head .provider-delete { margin-left: auto; }
+/* 推荐档位标记：端到端双语的两个 Provider（Soniox / 千问 LiveTranslate）。 */
+.recommended-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--s2);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: #FFF6D9;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+  cursor: help;
+}
 .provider-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1843,6 +1881,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
 .provider-fields .wide { grid-column: 1 / -1; }
 .provider-fields > label { display: grid; gap: var(--s1); min-width: 0; }
 .provider-fields > label > span { font-size: 12px; font-weight: 700; color: var(--ink-70); }
+.provider-fields .provider-hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-45); }
 .provider-fields small { font-size: 11px; color: var(--ink-45); }
 .provider-fields details {
   border: 2px dashed var(--ink-45);

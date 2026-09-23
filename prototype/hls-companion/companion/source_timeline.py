@@ -70,22 +70,28 @@ class MpegTsPtsProbe:
 
     def feed(self, data: bytes) -> list[float]:
         self._buffer.extend(data)
-        found: list[float] = []
-        while len(self._buffer) >= TS_PACKET:
-            if self._buffer[0] != 0x47:
-                sync = next((i for i in range(min(len(self._buffer), TS_PACKET)) if i + TS_PACKET * 2 < len(self._buffer) and self._buffer[i] == self._buffer[i + TS_PACKET] == self._buffer[i + TS_PACKET * 2] == 0x47), None)
+        found = []
+        cursor = 0
+        size = len(self._buffer)
+        while size - cursor >= TS_PACKET:
+            if self._buffer[cursor] != 0x47:
+                sync = next((i for i in range(cursor, size - 2 * TS_PACKET)
+                             if self._buffer[i] == self._buffer[i + TS_PACKET] == self._buffer[i + 2 * TS_PACKET] == 0x47), None)
                 if sync is None:
-                    del self._buffer[:-TS_PACKET * 2]
+                    cursor = max(cursor, size - 2 * TS_PACKET)
                     break
-                del self._buffer[:sync]
-            packet = bytes(self._buffer[:TS_PACKET])
-            del self._buffer[:TS_PACKET]
-            value = self._packet(packet)
+                cursor = sync
+            value = self._packet(bytes(self._buffer[cursor:cursor + TS_PACKET]))
+            cursor += TS_PACKET
             if value is not None:
                 found.append(value)
+        # Compact once per read, not once per 188-byte packet.
+        del self._buffer[:cursor]
         return found
 
     def _packet(self, packet: bytes) -> float | None:
+        if len(packet) != TS_PACKET or packet[0] != 0x47 or packet[1] & 0x80:
+            return None
         pid = ((packet[1] & 0x1F) << 8) | packet[2]
         start = bool(packet[1] & 0x40)
         adaptation = (packet[3] >> 4) & 3
@@ -93,6 +99,8 @@ class MpegTsPtsProbe:
         discontinuity = False
         if adaptation in (2, 3):
             length = packet[pos]
+            if pos + 1 + length > TS_PACKET:
+                return None
             # The discontinuity_indicator is bit 7 of the adaptation field's
             # first flag byte, which the code below steps over. It has to be read
             # here or it is lost, and it is the only signal that separates a real
@@ -100,13 +108,17 @@ class MpegTsPtsProbe:
             if length > 0:
                 discontinuity = bool(packet[pos + 1] & 0x80)
             pos += 1 + length
+        if discontinuity and pid == self._media_pid:
+            self._invalidate("transport-discontinuity")
+            return None
         if adaptation not in (1, 3) or pos >= TS_PACKET:
             return None
         payload = packet[pos:]
         if start and payload[:3] == b"\x00\x00\x01" and len(payload) >= 14:
             stream_id = payload[3]
             is_audio = 0xC0 <= stream_id <= 0xDF
-            if is_audio == self.want_audio and self._media_pid is None:
+            selected_type = is_audio if self.want_audio else 0xE0 <= stream_id <= 0xEF
+            if selected_type and self._media_pid is None:
                 self._media_pid = pid
         if pid != self._media_pid:
             # Another PID's discontinuity flag describes a different stream and
@@ -117,7 +129,13 @@ class MpegTsPtsProbe:
             return None
         if not start or payload[:3] != b"\x00\x00\x01" or len(payload) < 14:
             return None
-        if (payload[7] & 0xC0) != 0x80:
+        flags = payload[7] & 0xC0
+        needed = 10 if flags == 0xC0 else 5
+        if flags not in (0x80, 0xC0) or payload[8] < needed or len(payload) < 9 + needed:
+            return None
+        pts = payload[9:14]
+        prefix = 0x30 if flags == 0xC0 else 0x20
+        if pts[0] & 0xF0 != prefix or not all(pts[i] & 1 for i in (0, 2, 4)):
             return None
         if not self.clock_valid:
             # Nothing here may quietly re-establish trust: the same packets that

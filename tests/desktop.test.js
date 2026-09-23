@@ -50,167 +50,103 @@ test('dev logging stays off unless something asks for it', () => {
   }
 });
 
-test('dev logging accepts a boolean switch and a file path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
-  const original = process.stderr.write;
-  const seen = [];
-  process.stderr.write = chunk => { seen.push(chunk); return true; };
+test('dev logging accepts explicit terminal mode and asynchronous file mode', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),'lingerlens-log-'));
+  const original=process.stderr.write; const seen=[];
+  process.stderr.write=chunk=>{seen.push(chunk);return true;};
   try {
-    const terminal = createDevLog({ LINGERLENS_BACKEND_LOG: '1' });
-    assert.equal(terminal.state().enabled, false, 'terminal-only writes no file');
-    assert.equal(terminal.state().active, true);
-    terminal.write('to terminal\n');
-    assert.deepEqual(seen, ['to terminal\n']);
-
-    const target = path.join(dir, 'backend.log');
-    const tee = createDevLog({ LINGERLENS_BACKEND_LOG: target });
-    assert.deepEqual(tee.state(),
-      { enabled: true, file: target, error: null, lines: 0, terminalOnly: false, active: true });
-    tee.write('to both\n');
-    assert.deepEqual(seen, ['to terminal\n', 'to both\n']);
-    assert.equal(fs.readFileSync(target, 'utf8'), 'to both\n');
-  } finally {
-    process.stderr.write = original;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    const terminal=createDevLog({LINGERLENS_BACKEND_LOG:'1'});
+    assert.equal(terminal.state().active,true);
+    assert.equal(terminal.state().enabled,false);
+    terminal.write('terminal');
+    const target=path.join(dir,'run.log');
+    const log=createDevLog({LINGERLENS_BACKEND_LOG:target});
+    assert.equal(log.state().pending,true);
+    log.write('file');
+    assert.equal(await log.flush(),true);
+    assert.equal(log.state().enabled,true);
+    assert.equal(log.state().file,target);
+    assert.equal(fs.readFileSync(target,'utf8'),'file');
+    assert.deepEqual(seen,['terminal'],'file mode never blocks on redirected stderr');
+    await log.close();
+  } finally {process.stderr.write=original;fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-/*
- * The packaged build has no launcher script to set an environment variable
- * before start-up, so this is the only route a normal user has: arm it from
- * the diagnostics bar while the app is already running.
- */
-test('logging can be armed and disarmed while the app is running', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
-  const original = process.stderr.write;
-  process.stderr.write = () => true;
+test('logging can be armed and disarmed without cross-file contamination',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lingerlens-log-'));
+  const log=createDevLog({});
   try {
-    const log = createDevLog({});
-    assert.equal(log.state().active, false, 'a bare app records nothing');
-
-    const first = path.join(dir, 'first.log');
-    log.arm(first, 'header one\n');
-    assert.deepEqual(log.state(),
-      { enabled: true, file: first, error: null, lines: 0, terminalOnly: false, active: true });
-    assert.equal(fs.readFileSync(first, 'utf8'), 'header one\n', 'the header lands immediately');
-    log.write('backend said something\n');
-
-    // Disarming must stop the writes rather than just hide the badge.
-    log.disarm();
-    assert.equal(log.state().active, false);
-    assert.equal(log.state().file, null);
-    log.write('after disarm\n');
-    assert.equal(fs.readFileSync(first, 'utf8'), 'header one\nbackend said something\n');
-
-    // Re-arming starts a new file with its own line count.
-    const second = path.join(dir, 'second.log');
-    log.arm(second, 'header two\n');
-    assert.equal(log.state().lines, 0);
-    assert.equal(fs.readFileSync(second, 'utf8'), 'header two\n');
-    assert.equal(fs.readFileSync(first, 'utf8'), 'header one\nbackend said something\n',
-      'the earlier file is left alone');
-  } finally {
-    process.stderr.write = original;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    const first=path.join(dir,'first.log'),second=path.join(dir,'second.log');
+    log.arm(first,'header1'); log.write('before');
+    log.disarm(); assert.equal(log.write('discarded'),false);
+    log.arm(second,'header2'); log.write('after');
+    assert.equal(await log.flush(),true);
+    assert.equal(fs.readFileSync(first,'utf8'),'header1before');
+    assert.equal(fs.readFileSync(second,'utf8'),'header2after');
+    assert.equal(log.state().lines,0);
+    await log.close(); assert.equal(log.state().active,false);
+  } finally {await log.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('a user-requested log lands next to the app data', () => {
-  const file = defaultLogPath('C:\\Users\\someone\\AppData\\Roaming\\lingerlens',
-    new Date(2026, 8, 15, 16, 24, 1));
-  assert.equal(file,
-    path.join('C:\\Users\\someone\\AppData\\Roaming\\lingerlens', 'logs', 'lingerlens-20260915-162401.log'));
-  // No colons anywhere: the stamp goes into a filename on Windows.
-  assert.doesNotMatch(path.basename(file), /[:*?"<>|]/);
+test('a user-requested log lands next to the app data',()=>{
+  const file=defaultLogPath('user-data',new Date(2026,8,15,16,24,1));
+  assert.equal(file,path.join('user-data','logs','lingerlens-20260915-162401.log'));
+  assert.doesNotMatch(path.basename(file),/[:*?"<>|]/);
 });
 
-/*
- * The whole point of the switch is to leave evidence behind. It used to fail
- * open: a path whose directory did not exist fell back to the terminal, and
- * Electron is a GUI-subsystem binary with no terminal attached -- so a run
- * could log nothing for an hour and never say so.
- */
-test('a dev log path creates its parent directory instead of silently doing nothing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
-  const original = process.stderr.write;
-  process.stderr.write = () => true;
+test('a dev log creates parent directories asynchronously',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lingerlens-log-'));
+  const target=path.join(dir,'nested','deeper','run.log');
+  const log=createDevLog({LINGERLENS_BACKEND_LOG:target});
   try {
-    const target = path.join(dir, 'nested', 'deeper', 'run.log');
-    const log = createDevLog({ LINGERLENS_BACKEND_LOG: target });
-    assert.equal(log.state().error, null);
-    assert.equal(log.state().enabled, true);
-    log.write('created\n');
-    assert.equal(fs.readFileSync(target, 'utf8'), 'created\n');
-  } finally {
-    process.stderr.write = original;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    log.write('created'); assert.equal(await log.flush(),true);
+    assert.equal(log.state().error,null);
+    assert.equal(fs.readFileSync(target,'utf8'),'created');
+  } finally {await log.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('an unwritable dev log path keeps the player alive but reports the failure', () => {
-  const original = process.stderr.write;
-  process.stderr.write = () => true;
+test('an unwritable path reports failure after initialization without throwing',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lingerlens-log-'));
+  const log=createDevLog({LINGERLENS_BACKEND_LOG:dir});
   try {
-    // A directory cannot be opened for appending on Windows, which makes this a
-    // portable way to force the failure without touching permissions.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
-    try {
-      const log = createDevLog({ LINGERLENS_BACKEND_LOG: dir });
-      const state = log.state();
-      assert.equal(state.enabled, false);
-      assert.equal(state.file, dir, 'the path that failed is still reportable');
-      assert.match(state.error, /^[A-Z]+:/, 'the error keeps its code');
-      assert.doesNotThrow(() => log.write('still alive\n'));
-      assert.equal(log.writeLines(['nope']), 0);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  } finally {
-    process.stderr.write = original;
-  }
+    assert.equal(await log.flush(),false);
+    const state=log.state();
+    assert.equal(state.enabled,false); assert.equal(state.pending,false);
+    assert.equal(state.file,dir); assert.match(state.error,/^EISDIR:/);
+    assert.doesNotThrow(()=>log.write('still alive'));
+    assert.equal(log.writeLines(['nope']),0);
+  } finally {await log.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('diagnostic lines are capped, flattened and counted', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
-  const original = process.stderr.write;
-  process.stderr.write = () => true;
+test('diagnostic lines are flattened, capped, accepted and eventually persisted',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lingerlens-log-'));
+  const target=path.join(dir,'run.log');
+  const log=createDevLog({LINGERLENS_BACKEND_LOG:target});
   try {
-    const target = path.join(dir, 'run.log');
-    const log = createDevLog({ LINGERLENS_BACKEND_LOG: target });
-    assert.equal(log.writeLines([]), 0, 'nothing to write is not a write');
-    assert.equal(log.writeLines(['  ', '\n']), 0, 'blank entries are not records');
-    assert.equal(log.writeLines(['a\r\nb']), 1, 'an embedded newline must not forge a line');
-    assert.equal(log.state().lines, 1);
-    log.writeLines(Array.from({ length: 500 }, (_, index) => `line ${index}`));
-    assert.equal(log.state().lines, 1 + MAX_LINES_PER_POST, 'a single post is bounded');
-    const written = fs.readFileSync(target, 'utf8').split('\n').filter(Boolean);
-    assert.equal(written.length, 1 + MAX_LINES_PER_POST);
-    assert.deepEqual(written.slice(0, 2), ['a b', 'line 0']);
-  } finally {
-    process.stderr.write = original;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    assert.equal(log.writeLines([]),0); assert.equal(log.writeLines([' ']),0);
+    assert.equal(log.writeLines(['a'+String.fromCharCode(13,10)+'b']),1);
+    log.writeLines(Array.from({length:500},(_,i)=>`line ${i}`));
+    assert.equal(log.state().lines,1+MAX_LINES_PER_POST);
+    assert.equal(await log.flush(),true);
+    const written=fs.readFileSync(target,'utf8').split(String.fromCharCode(10)).filter(Boolean);
+    assert.equal(written.length,1+MAX_LINES_PER_POST);
+    assert.deepEqual(written.slice(0,2),['a b','line 0']);
+    assert.equal(log.state().queuedBytes,0);
+  } finally {await log.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('a dev log that disappears mid-run stops writing but never throws', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-log-'));
-  const original = process.stderr.write;
-  process.stderr.write = () => true;
+test('a removed log directory stops recording and reports an asynchronous error',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lingerlens-log-'));
+  const log=createDevLog({LINGERLENS_BACKEND_LOG:path.join(dir,'run.log')});
   try {
-    const target = path.join(dir, 'run.log');
-    const log = createDevLog({ LINGERLENS_BACKEND_LOG: target });
-    log.write('before\n');
-    // An entire directory removed underneath a long run, e.g. someone tidying up.
-    fs.rmSync(dir, { recursive: true, force: true });
-    assert.doesNotThrow(() => log.write('after\n'));
-    const state = log.state();
-    assert.equal(state.enabled, false, 'a broken file must not keep claiming to record');
-    assert.match(state.error, /^[A-Z]+:/);
-    assert.equal(log.writeLines(['nope']), 0);
-  } finally {
-    process.stderr.write = original;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    log.write('before'); await log.flush();
+    fs.rmSync(dir,{recursive:true,force:true});
+    assert.doesNotThrow(()=>log.write('after'));
+    assert.equal(await log.flush(),false);
+    assert.equal(log.state().enabled,false);
+    assert.match(log.state().error,/^[A-Z]+:/);
+    assert.equal(log.writeLines(['nope']),0);
+  } finally {await log.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
 test('log headers carry local wall-clock time, not UTC', () => {
@@ -250,6 +186,10 @@ test('a manifest is rejected unless every field the installer step needs is soun
     ['short sha', { ...good, installer: { ...good.installer, sha256: 'abc' } }],
     ['non-hex sha', { ...good, installer: { ...good.installer, sha256: 'z'.repeat(64) } }],
     ['zero size', { ...good, installer: { ...good.installer, size: 0 } }],
+    ['fractional size', { ...good, installer: { ...good.installer, size: 1.5 } }],
+    ['coerced size', { ...good, installer: { ...good.installer, size: '1024' } }],
+    ['unsafe size', { ...good, installer: { ...good.installer, size: Number.MAX_SAFE_INTEGER + 1 } }],
+    ['url credentials', { ...good, installer: { ...good.installer, url: 'https://user:password@example.test/a.exe' } }],
     ['string size', { ...good, installer: { ...good.installer, size: 'big' } }],
     ['no installer', { version: '0.2.0' }],
     ['bad version', { ...good, version: 'latest' }],
@@ -259,6 +199,62 @@ test('a manifest is rejected unless every field the installer step needs is soun
   for (const [label, payload] of broken) {
     assert.equal(updater.readManifest(payload), null, `${label} must be rejected`);
   }
+});
+
+test('version identifiers cannot escape the installer directory and follow prerelease ordering', () => {
+  for (const version of ['1.2.3-../../outside', '1.2.3-..\\outside', '1.2.3-x/y',
+    '1.2.3-', '1.2.3-rc..1', '1.2.3-01', '01.2.3', '1.2.3.4', '9007199254740992.0.0']) {
+    assert.equal(updater.parseVersion(version), null, version);
+  }
+  assert.equal(updater.compareVersions('1.2.3+build.7', '1.2.3'), 0);
+  assert.equal(updater.compareVersions('1.2.3-rc.10', '1.2.3-rc.9'), 1);
+  assert.equal(updater.compareVersions('1.2.3-rc.1', '1.2.3-rc'), 1);
+  assert.equal(updater.compareVersions('1.2.3-1', '1.2.3-alpha'), -1);
+  assert.equal(updater.compareVersions('1.2.3-rc.9+build', '1.2.3-rc.10'), -1);
+});
+
+test('a chunked download stops as soon as it exceeds the declared size', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-overflow-'));
+  const destination = path.join(dir, 'setup.exe');
+  let chunksRead = 0;
+  try {
+    await assert.rejects(updater.downloadVerified({
+      url: 'https://example.test/a.exe', sha256: 'a'.repeat(64), size: 4, destination,
+      fetchImpl: async () => ({ ok: true, headers: { get: () => null },
+        body: (async function* () { for (let i = 0; i < 10; i++) { chunksRead++; yield Buffer.from('1234'); } })() }),
+    }), /exceeds manifest size/);
+    assert.equal(chunksRead, 2);
+    assert.equal(fs.existsSync(destination), false);
+    assert.equal(fs.existsSync(`${destination}.part`), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a failed refresh cannot reuse a previous update offer', async () => {
+  let calls = 0;
+  const instance = updater.createUpdater({ currentVersion: '0.1.0', fetch: async () => {
+    if (++calls > 1) throw new Error('offline');
+    return { ok: true, json: async () => manifestFor('0.2.0', 'https://example.test/a.exe', Buffer.from('x'), 'a'.repeat(64)) };
+  } });
+  assert.equal((await instance.check()).status, 'available');
+  assert.equal((await instance.check()).status, 'failed');
+  assert.equal(instance.getState().update, null);
+  assert.match((await instance.download('unused.exe')).error, /nothing to download/);
+});
+
+test('repeated download and check requests do not race an in-progress download', async () => {
+  let finish;
+  let downloads = 0;
+  const instance = updater.createUpdater({ currentVersion: '0.1.0',
+    fetch: fetchJsonOnce(manifestFor('0.2.0', 'https://example.test/a.exe', Buffer.from('x'), 'a'.repeat(64))),
+    download: async () => { downloads++; return new Promise(resolve => { finish = resolve; }); },
+  });
+  await instance.check();
+  const pending = instance.download('unused.exe');
+  assert.equal((await instance.download('unused.exe')).status, 'downloading');
+  assert.equal((await instance.check()).status, 'downloading');
+  assert.equal(downloads, 1);
+  finish({ path: 'unused.exe', bytes: 1 });
+  assert.equal((await pending).status, 'ready');
 });
 
 test('the manifest url is fixed unless a trusted override is given', () => {

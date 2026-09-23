@@ -41,7 +41,7 @@ test("release guard rejects private runtime paths without printing contents", ()
 });
 
 test("release guard rejects credential assignments without printing values", () => {
-  const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz012345";
+  const secret = "sk-proj-" + "abcdefghijklmnopqrstuvwxyz012345";
   const result = runGuard({ "config/local.json": `{"apiKey":"${secret}"}` });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /credential material/i);
@@ -58,10 +58,27 @@ test("release guard rejects media, logs, caches, and agent state", () => {
     "release/LingerLens-setup.exe",
     "build-desktop/backend/runtime.json",
     ".venv-desktop/pyvenv.cfg",
+    ".venv-audit/pyvenv.cfg",
+    ".venv/pyvenv.cfg",
+    ".scratch/experiment.json",
+    ".agent/session.json",
+    "prototype/hls-companion/runtime/control.secret",
+    "private/cookies.txt",
   ]) {
     const result = runGuard({ [relative]: "fixture" });
     assert.notEqual(result.status, 0, relative);
     assert.doesNotMatch(result.stderr + result.stdout, /fixture/);
+  }
+});
+
+test("provider tokens cannot hide in documentation, fixtures, examples, or large text files", () => {
+  const secret = "ghp_" + "0123456789abcdefghijklmnopqrstuvwx";
+  for (const relative of ["docs/setup.md", "tests/fixture.json", ".env.example", "docs/large.md"]) {
+    const padding = relative.endsWith("large.md") ? "a".repeat(2 * 1024 * 1024) : "";
+    const result = runGuard({ [relative]: padding + "\n" + secret });
+    assert.notEqual(result.status, 0, relative);
+    assert.match(result.stderr, /provider token/);
+    assert.ok(!(result.stdout + result.stderr).includes(secret));
   }
 });
 

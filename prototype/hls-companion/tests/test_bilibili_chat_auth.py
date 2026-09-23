@@ -30,6 +30,16 @@ class Tests(unittest.IsolatedAsyncioTestCase):
   for _,kw in session.get_calls:
    self.assertEqual(kw['headers']['Cookie'],'SESSDATA=test-only')
    self.assertEqual(kw['headers']['Accept-Encoding'],'identity')
+
+ async def test_danmu_info_uses_wbi_signature_and_web_location(self):
+  x=BilibiliDanmakuIngest('https://live.bilibili.com/30858592',LiveMessageStore())
+  session=_FakeHttpSession(_FakeWs([])); x._session=session
+  with patch('companion.bilibili_danmaku_ingest.time.time',return_value=1700000000):
+   await x._resolve_connection()
+  params=session.get_calls[1][1]['params']
+  self.assertEqual(params['web_location'],'0.0')
+  self.assertEqual(params['wts'],'1700000000')
+  self.assertEqual(params['w_rid'],'80e18a8ada7b3281d57337b39c85ca7f')
  def test_authentication_must_succeed(self):
   x=BilibiliDanmakuIngest('https://live.bilibili.com/30858592',LiveMessageStore())
   with self.assertRaises(RuntimeError): x.feed_bytes_for_test(encode_packet(OP_ENTER_ROOM_REPLY,b'{"code":-101}'))

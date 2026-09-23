@@ -172,7 +172,7 @@ LingerLens 不再把“一个 ASR final”当成一个显示 Cue。Adapter 先�
 
 安装新增依赖：`python -m pip install -r prototype/hls-companion/companion/requirements.txt`。日语词典在进程中复用，不产生在线模型费用；已有 Companion 进程需要重启才能加载代码。
 
-示例 `runtime/providers.example.json` 已包含 `local-whisper` 记录。Speaches/faster-whisper-server 通常可直接使用上述本机 URL；Xinference 请把 Base URL 改为其 OpenAI-compatible API 根路径并使用已启动模型的 ID。
+示例 `runtime/providers.example.json` 没有预置本地 Whisper 记录；使用 Speaches/faster-whisper-server 时，请在模型设置中新增 `openai-audio-transcriptions`，把 Base URL 改为本机服务的 OpenAI-compatible API 根路径，并填写已启动模型的 ID。Xinference 也按同样方式配置。
 
 ## 翻译 Provider（OpenAI 兼容 / Claude / Gemini）
 
