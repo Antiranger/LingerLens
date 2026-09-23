@@ -78,3 +78,21 @@ The first package audit correctly rejected the new `desktop/health.cjs` because 
 Backend freeze succeeded, frozen third-party notice coverage passed, and an unpacked Windows desktop build succeeded. The actual executable was started with a fresh smoke-only user-data directory and file diagnostics enabled. `/api/status` and `/api/languages` returned 200, model settings loaded, and the bundled FFmpeg/HLS path played synthetic media to 0.343053 seconds. Exit code was zero and the owned backend exited. The startup GPU snapshot reported software features even on the normal Chromium path; this is not evidence of hardware decoding or a stutter improvement.
 
 The executable is `release/win-unpacked/LingerLens.exe` in the hardening worktree. No installer was published, the user's running app was not replaced, and smoke credentials/configuration were isolated from the user's desktop profile. Normal manual startup still uses the application's normal desktop user-data directory.
+
+## Final local verification — supersedes pending checks above
+
+The complete `npm run ci` was rerun on a clean detached checkout of `a12bff9c9bc9654326fbc352022db657bdfce0ec`, including the final package-manifest correction, and exited with code **0**. The verification checkout's tracked working tree is clean.
+
+| Gate | Observed result |
+| --- | --- |
+| Python discovery | 74 files: 73 passed; one optional Streamlink file skipped because `streamlink` is not installed. 855 counted tests passed. |
+| Actual browser | Both script-style browser suites passed; these are additional to the counted Python unit tests. |
+| Frontend Node | 229 passed; zero failures. |
+| Root Node | 45 passed; zero failures, including the four real-ASAR/package-isolation cases. |
+| Source/release checks | Secret/release, tracked paths, Python imports, notices, docs, Python compile and JavaScript syntax checks passed. |
+
+Total counted passing tests: **1,129**, plus the two actual-browser scripts. Local evidence is `.scratch/hardening-20260923/clean-npm-ci-release.log`; intermediate failures remain in separate logs. This final run replaces neither real paid-provider acceptance nor extended live soak testing.
+
+The branch was pushed to the existing private repository. Draft PR #1 targets `wip/subtitle-anchor-correction`; nothing was merged, tagged, published or installed over the existing application. The subsequent execution-record commit changes documentation only; the code validated and packaged remains `a12bff9`.
+
+Outstanding implementation and release gates remain explicit: client VAD/commit for blocked modes, native response-ID/cancellation and script-specific output, common-audio fan-out, live provider/region/language acceptance, original severe-freeze reproduction, and real platform outage/discontinuity soak. No unconditional latency or audiovisual synchronization guarantee is made.
