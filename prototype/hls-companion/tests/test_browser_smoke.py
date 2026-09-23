@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import json
 import tempfile
 from pathlib import Path
@@ -71,7 +72,7 @@ async def run() -> None:
     async with async_playwright() as playwright:
         # The player opens in whatever language the browser reports, and every assertion
         # below reads Chinese UI text, so this page has to say it speaks Chinese.
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=True, executable_path=os.environ.get("LINGERLENS_TEST_CHROMIUM") or None)
         page = await browser.new_page(viewport={"width": 2000, "height": 1100}, locale="zh-CN")
         errors_seen: list[str] = []
         page.on("pageerror", lambda error: errors_seen.append(str(error)))

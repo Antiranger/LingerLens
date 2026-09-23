@@ -164,6 +164,11 @@ const I18N = (() => {
 
   const DICT = {
     en: {
+      "grp.bilingualExperimental": "Bilingual (experimental)",
+      "dlg.model.effective": "Saved configuration (next start)",
+      "provider.tier.candidate": "Acceptance candidate",
+      "provider.tier.experimental": "Experimental",
+      "provider.tier.blocked": "Unavailable",
       "state.idle": "Not started", "state.notRunning": "Not running",
       "follow.current": "Following", "follow.back": "Back to live",
       "empty.subs.ready": "Waiting for subtitles…", "empty.chat.none": "No live messages on screen yet",
@@ -469,6 +474,11 @@ const I18N = (() => {
       "action.stopping": "Stopping",
     },
     ja: {
+      "grp.bilingualExperimental": "バイリンガル（実験的）",
+      "dlg.model.effective": "保存済み設定（次回起動時）",
+      "provider.tier.candidate": "実地検証待ち",
+      "provider.tier.experimental": "実験的",
+      "provider.tier.blocked": "利用不可",
       "state.idle": "未開始", "state.notRunning": "未実行",
       "follow.current": "追従中", "follow.back": "現在地へ戻る",
       "empty.subs.ready": "字幕生成を待機…", "empty.chat.none": "この画面にはまだコメントがありません",
@@ -774,6 +784,11 @@ const I18N = (() => {
       "action.stopping": "停止中",
     },
     de: {
+      "grp.bilingualExperimental": "Zweisprachig (experimentell)",
+      "dlg.model.effective": "Gespeicherte Konfiguration (nächster Start)",
+      "provider.tier.candidate": "Abnahme ausstehend",
+      "provider.tier.experimental": "Experimentell",
+      "provider.tier.blocked": "Nicht verfügbar",
       "state.idle": "Nicht gestartet", "state.notRunning": "Nicht aktiv",
       "follow.current": "Folgt", "follow.back": "Zurück zum Livepunkt",
       "empty.subs.ready": "Warte auf Untertitel…", "empty.chat.none": "Noch keine Live-Nachrichten im Bild",
@@ -1079,6 +1094,11 @@ const I18N = (() => {
       "action.stopping": "Stoppt",
     },
     ru: {
+      "grp.bilingualExperimental": "Двуязычный режим (экспериментальный)",
+      "dlg.model.effective": "Сохранённые настройки (следующий запуск)",
+      "provider.tier.candidate": "Ожидает проверки",
+      "provider.tier.experimental": "Экспериментально",
+      "provider.tier.blocked": "Недоступно",
       "state.idle": "Не запущено", "state.notRunning": "Не активно",
       "follow.current": "Слежение", "follow.back": "К текущему моменту",
       "empty.subs.ready": "Ожидание субтитров…", "empty.chat.none": "На экране пока нет сообщений",
@@ -1387,6 +1407,11 @@ const I18N = (() => {
 
   /* zh-CN 需要写死的动态文案（DOM 捕获不到） */
   const ZH_DYNAMIC = {
+      "grp.bilingualExperimental": "端到端双语（实验性 · 需逐场验收）",
+      "dlg.model.effective": "已保存配置（下次启动使用）",
+      "provider.tier.candidate": "待实况验收",
+      "provider.tier.experimental": "实验性",
+      "provider.tier.blocked": "暂不可用",
     "state.idle": "未启动", "state.notRunning": "未运行",
     "follow.current": "跟随当前", "follow.back": "回到当前",
     "empty.subs.ready": "等待字幕生成...", "empty.chat.none": "当前画面尚无直播消息",
@@ -1660,20 +1685,6 @@ const I18N = (() => {
     "followSubtitlesBtn", "followChatBtn", "mediaLoadingText",
   ];
 
-  // Release readiness labels are UI text, never applied to user content.
-  ZH_DYNAMIC['grp.bilingualExperimental'] = '端到端双语（实验性 · 需逐场验收）';
-  ZH_DYNAMIC['dlg.model.effective'] = '已保存配置（下次启动使用）';
-  ZH_DYNAMIC['provider.tier.candidate'] = '待实况验收';
-  ZH_DYNAMIC['provider.tier.experimental'] = '实验性';
-  ZH_DYNAMIC['provider.tier.blocked'] = '暂不可用';
-  for (const [locale, labels] of Object.entries({
-    en: ['Bilingual (experimental)', 'Saved configuration (next start)', 'Acceptance candidate', 'Experimental', 'Unavailable'],
-    ja: ['バイリンガル（実験的）', '保存済み設定（次回起動時）', '実地検証待ち', '実験的', '利用不可'],
-    de: ['Zweisprachig (experimentell)', 'Gespeicherte Konfiguration (nächster Start)', 'Abnahme ausstehend', 'Experimentell', 'Nicht verfügbar'],
-    ru: ['Двуязычный режим (экспериментальный)', 'Сохранённые настройки (следующий запуск)', 'Ожидает проверки', 'Экспериментально', 'Недоступно'],
-  })) {
-    ['grp.bilingualExperimental','dlg.model.effective','provider.tier.candidate','provider.tier.experimental','provider.tier.blocked'].forEach((key,index) => { DICT[locale][key] = labels[index]; });
-  }
   const DEFAULT_LOCALE = "zh-CN";
   const zhDefaults = new Map();
   let current = DEFAULT_LOCALE;

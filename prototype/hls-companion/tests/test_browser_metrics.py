@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -36,7 +37,7 @@ async def run() -> None:
             async with async_playwright() as playwright:
                 # Assertions read Chinese UI text before the locale loop below switches
                 # it, and the player now opens in the browser language, so pin it.
-                browser = await playwright.chromium.launch(headless=True)
+                browser = await playwright.chromium.launch(headless=True, executable_path=os.environ.get("LINGERLENS_TEST_CHROMIUM") or None)
                 page = await browser.new_page(viewport={"width": 1680, "height": 1100}, locale="zh-CN")
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))

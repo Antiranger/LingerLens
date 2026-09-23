@@ -68,6 +68,8 @@ def _canonical_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
 
 @register("dashscope-task-asr")
 class DashScopeTaskASRProvider(ASRProvider):
+    requires_api_key = True
+
     def __init__(self, config: dict[str, Any]):
         self.id = config["id"]
         self.label = config.get("label", self.id)

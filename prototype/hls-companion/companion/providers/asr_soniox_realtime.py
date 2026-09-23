@@ -663,6 +663,7 @@ class _SonioxStream(ASRStream):
             return
         if not self._translation_anchors or self._translation_anchors[-1][1] != pending[1]:
             self._translation_anchors.append(pending)
+            del self._translation_anchors[:-64]  # Diagnostic-only bounded history.
 
     def _take_translation(self) -> str:
         """Claim the open utterance's translation and start a fresh bucket.
