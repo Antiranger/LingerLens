@@ -1,0 +1,2 @@
+# Browser contract tests, isolated from runtime/installer dependencies.
+playwright==1.56.0

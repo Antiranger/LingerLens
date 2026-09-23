@@ -62,3 +62,8 @@ A duration-capped cloud fixture tool is available in `scripts/provider-live-acce
 Test-only Playwright 1.56.0 and its dependencies were installed under this worktree's ignored `.scratch/hardening-20260923/browser-deps`, not into the original development environment. Both actual-browser suites pass against a fresh headless Chrome profile (metrics: 4.2 s; smoke: 22.4 s). Node frontend: 228 passing; root suite: 41 passing.
 
 The first detached Python full run showed unusual child-process startup delays and one timeout. Its processes were stopped; an isolated replay passed all 54 caption cases in 3.7 s. A fresh serialized full run is required before closing the gate; no root cause for the detached-run delay is asserted.
+
+### Full-suite follow-up
+The first serialized full Python run executed 854 counted tests across 74 files: 72 files passed, one optional Streamlink file was skipped, and the provider selection test failed because its saved fake ASR profile had no credential. Production now correctly rejects missing DashScope credentials before startup. The fixture supplies a clearly fake credential; a new test explicitly verifies that missing keys for both DashScope task/realtime profiles fail before pipeline start. All 51 server provider tests pass. No production validation was relaxed.
+
+GitHub CI now invokes the Python import guard directly (it uses individual npm commands rather than the aggregate `ci` script), and installs a pinned test-only Playwright plus Chromium so actual browser tests cannot silently skip for a missing dependency. Runtime and installer requirements remain unchanged. Optional Streamlink is not bundled and is reported separately.

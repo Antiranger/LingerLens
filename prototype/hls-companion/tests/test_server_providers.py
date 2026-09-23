@@ -739,10 +739,31 @@ class ProviderApiTests(AioHTTPTestCase):
             })
             self.assertIsInstance(pipeline, server_module.SubtitlePipeline)
 
+    async def test_dashscope_missing_keys_fail_before_start(self) -> None:
+        from companion.providers.config import DEFAULT_CONFIG, BUILTIN_ASR_PROVIDERS, atomic_write_config
+        import copy
+        companion = self.app['companion']
+        for kind in ('dashscope-task-asr', 'dashscope-qwen-realtime'):
+            with self.subTest(kind=kind):
+                config = copy.deepcopy(DEFAULT_CONFIG)
+                preset = copy.deepcopy(next(p for p in BUILTIN_ASR_PROVIDERS if p['kind'] == kind))
+                preset.pop('apiKeyEnv', None)
+                preset['apiKey'] = ''
+                config['asr'] = {'active': preset['id'], 'providers': [preset]}
+                atomic_write_config(companion.providers_path, config)
+                with patch.object(server_module.SubtitlePipeline, 'start', new=AsyncMock()) as start:
+                    with self.assertRaisesRegex(ValueError, 'API key is not configured'):
+                        await companion._prepare_subtitles({}, {})
+                    start.assert_not_awaited()
+
     async def test_subtitle_start_uses_active_catalog_records_not_request_overrides(self) -> None:
         companion = self.app["companion"]
         catalog = await (await self.client.get("/api/model-settings")).json()
         catalog["asr"]["active"] = "bailian-fun-asr-2026-02-28"
+        # This test exercises selection, not network authentication.
+        for provider in catalog["asr"]["providers"]:
+            if provider["id"] == catalog["asr"]["active"]:
+                provider["apiKey"] = "fixture-key-not-a-real-credential"
         catalog["translation"]["active"] = "bailian-qwen35-flash"
         catalog["translation"]["fallback"] = []
         response = await self.client.post("/api/model-settings", json=catalog)
