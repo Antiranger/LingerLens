@@ -425,3 +425,18 @@ test(
     await secondPoll;
   },
 );
+
+// A request begun AFTER Stop has the new generation, but its server sample
+// can still describe the stopped session while cleanup is running.
+test('a post-Stop status sample cannot restore controls before cleanup confirms', async () => {
+  const request = pendingRequests();
+  const h = session({request, state:{lastSessionState:'running',observedMediaSessionId:'A'}});
+  h.call('stop');
+  const poll = h.call('refreshStatus');
+  request.forPath('/api/status')[0].resolve({state:'running',mediaSessionId:'A',playlistUrl:'/hls/live.m3u8'});
+  await poll;
+  assert.equal(h.read().lastSessionState,'idle','controls must retain local stop, not pending server state');
+  assert.equal(h.context.attach.count(),0);
+  request.forPath('/api/stop')[0].resolve({ok:true});
+  await settle();
+});

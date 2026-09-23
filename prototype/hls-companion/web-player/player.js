@@ -1180,11 +1180,6 @@
       // stopped picture came back, and how a stale running sample reverted the
       // stopped controls.
       if (claim !== uiGeneration) return;
-      // The stream may have been started from another tab, the extension, or a
-      // diagnostic client. Restore controls from server truth on every poll
-      // instead of relying on this page's start() call having run.
-      lastSessionState = data.state;
-      renderSessionControls();
       const mediaSessionId = data.mediaSessionId ?? null;
       // A locally requested Stop outranks server truth until the server says the
       // session it stopped is gone. "Gone" means an idle sample OR a DIFFERENT
@@ -1217,6 +1212,11 @@
         stoppedMediaSessionId = null;
         stopUnconfirmedLogged = false;
       }
+      // Only an admitted sample may change either playback OR its controls.
+      // A post-Stop request has the current generation but can still describe
+      // the old running session until cleanup confirms.
+      lastSessionState = data.state;
+      renderSessionControls();
       if (observedMediaSessionId !== null && mediaSessionId !== observedMediaSessionId
           && sessionAction !== "starting") {
         ++uiGeneration;

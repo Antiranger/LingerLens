@@ -415,6 +415,7 @@ async def run() -> None:
         assert fake_translator.enabled is True
 
         control_state = {"state": "idle"}
+        stop_confirmed = asyncio.Event()
 
         async def status_route(route):
             state = control_state["state"]
@@ -449,6 +450,7 @@ async def run() -> None:
                 content_type="application/json",
                 body=json.dumps({"ok": True, "status": {"state": "idle"}}),
             )
+            stop_confirmed.set()
 
         await page.route("**/api/status", status_route)
         await page.route("**/api/start", start_route)
@@ -497,6 +499,8 @@ async def run() -> None:
         assert stop_feedback["sessionActive"] is False, stop_feedback
         await page.wait_for_function("!document.getElementById('stop').hasAttribute('aria-busy')")
         assert await page.locator("#stop").is_disabled()
+        # Keep the immediate assertion above; then drain the owned route.
+        await asyncio.wait_for(stop_confirmed.wait(), timeout=5)
         assert not errors_seen, errors_seen
         await browser.close()
 
