@@ -579,7 +579,7 @@ class CompanionApplication:
     async def handle_get_model_settings(self, request: web.Request) -> web.Response:
         self._require_local_request(request)
         self.providers_config = load_config(self.providers_path)
-        return web.json_response(model_settings_view(self.providers_config), headers={"Cache-Control": "no-store"})
+        return web.json_response(model_settings_view(self.providers_config, path=self.providers_path), headers={"Cache-Control": "no-store"})
 
     async def handle_update_model_settings(self, request: web.Request) -> web.Response:
         self._require_local_request(request)
@@ -587,7 +587,7 @@ class CompanionApplication:
         if not isinstance(settings, dict):
             raise ValueError("model settings must be an object")
         self.providers_config = update_model_settings(self.providers_path, settings)
-        return web.json_response(model_settings_view(self.providers_config), headers={"Cache-Control": "no-store"})
+        return web.json_response(model_settings_view(self.providers_config, path=self.providers_path), headers={"Cache-Control": "no-store"})
 
     async def handle_get_providers(self, _: web.Request) -> web.Response:
         self.providers_config = load_config(self.providers_path)
@@ -1301,6 +1301,8 @@ class CompanionApplication:
             for provider_id in config["translation"].get("fallback", [])
             if provider_id != translation_id
         )
+        from companion.providers.readiness import validate_asr_start
+        validate_asr_start(asr_config)
         asr_provider = create_asr(asr_config)
         subtitle = {**config.get("subtitle", {}), **request}
         source_policy = SourceLanguagePolicy.from_json(

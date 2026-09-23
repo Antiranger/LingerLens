@@ -403,14 +403,16 @@
   }
 
   function providerOption(provider, selected = false) {
-    const label = profileText(provider.id, provider.label || provider.model || provider.id);
+    const tier = provider.readiness?.tier;
+    const suffix = tier ? ` [${updateLabel(`provider.tier.${tier}`, tier)}]` : "";
+    const label = profileText(provider.id, provider.label || provider.model || provider.id) + suffix;
     const detail = provider.model && !String(provider.label || "").includes(provider.model)
       ? ` · ${provider.model}`
       : "";
     // The star is the interface's to draw, not the name's: the catalog labels
     // carry no star, so this is the one and only one a line can show.
     const mark = isRecommended(provider) ? "⭐ " : "";
-    return `<option value="${escapeHtml(provider.id)}"${selected ? " selected" : ""}>${escapeHtml(mark + label)}${escapeHtml(detail)}</option>`;
+    return `<option value="${escapeHtml(provider.id)}"${selected ? " selected" : ""}${tier === "blocked" ? " disabled" : ""}>${escapeHtml(mark + label)}${escapeHtml(detail)}</option>`;
   }
 
   function roleProviders(group, references = []) {
@@ -441,6 +443,7 @@
   const RECOMMENDATION_DECIDED_KINDS = new Set(["soniox-realtime", "dashscope-livetranslate-realtime"]);
 
   function isRecommended(provider) {
+    if (provider?.readiness && provider.readiness.tier !== "candidate") return false;
     if (RECOMMENDATION_DECIDED_KINDS.has(provider?.kind)) return RECOMMENDED_KINDS.has(provider?.kind);
     return provider?.recommended === true;
   }
@@ -1558,6 +1561,8 @@
     if (!dialog.open) dialog.showModal();
     try {
       providerCatalog = await request("/api/model-settings");
+      if (el("effectiveConfig")) el("effectiveConfig").textContent = JSON.stringify(providerCatalog.effective || {}, null, 2);
+      if (el("effectiveConfigTitle")) el("effectiveConfigTitle").textContent = updateLabel("dlg.model.effective", "已保存配置（下次启动使用）");
       renderProviderProfiles();
       feedback.textContent = "";
     } catch (error) {
@@ -1613,7 +1618,7 @@
   // untested protocol listed right next to a working one reads as an equal
   // option. A section without an entry here stays one flat list.
   const providerKindGroups = {
-    bilingual: ["grp.bilingual", "端到端双语（识别与翻译在同一会话 · 已实测）"],
+    bilingual: ["grp.bilingualExperimental", "端到端双语（实验性 · 需逐场验收）"],
     recognition: ["grp.recognitionOnly", "只做识别（需再配一个翻译模型）"],
   };
 
@@ -1643,7 +1648,7 @@
     "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
     "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", speakerLabels: true, maxSpeakers: 6 } },
     "volcengine-sauc": { model: "bigmodel_async", baseUrl: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", options: { resourceId: "volc.bigasr.sauc.concurrent", authMode: "new" } },
-    "elevenlabs-scribe-realtime": { model: "scribe_v2_realtime", baseUrl: "wss://api.elevenlabs.io/v1/speech-to-text/realtime", options: { commitStrategy: "manual", includeLanguageDetection: true } },
+    "elevenlabs-scribe-realtime": { model: "scribe_v2_realtime", baseUrl: "wss://api.elevenlabs.io/v1/speech-to-text/realtime", options: { commitStrategy: "vad", vadSilenceThresholdSecs: 0.5, includeLanguageDetection: true } },
     "speechmatics-realtime": { model: "enhanced", baseUrl: "wss://global.rt.speechmatics.com/v2/", options: { enablePartials: true, maxDelaySeconds: 4 } },
     "tencent-asr": { model: "16k_ja", baseUrl: "wss://asr.cloud.tencent.com/asr/v2/<appid>", options: { appId: "", secretId: "", engineModelType: "16k_ja", wordInfo: 0 } },
     "openai-compatible": { model: "", baseUrl: "https://api.openai.com/v1", options: { temperature: 0.3, maxTokens: 256, timeoutSeconds: 6, contextPairs: 6 } },

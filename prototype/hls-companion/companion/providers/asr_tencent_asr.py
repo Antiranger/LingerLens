@@ -203,8 +203,9 @@ class _TencentAsrStream(ASRStream):
             params["max_speak_time"] = str(int(options["maxSpeakTimeMs"]))
         if options.get("filterEmptyResult") is not None:
             params["filter_empty_result"] = str(int(options["filterEmptyResult"]))
+        base_url = self.provider.base_url.replace("<appid>", str(options["appId"]))
         canonical = (
-            self.provider.base_url.split("://", 1)[1]
+            base_url.split("://", 1)[1]
             + "?"
             + "&".join(f"{key}={params[key]}" for key in sorted(params))
         )
@@ -214,7 +215,6 @@ class _TencentAsrStream(ASRStream):
             f"{key}={urllib_parse_quote(value, safe='')}" if key == "signature" else f"{key}={value}"
             for key, value in params.items()
         )
-        base_url = self.provider.base_url.replace("<appid>", str(options["appId"]))
         return f"{base_url}?{query}"
 
     async def connect(self) -> None:

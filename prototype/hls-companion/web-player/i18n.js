@@ -1655,11 +1655,25 @@ const I18N = (() => {
     "缓冲不足，本次已自动暂停等待补充": "diag.stallPaused",
   };
   const DYNAMIC_SINKS = [
-    "stateText", "setupFeedback", "message", "streamTitle", "roleFeedback",
-    "subtitlesTimelineList", "chatTimelineList", "chatStatsIndicator", "applyDelayButton",
+    "stateText", "setupFeedback", "message", "roleFeedback",
+    "chatStatsIndicator", "applyDelayButton",
     "followSubtitlesBtn", "followChatBtn", "mediaLoadingText",
   ];
 
+  // Release readiness labels are UI text, never applied to user content.
+  ZH_DYNAMIC['grp.bilingualExperimental'] = '端到端双语（实验性 · 需逐场验收）';
+  ZH_DYNAMIC['dlg.model.effective'] = '已保存配置（下次启动使用）';
+  ZH_DYNAMIC['provider.tier.candidate'] = '待实况验收';
+  ZH_DYNAMIC['provider.tier.experimental'] = '实验性';
+  ZH_DYNAMIC['provider.tier.blocked'] = '暂不可用';
+  for (const [locale, labels] of Object.entries({
+    en: ['Bilingual (experimental)', 'Saved configuration (next start)', 'Acceptance candidate', 'Experimental', 'Unavailable'],
+    ja: ['バイリンガル（実験的）', '保存済み設定（次回起動時）', '実地検証待ち', '実験的', '利用不可'],
+    de: ['Zweisprachig (experimentell)', 'Gespeicherte Konfiguration (nächster Start)', 'Abnahme ausstehend', 'Experimentell', 'Nicht verfügbar'],
+    ru: ['Двуязычный режим (экспериментальный)', 'Сохранённые настройки (следующий запуск)', 'Ожидает проверки', 'Экспериментально', 'Недоступно'],
+  })) {
+    ['grp.bilingualExperimental','dlg.model.effective','provider.tier.candidate','provider.tier.experimental','provider.tier.blocked'].forEach((key,index) => { DICT[locale][key] = labels[index]; });
+  }
   const DEFAULT_LOCALE = "zh-CN";
   const zhDefaults = new Map();
   let current = DEFAULT_LOCALE;

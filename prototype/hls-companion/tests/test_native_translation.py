@@ -145,26 +145,16 @@ class BusTests(unittest.IsolatedAsyncioTestCase):
             "但是买了，好险",
         )
 
-    async def test_a_provider_anchor_gives_each_half_of_a_segment_its_own_slice(self) -> None:
-        """Where the Provider aligned it is the only place a cut may be answered.
-
-        The anchor also settles early: a cue the Provider has already translated
-        does not queue behind the silence marker that closes its segment.
-        """
+    async def test_arrival_anchors_cannot_allocate_partial_translations(self) -> None:
         bus = NativeTranslationBus()
-        bus.record(
-            item_id="1",
-            source_text="one two three four",
-            translation="一二三四",
-            anchors=(("one two", "一二"),),
-        )
-        self.assertEqual(
-            await bus.resolve(item_id="1", source_text="one two", deadline_monotonic=None), "一二"
-        )
-        bus.close_item("1")
-        self.assertEqual(
-            await bus.resolve(item_id="1", source_text="three four", deadline_monotonic=None), "三四"
-        )
+        bus.record(item_id='1', source_text='one two three four',
+                   translation='first draft', anchors=(('one two', 'first'),))
+        self.assertIsNone(await bus.resolve(item_id='1',source_text='one two',
+                          deadline_monotonic=time.monotonic()+0.01))
+        bus.close_item('1',translation='complete translation')
+        self.assertIsNone(bus._take('1','one two'))
+        self.assertIsNone(bus._take('1','three four'))
+        self.assertEqual(bus._take('1','one two three four'),'complete translation')
 
     async def test_a_cut_the_provider_never_aligned_fails_fast_once_closed(self) -> None:
         """No anchor and not the whole segment: nothing can arrive later either."""

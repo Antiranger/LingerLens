@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import REGISTRY
+from .readiness import asr_readiness
 from ..languages import canonicalize_target_tag
-from .base import SourceLanguagePolicy, SUPPORTED_CURRENCIES, provider_currency
+from .base import ASRProvider, TranslationProvider, SourceLanguagePolicy, SUPPORTED_CURRENCIES, provider_currency
 
 BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
     {
@@ -236,7 +237,8 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
         "baseUrl": "wss://api.elevenlabs.io/v1/speech-to-text/realtime",
         "apiKeyEnv": "ELEVENLABS_API_KEY",
         "options": {
-            "commitStrategy": "manual",
+            "commitStrategy": "vad",
+            "vadSilenceThresholdSecs": 0.5,
             "includeLanguageDetection": True,
         },
     },
@@ -427,24 +429,11 @@ def validate_config(config: dict[str, Any]) -> None:
         if not isinstance(section, dict) or not isinstance(section.get("providers"), list):
             raise ValueError(f"{section_name}.providers must be a list")
         ids: list[str] = []
-        allowed_kinds = (
-            {
-                "dashscope-qwen-realtime",
-                "dashscope-task-asr",
-                "dashscope-livetranslate-realtime",
-                "openai-audio-transcriptions",
-                "deepgram-streaming",
-                "soniox-realtime",
-                "openai-realtime-transcription",
-                "assemblyai-streaming",
-                "elevenlabs-scribe-realtime",
-                "volcengine-sauc",
-                "speechmatics-realtime",
-                "tencent-asr",
-            }
-            if section_name == "asr"
-            else {"openai-compatible", "anthropic-messages", "google-genai"}
-        )
+        # Registered provider classes own their role; a second hand-maintained
+        # allowlist drifted from the catalog and rejected Soniox transcription.
+        role = ASRProvider if section_name == 'asr' else TranslationProvider
+        allowed_kinds = {kind for kind, factory in REGISTRY.items()
+                         if isinstance(factory, type) and issubclass(factory, role)}
         for provider in section["providers"]:
             if not isinstance(provider, dict):
                 raise ValueError(f"{section_name} provider entries must be objects")
@@ -523,6 +512,8 @@ def masked_config(config: dict[str, Any]) -> dict[str, Any]:
         # 数字的币种永远随配置一起回给前端：字段名里的 Cny 是历史命名，界面
         # 必须按这个值标注单位，否则用户会照着错单位填价格。
         provider["currency"] = provider_currency(provider.get("kind"), provider.get("currency"))
+    for provider in masked.get("asr", {}).get("providers", []):
+        provider["readiness"] = asr_readiness(provider)
     return masked
 
 
@@ -604,7 +595,7 @@ def update_model_settings(path: str | Path, settings: dict[str, Any]) -> dict[st
     return load_config(path)
 
 
-def model_settings_view(config: dict[str, Any]) -> dict[str, Any]:
+def model_settings_view(config: dict[str, Any], *, path=None) -> dict[str, Any]:
     """Return the full local catalog including raw keys for explicit editing."""
     view = _without_runtime_secrets(config)
     for section_name in ("asr", "translation"):
@@ -614,6 +605,10 @@ def model_settings_view(config: dict[str, Any]) -> dict[str, Any]:
             provider["apiKeyConfigured"] = bool(provider["apiKey"])
             # 价格字段名里的 Cny 是历史命名；界面必须按这个值标注单位。
             provider["currency"] = provider_currency(provider.get("kind"), provider.get("currency"))
+    for provider in view.get("asr", {}).get("providers", []):
+        provider["readiness"] = asr_readiness(provider)
+    from .effective import effective_settings
+    view["effective"] = effective_settings(config, path)
     return view
 
 
@@ -729,6 +724,8 @@ def _inherit_secret(provider: dict[str, Any], source: dict[str, Any]) -> None:
     """Reuse the current DashScope credential when switching ASR protocols."""
     if provider.get("apiKey"):
         return
+    if not all(str(p.get("kind", "")).startswith("dashscope-") for p in (provider, source)):
+        return
     if source.get("apiKey"):
         provider["apiKey"] = source["apiKey"]
         provider.pop("apiKeyEnv", None)
@@ -771,4 +768,5 @@ def _without_runtime_secrets(config: dict[str, Any]) -> dict[str, Any]:
     clean = copy.deepcopy(config)
     for provider in _providers(clean):
         provider.pop("_apiKey", None)
+        provider.pop("readiness", None)
     return clean

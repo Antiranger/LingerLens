@@ -287,17 +287,16 @@ class NativeTranslationBus:
 
 
 def _boundaries(segment: _Segment) -> list[tuple[str, str]]:
-    """Every source point the Provider has said its translation reaches.
+    """Only a completed segment establishes a source/translation correspondence.
 
-    An anchor is settled text, so it is resolvable while the segment is still
-    open -- that is what lets a cue stop queueing behind the Provider's silence
-    marker. The segment's own full pair becomes a boundary only once it has
-    closed, because until then more speech may still join it.
+    Arrival-time prefix pairs are NOT semantic alignment. In particular a full
+    source with the first translated token must never consume a whole cue.
+    Keep legacy anchors as diagnostic metadata only; locally cut fragments
+    without a provider-defined alignment remain source-only.
     """
-    points = [pair for pair in segment.anchors if pair[0] and pair[1]]
-    if segment.closed and segment.source:
-        points.append((segment.source, segment.translation))
-    return points
+    if segment.closed and segment.source and segment.translation:
+        return [(segment.source, segment.translation)]
+    return []
 
 
 class NativeSessionTranslation(TranslationProvider):

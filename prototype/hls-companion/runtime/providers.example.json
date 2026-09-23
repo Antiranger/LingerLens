@@ -65,7 +65,7 @@
         "label": "百炼 Qwen3.8-LiveTranslate（端到端双语）",
         "kind": "dashscope-livetranslate-realtime",
         "model": "qwen3.8-livetranslate-flash-realtime",
-        "baseUrl": "wss://<workspace-id>.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
         "apiKeyEnv": "DASHSCOPE_API_KEY",
         "options": {
           "sampleRate": 16000,
@@ -73,7 +73,9 @@
           "audioOutput": false,
           "sourceLanguage": "",
           "startTimeoutSeconds": 10,
-          "closeDrainTimeoutSeconds": 15.0
+          "closeDrainTimeoutSeconds": 15.0,
+          "voice": "Tina",
+          "silenceDurationMs": 300
         }
       },
       {
@@ -143,8 +145,9 @@
         "baseUrl": "wss://api.elevenlabs.io/v1/speech-to-text/realtime",
         "apiKeyEnv": "ELEVENLABS_API_KEY",
         "options": {
-          "commitStrategy": "manual",
-          "includeLanguageDetection": true
+          "commitStrategy": "vad",
+          "includeLanguageDetection": true,
+          "vadSilenceThresholdSecs": 0.5
         }
       },
       {
