@@ -70,3 +70,11 @@ GitHub CI now invokes the Python import guard directly (it uses individual npm c
 
 ### Stop-control race found by clean checkout
 The first clean-checkout `npm run ci` passed 855 counted Python tests except the script-style browser smoke, which exposed a real Stop control race. A status request started after Stop has the current UI generation but may still describe the old running session. `refreshStatus` updated `lastSessionState` and controls before checking the local stop barrier. Moving both writes after admission fixes the race. A new deterministic Node test fails on the previous implementation and passes after the fix; all 12 handoff tests and both actual-browser suites pass. The browser fixture still asserts immediate local Stop, then drains its owned slow request before closing. No arbitrary sleep was added to hide the failure.
+
+## Packaging verification
+
+The first package audit correctly rejected the new `desktop/health.cjs` because the builder and audit held duplicate file lists. They now use one immutable manifest; the builder receives a copy because electron-builder normalizes its file array in place. Real-ASAR regression tests cover the expected probe, unknown code, private runtime data and mutation isolation.
+
+Backend freeze succeeded, frozen third-party notice coverage passed, and an unpacked Windows desktop build succeeded. The actual executable was started with a fresh smoke-only user-data directory and file diagnostics enabled. `/api/status` and `/api/languages` returned 200, model settings loaded, and the bundled FFmpeg/HLS path played synthetic media to 0.343053 seconds. Exit code was zero and the owned backend exited. The startup GPU snapshot reported software features even on the normal Chromium path; this is not evidence of hardware decoding or a stutter improvement.
+
+The executable is `release/win-unpacked/LingerLens.exe` in the hardening worktree. No installer was published, the user's running app was not replaced, and smoke credentials/configuration were isolated from the user's desktop profile. Normal manual startup still uses the application's normal desktop user-data directory.

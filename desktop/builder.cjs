@@ -5,7 +5,8 @@ module.exports = {
   asar: true,
   electronDist: 'build-desktop/electron',
   afterPack: async context => require('./audit-package.cjs').auditPackage(context.appOutDir),
-  files: ['desktop/main.cjs', 'desktop/backend.cjs', 'desktop/devlog.cjs', 'desktop/health.cjs', 'desktop/updater.cjs', 'desktop/smoke.cjs', 'desktop/loading.html', 'package.json'],
+  // electron-builder normalizes this array in place; keep the audit manifest immutable.
+  files: [...require('./audit-package.cjs').APP_FILES],
   extraResources: [
     { from: 'build-desktop/backend/lingerlens-backend', to: 'backend', filter: ['**/*'] },
     { from: 'LICENSE', to: 'LICENSE-LingerLens.txt' },
