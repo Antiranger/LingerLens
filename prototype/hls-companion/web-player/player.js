@@ -1646,7 +1646,7 @@
     "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3, translationType: "one_way" } },
     "soniox-realtime-transcribe": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3 } },
     "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
-    "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", speakerLabels: true, maxSpeakers: 6 } },
+    "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", continuousPartials: true, speakerLabels: true, maxSpeakers: 6 } },
     "volcengine-sauc": { model: "bigmodel_async", baseUrl: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", options: { resourceId: "volc.bigasr.sauc.concurrent", authMode: "new" } },
     "elevenlabs-scribe-realtime": { model: "scribe_v2_realtime", baseUrl: "wss://api.elevenlabs.io/v1/speech-to-text/realtime", options: { commitStrategy: "vad", vadSilenceThresholdSecs: 0.5, includeLanguageDetection: true } },
     "speechmatics-realtime": { model: "enhanced", baseUrl: "wss://global.rt.speechmatics.com/v2/", options: { enablePartials: true, maxDelaySeconds: 4 } },

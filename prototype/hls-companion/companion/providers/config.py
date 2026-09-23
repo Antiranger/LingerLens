@@ -208,6 +208,7 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
         "apiKeyEnv": "ASSEMBLYAI_API_KEY",
         "options": {
             "mode": "balanced",
+            "continuousPartials": True,
             "speakerLabels": True,
             "maxSpeakers": 6,
             "closeDrainTimeoutSeconds": 2.0,

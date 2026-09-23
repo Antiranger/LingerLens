@@ -1087,6 +1087,9 @@ class CompanionApplication:
             return str(ingest_snapshot["sourceError"])
         if ingest_snapshot.get("running") is False:
             return "直播下载进程已退出"
+        clock_reason = ingest_snapshot.get("sourceClockReason")
+        if ingest_snapshot.get("sourceClockValid") is False and clock_reason not in (None, "no-legs", "no-pts-probe"):
+            return f"source-clock-invalid:{clock_reason}"
 
         try:
             target_duration = max(1, int(float(session_status.get("targetDuration") or 0)))
@@ -1137,6 +1140,15 @@ class CompanionApplication:
                 session_status = self.session.status()
                 ingest_snapshot = self.source_ingest.snapshot() if self.source_ingest else None
                 reason = self._session_recovery_reason(session_status, ingest_snapshot)
+                if not reason and self.asr_audio_ingest is not None:
+                    audio = self.asr_audio_ingest.snapshot()
+                    # Audio can be intentionally backpressured while the viewer
+                    # pauses. Only terminal failures or a measured invalid clock
+                    # trigger recovery, never ASR idle time alone.
+                    audio_check = {k: v for k, v in audio.items() if k in ("running", "sourceError", "sourceClockValid", "sourceClockReason")}
+                    reason = self._session_recovery_reason({"state": "running", "playlistReady": True}, audio_check)
+                if not reason and self._exact_mapping_refused:
+                    reason = f"subtitle-clock-invalid:{self._exact_mapping_refused}"
                 if reason:
                     await self._recover_session(reason)
         except asyncio.CancelledError:
@@ -1158,7 +1170,9 @@ class CompanionApplication:
         self._recovery_error = None
         body = copy.deepcopy(self._active_start_body)
         try:
-            for attempt in range(1, SESSION_RECOVERY_MAX_ATTEMPTS + 1):
+            # Repeated apparently successful starts must not reset the budget
+            # and create an infinite fail/restart cycle. Manual Start resets it.
+            for attempt in range(self._recovery_attempts + 1, SESSION_RECOVERY_MAX_ATTEMPTS + 1):
                 self._recovery_attempts = attempt
                 if attempt > 1:
                     await asyncio.sleep(SESSION_RECOVERY_BACKOFF_SECONDS[attempt - 2])

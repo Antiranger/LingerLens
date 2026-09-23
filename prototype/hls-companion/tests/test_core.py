@@ -447,7 +447,7 @@ class FfmpegCommandTests(unittest.TestCase):
         # The ingest is always H.264 + AAC in MPEG-TS, so FFmpeg's default 5s
         # probe is dead time in front of the first published segment.
         self.assertIn("-f mpegts -analyzeduration 2000000 -probesize 4000000 -i tcp://127.0.0.1:40001", tcp_rendered)
-        self.assertIn("-f mpegts -analyzeduration 2000000 -probesize 4000000 -i tcp://127.0.0.1:40002", tcp_rendered)
+        self.assertIn("-f mpegts -analyzeduration 2000000 -probesize 4000000 -isync 0 -i tcp://127.0.0.1:40002", tcp_rendered)
         self.assertNotIn("-reconnect", tcp_rendered)
         self.assertIn("-map 1:a:0", tcp_rendered)
         pipe_command = build_ffmpeg_command(

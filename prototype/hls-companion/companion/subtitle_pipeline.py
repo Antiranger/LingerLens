@@ -1188,7 +1188,7 @@ class SubtitlePipeline:
             self._push_breadcrumbs.append((self._stream_pushed_seconds, offset))
             self._stream_pushed_seconds += len(chunk) / self.pcm_bytes_per_second
             try:
-                await stream.push_pcm(chunk, offset)
+                await asyncio.wait_for(stream.push_pcm(chunk, offset), timeout=5.0)
                 self._audio_push_times.append((self._last_sent_pcm_offset, self.monotonic()))
             except asyncio.CancelledError:
                 raise
@@ -1197,7 +1197,7 @@ class SubtitlePipeline:
                 if self._stream is stream:
                     self._stream = None
                 with contextlib.suppress(Exception):
-                    await stream.aclose()
+                    await asyncio.wait_for(stream.aclose(), timeout=2.0)
                 continue
             # Cut decisions belong to the shared CaptionChunker alone. The
             # former second timer commit here (legacy max-utterance cap) was
@@ -1240,7 +1240,7 @@ class SubtitlePipeline:
                     context=self.asr_context,
                 )
                 if not self._running:
-                    await stream.aclose()
+                    await asyncio.wait_for(stream.aclose(), timeout=2.0)
                     return
                 # A fresh session restarts the provider's audio clock at zero,
                 # so the old breadcrumbs and any half-open VAD spans no longer
@@ -1269,7 +1269,7 @@ class SubtitlePipeline:
                 self._stream = None
                 if stream is not None:
                     with contextlib.suppress(Exception):
-                        await stream.aclose()
+                        await asyncio.wait_for(stream.aclose(), timeout=2.0)
             if self._running:
                 self.stats.asr_reconnects += 1
                 # ASR reconnect: audio in flight is dropped, never back-filled;

@@ -40,11 +40,13 @@ import asyncio
 import contextlib
 import json
 import time
+from urllib.parse import urlencode
 from typing import Any, AsyncIterator
 
 import aiohttp
 
 from . import register
+from .bounded import RecentIds, NumericTombstones
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
     ASRCapabilities,
@@ -151,7 +153,7 @@ class _AssemblyAIStream(ASRStream):
         self.ws: Any = None
         self.closed = False
         self._last_speech_started_ms: float | None = None
-        self._turn_started: set[str] = set()
+        self._turn_started = RecentIds()
         self._last_audio_at = time.monotonic()
         self._keepalive_task: asyncio.Task | None = None
         self.keepalive_seconds = float(provider.options.get("keepAliveSeconds", 0.0))
@@ -185,6 +187,8 @@ class _AssemblyAIStream(ASRStream):
                 )
         if options.get("speakerLabels"):
             params["speaker_labels"] = "true"
+        if "continuousPartials" in options:
+            params["continuous_partials"] = "true" if options["continuousPartials"] else "false"
         if options.get("maxSpeakers"):
             params["max_speakers"] = str(int(options["maxSpeakers"]))
         if options.get("mode"):
@@ -203,7 +207,7 @@ class _AssemblyAIStream(ASRStream):
 
     async def connect(self) -> None:
         self.session = aiohttp.ClientSession()
-        query = "&".join(f"{key}={value}" for key, value in self._query().items())
+        query = urlencode(self._query())
         try:
             self.ws = await self.session.ws_connect(
                 f"{self.provider.base_url}?{query}",
@@ -314,7 +318,7 @@ class _AssemblyAIStream(ASRStream):
             return []
         item_id = str(turn_order)
         words = raw.get("words") or []
-        begin_pcm = _seconds(words[0].get("start")) if words and isinstance(words[0].get("start"), (int, float)) else self._last_speech_started_ms
+        begin_pcm = _seconds(words[0].get("start")) if words and isinstance(words[0].get("start"), (int, float)) else _seconds(self._last_speech_started_ms)
         end_pcm = _seconds(words[-1].get("end")) if words and isinstance(words[-1].get("end"), (int, float)) else None
         transcript = str(raw.get("transcript", "")).strip()
         speaker = raw.get("speaker_label")

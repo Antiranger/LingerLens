@@ -24,3 +24,17 @@ New regression suite first reproduced 5 failures and 1 error on the baseline, th
 Phase 2: timestamp probes, bounded muxing, source-clock failures and long-lived ledgers.
 Phase 3: move log writes off the Electron main thread; bounded diagnostics and rendering fallback controls.
 Phase 4: clean-checkout import guard, replay/acceptance tooling, full regression and evidence-based release status.
+
+## Phase 2 — media clocks and bounded ownership
+
+PTS parsing now accepts PTS+DTS, rejects malformed markers and metadata PIDs, handles adaptation-only discontinuities, and compacts the read buffer once per feed. Source-clock failures reach the existing whole-session supervisor. Successful-but-immediately-failing restarts no longer renew the retry budget; three attempts span one manual viewing session.
+
+The packager preserves both PTS and DTS rather than independently deleting track gaps. Independent local inputs are synchronized to input 0 (`-isync 0`). Interleave tolerance is finite (1 second), with explicit mux-queue thresholds. These bounds do not guarantee end-to-end latency.
+
+A real local FFmpeg 9.0 test uses two real TCP pumps, B-frame H.264 and AAC with independent origins, and a two-second video-only gap. The first attempted duration-only filter caused an 80 ms residual: FFmpeg setts defaults also affected timestamp identity. Explicit `pts=PTS:dts=DTS` fixed it without relaxing the test. The observed input/output origin difference is 0.678667 s; the video gap remains and the audio stays continuous. This is an offline media-contract test, not live-network or screen-level latency certification.
+
+Long-lived AssemblyAI/Speechmatics/Tencent ledgers are bounded; Volcano full-history tombstones retire a numeric frontier. Soniox refuses an unended utterance beyond 8192 tokens instead of unlimited retention. AssemblyAI onset fallback converts milliseconds to seconds; continuous partials are requested explicitly; Speechmatics EndOfUtterance is no longer ignored. ASR sends and close handshakes have deadlines.
+
+Selected real-media, clock, recovery, provider and pipeline tests passed. Remaining: real platform discontinuities and stop/reconnect soak; exact ASR-vs-player offsets with B-frame composition offsets; common-audio fan-out architecture is not implemented by this patch.
+
+Primary media reference: https://ffmpeg.org/ffmpeg.html#Advanced-options ; https://ffmpeg.org/ffmpeg-formats.html

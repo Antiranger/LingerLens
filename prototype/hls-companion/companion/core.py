@@ -709,29 +709,13 @@ def ffmpeg_headers(headers: dict[str, str]) -> str:
     return "\r\n".join(clean) + ("\r\n" if clean else "")
 
 
-# The yt-dlp MPEG-TS pipe routinely contains timestamp discontinuities: its
-# internal ffmpeg HLS reader skips expired live segments (audio holes of ~5s),
-# re-extraction rewinds the PTS, and long-running streams re-base PTS by hours.
-# With -c copy those jumps land in fMP4 tfdt and shatter the MSE timeline
-# (hls.js stalls, then force-seeks). setts rebuilds a continuous timeline per
-# track: sane per-packet deltas are preserved, any discontinuity collapses to
-# one frame duration. Stream copy only; no transcoding. Commas inside the
-# expressions must stay escaped (\,) for FFmpeg's filter-chain parser.
-_VIDEO_SETTS = (
-    "setts="
-    "dts=if(eq(N\,0)\,DTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)):"
-    "pts=if(eq(N\,0)\,PTS\,PREV_OUTDTS+if(between(DTS-PREV_INDTS\,1\,3*PREV_OUTDURATION)\,DTS-PREV_INDTS\,PREV_OUTDURATION)+PTS-DTS):"
-    # Live-TS discontinuities can yield negative packet durations; the fMP4
-    # muxer treats one as fatal and kills the whole session (2026-09-09:
-    # "Packet duration: -1 ... out of range" at media 57s). Re-stamp them.
-    "duration=if(lt(DURATION\,0)\,PREV_OUTDURATION\,DURATION)"
-)
-_AUDIO_SETTS = (
-    "setts="
-    "ts=if(eq(N\,0)\,PTS\,PREV_OUTPTS+if(between(PTS-PREV_INPTS\,1\,3*PREV_OUTDURATION)\,PTS-PREV_INPTS\,PREV_OUTDURATION)):"
-    "duration=if(lt(DURATION\,0)\,PREV_OUTDURATION\,DURATION)"
-    ",aac_adtstoasc"
-)
+# Source PTS/DTS gaps belong to one shared timeline. Independently compressing
+# them per track desynchronizes audio/video and invalidates the ASR origin.
+# Keep stream-copy timestamps; only repair invalid negative packet durations.
+# A source clock reset is recovered by the session owner, not hidden here.
+_VIDEO_SETTS = r"setts=pts=PTS:dts=DTS:duration=if(lt(DURATION\,0)\,max(PREV_OUTDURATION\,1)\,DURATION)"
+_AUDIO_SETTS = _VIDEO_SETTS + ",aac_adtstoasc"
+MAX_INTERLEAVE_MICROSECONDS = 1_000_000
 
 
 # Private-window list size: must hold the public window (180s) plus the largest
@@ -804,7 +788,7 @@ def build_ffmpeg_command(
     if pipe_input_count:
         urls = [f"pipe:{index}" for index in range(pipe_input_count)]
     headers_by_input = [inputs.video_headers, *([inputs.audio_headers] if inputs.audio_url else [])]
-    for url, headers in zip(urls, headers_by_input):
+    for input_index, (url, headers) in enumerate(zip(urls, headers_by_input)):
         if not url:
             continue
         local_tcp = url.startswith("tcp://")
@@ -824,6 +808,10 @@ def build_ffmpeg_command(
             command.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
         elif pipe_format:
             command.extend(["-f", pipe_format])
+        # Independent local legs retain the same source clock (-copyts upstream).
+        # Align their start times to video input 0 instead of zeroing each leg.
+        if input_index and local_tcp:
+            command.extend(["-isync", "0"])
         command.extend(["-i", url])
     command.extend(["-map", "0:v:0"])
     command.extend(["-map", "0:a:0" if pipe_input_count else ("1:a:0" if inputs.audio_url else "0:a:0")])
@@ -836,7 +824,9 @@ def build_ffmpeg_command(
             "-bsf:a",
             _AUDIO_SETTS,
             "-max_interleave_delta",
-            "0",
+            str(MAX_INTERLEAVE_MICROSECONDS),
+            "-max_muxing_queue_size", "1024",
+            "-muxing_queue_data_threshold", "8388608",
         ]
     )
     command.extend(hls_output_args(private_dir))

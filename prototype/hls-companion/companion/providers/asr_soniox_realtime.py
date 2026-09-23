@@ -464,6 +464,8 @@ class _SonioxStream(ASRStream):
                 self._emitted_final_token_keys.add(key)
                 if self._utterance_start is None:
                     self._utterance_start = _seconds(token.get("start_ms"))
+                if len(self._final_tokens) >= 8192:
+                    return [ASREvent("error", message="ASR utterance exceeded the 8192-token safety bound")]
                 self._final_tokens.append(token)
                 new_final_tokens.append(token)
             else:

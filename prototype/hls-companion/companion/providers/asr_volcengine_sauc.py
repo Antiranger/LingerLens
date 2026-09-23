@@ -56,6 +56,7 @@ from typing import Any, AsyncIterator
 import aiohttp
 
 from . import register
+from .bounded import RecentIds, NumericTombstones
 from ..languages import LanguageNotSupportedError
 from .base import (
     ASRCapabilities,
@@ -176,8 +177,8 @@ class _VolcengineSaucStream(ASRStream):
         self.ws: Any = None
         self.closed = False
         self._request_id = str(uuid.uuid4())
-        self._finalized_starts: set[str] = set()
-        self._started_items: set[str] = set()
+        self._finalized_starts = NumericTombstones()
+        self._started_items = RecentIds()
         self._last_audio_at = time.monotonic()
         self._iter_started = False
         self._drain_done = asyncio.Event()

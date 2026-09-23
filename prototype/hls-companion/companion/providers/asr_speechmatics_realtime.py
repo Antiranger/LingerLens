@@ -40,6 +40,7 @@ from typing import Any, AsyncIterator
 import aiohttp
 
 from . import register
+from .bounded import RecentIds, NumericTombstones
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none
 from .base import (
     ASRCapabilities,
@@ -124,7 +125,7 @@ class _SpeechmaticsStream(ASRStream):
         self.drain_seconds = float(provider.options.get("closeDrainTimeoutSeconds", 2.0))
         self._utterance = 0
         self._current_item: str | None = None
-        self._started_items: set[str] = set()
+        self._started_items = RecentIds()
 
     def _start_recognition(self) -> dict[str, Any]:
         options = self.provider.options
@@ -211,6 +212,14 @@ class _SpeechmaticsStream(ASRStream):
         if message in ("RecognitionStarted", "AudioAdded", "Warning", "EndOfTranscript", "SetRecognitionConfigAck"):
             # Session lifecycle/acks carry no transcript content.
             return []
+        if message == 'EndOfUtterance':
+            metadata = raw.get('metadata') or {}
+            end = _float_or_none(metadata.get('end_time'))
+            item_id = self._current_item or (str(self._utterance) if self._utterance else None)
+            if item_id is None:
+                return []
+            return [ASREvent('speech_stopped', item_id=item_id, end_pcm=end, raw=raw,
+                    caption_observation=CaptionObservation('endpoint',0,item_id,end_pcm=end))]
         if message not in ("AddPartialTranscript", "AddTranscript"):
             return []
         metadata = raw.get("metadata") or {}

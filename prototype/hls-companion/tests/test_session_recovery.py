@@ -113,6 +113,24 @@ class BoundedRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app._recovery_state, "monitoring")
         self.assertFalse(app._recovery_in_progress)
 
+    async def test_apparently_successful_restarts_share_one_retry_budget(self) -> None:
+        app = application()
+        app._active_start_body = {'url': 'https://www.youtube.com/watch?v=test'}
+        calls = []
+        async def start(body, **kwargs):
+            calls.append('start')
+        async def stop():
+            calls.append('stop')
+            app._active_start_body = None
+        app._start_session_body = start
+        app._stop_session_after_recovery_failure = stop
+        with patch('companion.server.SESSION_RECOVERY_BACKOFF_SECONDS', (0, 0, 0)):
+            for _ in range(4):
+                await app._recover_session('source-clock-invalid:transport-discontinuity')
+        self.assertEqual(calls, ['start', 'start', 'start', 'stop'])
+        self.assertEqual(app._recovery_state, 'failed')
+        self.assertIsNone(app._active_start_body)
+
     async def test_recovery_stops_after_three_attempts(self) -> None:
         app = application()
         app._active_start_body = {"url": "https://www.youtube.com/watch?v=test"}

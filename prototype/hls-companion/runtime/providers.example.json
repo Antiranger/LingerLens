@@ -121,7 +121,8 @@
         "options": {
           "mode": "balanced",
           "speakerLabels": true,
-          "maxSpeakers": 6
+          "maxSpeakers": 6,
+          "continuousPartials": true
         }
       },
       {
