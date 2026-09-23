@@ -38,3 +38,15 @@ Long-lived AssemblyAI/Speechmatics/Tencent ledgers are bounded; Volcano full-his
 Selected real-media, clock, recovery, provider and pipeline tests passed. Remaining: real platform discontinuities and stop/reconnect soak; exact ASR-vs-player offsets with B-frame composition offsets; common-audio fan-out architecture is not implemented by this patch.
 
 Primary media reference: https://ffmpeg.org/ffmpeg.html#Advanced-options ; https://ffmpeg.org/ffmpeg-formats.html
+
+## Phase 3 — responsive diagnostics
+
+Electron file logging now uses one serialized asynchronous filesystem queue, including initialization and rotation. There are no synchronous file operations on this logging path. File-mode output is not echoed to potentially blocking redirected stderr. Explicit terminal logging remains separate. Queued and in-flight data share a 1 MiB / 128-operation bound; oversized chunks are rejected and counted. Each log is capped at 8 MiB plus three backups. These bounds apply per armed file, not to all historical sessions combined.
+
+`write`/`writeLines` return queue acceptance, not durability. Diagnostics exposes pending, queued, dropped and persisted counts; callers can await a bounded flush. Already accepted records retain their destination across disarm/rearm. Normal exit attempts a two-second drain; forced process termination or a timed-out disk write may still lose records.
+
+A five-second opt-in main-loop summary records timer lateness, process CPU time, RSS and log queue/drop counters alongside existing renderer playback summaries. The ordinary Chromium path is the default; ignore-gpu-blocklist/rasterization overrides now require `LINGERLENS_GPU_EXPERIMENTAL=1`. Explicit software fallback remains available.
+
+30 desktop/logging/probe tests pass, including injected stuck asynchronous I/O, event-loop liveness, queue overflow, file rotation, destination isolation, failure reporting and flush deadlines. The original whole-system freeze was not reproduced and is not declared fixed.
+
+Primary reference: https://www.electronjs.org/docs/latest/tutorial/performance ; https://nodejs.org/api/fs.html

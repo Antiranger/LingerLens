@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 const { startBackend, createDevLog, localStamp } = require('./backend.cjs');
 const { defaultLogPath } = require('./devlog.cjs');
 const { createUpdater } = require('./updater.cjs');
+const { startMainHealthProbe } = require('./health.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'lingerlens', privileges: {
   standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true,
@@ -35,8 +36,8 @@ const gpuForcedOff = process.env.LINGERLENS_DISABLE_GPU === '1';
 const gpuAlreadyFellBack = process.env.LINGERLENS_GPU_FALLBACK === '1';
 if (gpuForcedOff || gpuAlreadyFellBack) {
   app.commandLine.appendSwitch('disable-gpu');
-} else {
-  // 别因为驱动落在黑名单上就把用户降级成软解。
+} else if (process.env.LINGERLENS_GPU_EXPERIMENTAL === '1') {
+  // Driver overrides are opt-in experiments, never the release default.
   app.commandLine.appendSwitch('ignore-gpu-blocklist');
   app.commandLine.appendSwitch('enable-gpu-rasterization');
 }
@@ -134,7 +135,7 @@ async function handleAppUpdate(request, url) {
     setTimeout(() => {
       scheduleRelaunch(process.execPath);
       quitting = true;
-      void (async () => { try { await backend?.stop(); } finally { app.exit(); } })();
+      void (async () => { try { await backend?.stop(); } finally { await devLog?.close(2000); app.exit(); } })();
     }, 750);
     return json({ ...state, status: 'installing', relaunchInSeconds: 12 });
   }
@@ -167,13 +168,17 @@ async function handleDiagnostics(request, url) {
     // The start-up header only reaches somewhere if the environment variable
     // armed this before the window existed. Say plainly when it did not, so a
     // reader never assumes the file is a complete record of the session.
-    return json(devLog.arm(file,
+    devLog.arm(file,
       `\n[LingerLens ${stamp}] 从这一刻开始记录（此前的输出没有保存）\n`
-      + `[LingerLens ${stamp}] backend: ${backend?.label || 'unknown'}\n`));
+      + `[LingerLens ${stamp}] backend: ${backend?.label || 'unknown'}\n`);
+    const flushed = await devLog.flush(2000);
+    return json({ ...devLog.state(), flushed });
   }
   if (url.pathname === '/api/diagnostics/stop') {
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-    return json(devLog.disarm());
+    devLog.disarm();
+    const flushed = await devLog.flush(2000);
+    return json({ ...devLog.state(), flushed });
   }
   if (url.pathname === '/api/diagnostics/reveal') {
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -190,7 +195,9 @@ async function handleDiagnostics(request, url) {
   } catch {
     return json({ ...state, written: 0, error: state.error || 'invalid JSON body' }, 400);
   }
-  return json({ ...state, written: devLog.writeLines(payload?.lines) });
+  const accepted = devLog.writeLines(payload?.lines);
+  // `written` is a legacy accepted-record count, not a disk durability promise.
+  return json({ ...devLog.state(), accepted, written: accepted });
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -201,7 +208,7 @@ else {
   app.on('before-quit', event => {
     if (quitting) return;
     event.preventDefault(); quitting = true;
-    void (async () => { try { await backend?.stop(); } finally { app.exit(process.exitCode ?? 0); } })();
+    void (async () => { try { await backend?.stop(); } finally { await devLog?.close(2000); app.exit(process.exitCode ?? 0); } })();
   });
   app.on('window-all-closed', () => app.quit());
   watchGpuProcessHealth();
@@ -268,6 +275,7 @@ async function start() {
   // Permanent, not conditional: the destination can be switched on later from
   // the diagnostics bar, which is the only way a packaged build can log at all.
   devLog = createDevLog();
+  startMainHealthProbe(devLog);
   backend = startBackend({ packaged: app.isPackaged, resources: process.resourcesPath,
     root: path.join(__dirname, '..'), dataDir: app.getPath('userData'),
     proxy: await desktopProxy(), log: devLog,
