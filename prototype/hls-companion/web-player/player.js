@@ -438,6 +438,7 @@
     // 停在切换前那门语言。未保存的编辑都在 providerCatalog 里（输入即写入），
     // 所以重渲染不会丢。
     renderProviderProfiles();
+    renderEffectiveConfig();
     updateCookiePlatformHelp();
     renderRoleModeHint();
   });
@@ -448,7 +449,9 @@
 
   function providerOption(provider, selected = false) {
     const tier = provider.readiness?.tier;
-    const suffix = tier ? ` [${updateLabel(`provider.tier.${tier}`, tier)}]` : "";
+    // 只标「暂不可用」。候选/实验是内部的发布档位，写进下拉框只会让用户以为
+    // 自己选了个半成品。
+    const suffix = tier === "blocked" ? ` [${updateLabel(`provider.tier.${tier}`, tier)}]` : "";
     const label = profileText(provider.id, provider.label || provider.model || provider.id) + suffix;
     const detail = provider.model && !String(provider.label || "").includes(provider.model)
       ? ` · ${provider.model}`
@@ -1605,8 +1608,7 @@
     if (!dialog.open) dialog.showModal();
     try {
       providerCatalog = await request("/api/model-settings");
-      if (el("effectiveConfig")) el("effectiveConfig").textContent = JSON.stringify(providerCatalog.effective || {}, null, 2);
-      if (el("effectiveConfigTitle")) el("effectiveConfigTitle").textContent = updateLabel("dlg.model.effective", "已保存配置（下次启动使用）");
+      renderEffectiveConfig();
       renderProviderProfiles();
       feedback.textContent = "";
     } catch (error) {
@@ -1662,7 +1664,7 @@
   // untested protocol listed right next to a working one reads as an equal
   // option. A section without an entry here stays one flat list.
   const providerKindGroups = {
-    bilingual: ["grp.bilingualExperimental", "端到端双语（实验性 · 需逐场验收）"],
+    bilingual: ["grp.bilingualExperimental", "端到端双语（识别和翻译一步完成）"],
     recognition: ["grp.recognitionOnly", "只做识别（需再配一个翻译模型）"],
   };
 
@@ -1745,6 +1747,60 @@
     el("editTranslationConnections")?.classList.toggle("active", editingSection === "translation");
     renderProviderSection("asr", el("asrProfiles"));
     renderProviderSection("translation", el("translationProfiles"));
+  }
+
+  /*
+   * 「已保存配置」原来把 effective 的 JSON 直接摊在对话框底部。用户要看的只有
+   * 几件事：用哪个识别、字幕怎么翻、弹幕用哪个翻译、从什么语言翻到什么语言。
+   * 原始 JSON 收进二级折叠，排查问题时再展开。
+   */
+  function renderEffectiveConfig() {
+    const rows = el("effectiveConfigRows");
+    if (!rows || !providerCatalog) return;
+    const effective = providerCatalog.effective || {};
+    el("effectiveConfig").textContent = JSON.stringify(effective, null, 2);
+    const nameOf = (section, identity) => {
+      if (!identity?.id) return updateLabel("dlg.model.eff.none", "未设置");
+      const found = (providerCatalog[section]?.providers || []).find((p) => p.id === identity.id);
+      const model = identity.model || found?.model;
+      const name = profileText(identity.id, found?.label || model || identity.id);
+      return model && !name.includes(model) ? `${name} · ${model}` : name;
+    };
+    const languageName = (tag) => {
+      try {
+        return new Intl.DisplayNames([document.documentElement.lang || "zh-CN"], { type: "language" }).of(tag) || tag;
+      } catch {
+        return tag;
+      }
+    };
+    const subtitle = effective.subtitleTranslation || {};
+    const subtitleText = subtitle.mode === "separate-model"
+      ? nameOf("translation", subtitle.provider)
+      : updateLabel("dlg.model.eff.native", "由语音识别服务直接翻译")
+        + (subtitle.fallbackProvider
+          ? updateLabel("dlg.model.eff.fallback", "；失败时改用 {name}", { name: nameOf("translation", subtitle.fallbackProvider) })
+          : "");
+    const chatId = effective.chatTranslation?.active;
+    const languages = effective.languages || {};
+    const source = languages.sourceLanguage?.mode === "specified" && languages.sourceLanguage.tag
+      ? languageName(languages.sourceLanguage.tag)
+      : updateLabel("dlg.model.eff.auto", "自动识别");
+    const target = languages.targetLanguage ? languageName(languages.targetLanguage) : "—";
+    const asrName = nameOf("asr", effective.asr);
+    const entries = [
+      [updateLabel("dlg.model.eff.asr", "语音识别"), asrName],
+      [updateLabel("dlg.model.eff.subtitle", "字幕翻译"), subtitleText],
+      [updateLabel("dlg.model.eff.chat", "弹幕翻译"), chatId ? nameOf("translation", { id: chatId }) : updateLabel("dlg.model.eff.none", "未设置")],
+      [updateLabel("dlg.model.eff.languages", "语言"), `${source} → ${target}`],
+      [updateLabel("dlg.model.eff.workers", "同时翻译"), String(effective.translationWorkers ?? "—")],
+    ];
+    rows.innerHTML = entries
+      .map(([label, value]) => `<div class="saved-config-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+      .join("");
+    if (effective.configurationPath) {
+      rows.insertAdjacentHTML("beforeend", `<div class="saved-config-row"><dt>${escapeHtml(updateLabel("dlg.model.eff.path", "配置文件"))}</dt><dd class="mono saved-config-path">${escapeHtml(effective.configurationPath)}</dd></div>`);
+    }
+    el("effectiveConfigBrief").textContent = asrName;
   }
 
   function renderProviderSection(section, container) {
@@ -1999,15 +2055,23 @@
     const bilibili = platform === "bilibili";
     const twitch = platform === "twitch";
     el("cookieImportIntro").textContent = bilibili
-      ? updateLabel("dlg.cookie.intro.bilibili", "从 bilibili.com 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。yt-dlp 登录检查只要求 SESSDATA；其他有效 Cookie 会一并保留。")
+      ? updateLabel("dlg.cookie.intro.bilibili", "B 站：想看登录后才开放的高画质时需要，关键的一项是 SESSDATA。请在 bilibili.com 页面上导出。")
       : twitch
-        ? updateLabel("dlg.cookie.intro.twitch", "从 twitch.tv 的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。公开 Twitch 直播不要求 Cookie。")
-        : updateLabel("dlg.cookie.intro.youtube", "从 youtube.com（必要时包括 Google 登录域）的 DevTools Cookie 列表复制名称/值，或粘贴 Cookie 请求头 / Netscape 文件。");
-    payloadField.placeholder = bilibili
-      ? "SESSDATA　xxxxxxxx…\nbili_jct　yyyyyyyy…\nDedeUserID　12345"
-      : twitch
-        ? updateLabel("dlg.cookie.ph.twitch", "auth-token　xxxxxxxx…\npersistent　1\n（公开直播可不导入）")
-        : updateLabel("dlg.cookie.ph.youtube", "SID　xxxxxxxx…\nHSID　yyyyyyyy…\n（直接从 DevTools Cookie 列表复制即可）");
+        ? updateLabel("dlg.cookie.intro.twitch", "Twitch：公开直播完全不需要 Cookie，只有订阅者专享等受限直播才需要。请在 twitch.tv 页面上导出。")
+        : updateLabel("dlg.cookie.intro.youtube", "YouTube：遇到“登录以确认你不是机器人”、会员专享或年龄限制时需要。请在 youtube.com 页面上导出。");
+    payloadField.placeholder = updateLabel("dlg.cookie.ph", "把 cookies.txt 的全部内容粘贴到这里\n（也支持开发者工具里复制的名称/值行）");
+  }
+
+  /*
+   * 教程推荐的是插件导出的 cookies.txt，而格式下拉默认是「名称/值 多行」。
+   * 粘贴的内容一看就是 Netscape 文件（文件头，或每行 7 个制表符分隔的字段）
+   * 时替用户切过去，免得按教程做完还要自己找这个下拉框。
+   */
+  function detectCookieFormat() {
+    const text = el("cookiePayload").value;
+    const netscape = /^#\s*(?:Netscape\s+)?HTTP Cookie File/im.test(text)
+      || /^[^\s#][^\t\r\n]*(?:\t[^\t\r\n]*){6}$/m.test(text);
+    if (netscape) el("cookieFormat").value = "netscape";
   }
 
   function openCookieImport() {
@@ -3092,6 +3156,25 @@
       el("message").textContent = `${updateLabel("msg.playStartFailed", "无法开始播放：")}${error.message || error}`;
     }
   });
+  // 画面上单击暂停/继续、双击全屏。单击要等一个双击间隔再生效，否则双击会先
+  // 把视频暂停再恢复。控制条、字幕窗（可拖动）和开播卡片上的点击不算画面点击；
+  // 走按钮自己的 click，按钮 disabled 时也就自然不响应。
+  const STAGE_CLICK_DELAY_MS = 250;
+  let stageClickTimer = null;
+  const isStageSurfaceClick = (event) => event.button === 0
+    && !event.target.closest("button, input, select, textarea, a, label, .player-controls, #subtitleLayer, #emptyState");
+  stage.addEventListener("click", (event) => {
+    if (!isStageSurfaceClick(event)) return;
+    clearTimeout(stageClickTimer);
+    if (event.detail > 1) return;
+    stageClickTimer = setTimeout(() => el("playPause").click(), STAGE_CLICK_DELAY_MS);
+  });
+  stage.addEventListener("dblclick", (event) => {
+    if (!isStageSurfaceClick(event)) return;
+    clearTimeout(stageClickTimer);
+    event.preventDefault();
+    el("toggleFullscreen").click();
+  });
   el("muteToggle").addEventListener("click", () => { video.muted = !video.muted; if (!video.muted && video.volume === 0) video.volume = 0.8; el("volume").value = String(video.muted ? 0 : video.volume); });
   el("volume").addEventListener("input", () => { video.volume = Number(el("volume").value); video.muted = video.volume === 0; revealPlayerControls(); });
   el("seekRail").addEventListener("input", () => { el("seekRail").dataset.dragging = "true"; el("seekPreview").textContent = mediaClock?.formatTime(mediaClock.wallTimeForMediaPosition(Number(el("seekRail").value))) || "--:--:--"; revealPlayerControls(); });
@@ -3118,6 +3201,7 @@
   el("closeCookieImport").addEventListener("click", closeCookieImport);
   el("cancelCookieImport").addEventListener("click", closeCookieImport);
   el("cookiePlatform").addEventListener("change", updateCookiePlatformHelp);
+  el("cookiePayload").addEventListener("input", detectCookieFormat);
   el("proxyMode")?.addEventListener("change", updateProxyModeUi);
   el("cookieImportForm").addEventListener("submit", submitCookieImport);
   el("manageModelConnections").addEventListener("click", openModelSettings);

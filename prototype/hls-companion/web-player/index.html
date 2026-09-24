@@ -571,7 +571,18 @@
         <div id="translationProfiles" class="provider-profiles"></div>
       </section>
     </div>
-    <details class="settings-section"><summary id="effectiveConfigTitle">已保存配置（下次启动使用）</summary><pre id="effectiveConfig" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
+    <details class="saved-config">
+      <summary>
+        <span id="effectiveConfigTitle" class="saved-config-title">已保存配置</span>
+        <span id="effectiveConfigNote" class="saved-config-note">下次开播时生效</span>
+        <span id="effectiveConfigBrief" class="saved-config-brief"></span>
+      </summary>
+      <dl id="effectiveConfigRows" class="saved-config-rows"></dl>
+      <details class="saved-config-raw">
+        <summary id="effectiveConfigRawTitle">原始数据（排查问题时用）</summary>
+        <pre id="effectiveConfig"></pre>
+      </details>
+    </details>
     <div id="modelSettingsFeedback" class="settings-feedback dialog-feedback" role="status"></div>
     <footer class="dialog-foot settings-footer">
       <button id="cancelModelSettings" class="btn btn-ghost" type="button" data-close>取消</button>
@@ -590,8 +601,33 @@
       </div>
       <button id="closeCookieImport" class="icon-button dialog-close" type="button" aria-label="关闭" data-close>×</button>
     </header>
-    <div class="dialog-body">
-      <p id="cookieImportIntro" class="dialog-intro settings-intro">建议优先导出 Netscape cookies.txt。导入只表示已保存，不代表登录一定有效；导入后请点击“解析”做实际验证。Cookie 只在本机使用，不要发到日志、工单或聊天中。</p>
+    <div class="dialog-body cookie-body">
+      <div class="cookie-optional">
+        <span id="cookieOptionalBadge" class="cookie-badge">可选</span>
+        <p id="cookieOptionalText">大多数直播不需要 Cookie，直接粘贴链接就能看。只有遇到会员专享、年龄限制、YouTube 要求“登录以确认你不是机器人”，或 B 站想看登录后才开放的高画质时，才需要导入。</p>
+      </div>
+      <details class="cookie-explain">
+        <summary id="cookieWhatTitle">Cookie 和 cookies.txt 是什么？</summary>
+        <p id="cookieWhatBody">Cookie 是网站用来记住“你已登录”的一小段数据。交给 LingerLens 后，读取直播时就能以你的账号身份访问。cookies.txt 是一种通用的纯文本格式（也叫 Netscape 格式）：每行一条 Cookie，并带有所属网站和过期时间。yt-dlp 等工具都认这种格式，用浏览器插件一键就能导出。</p>
+      </details>
+      <section class="cookie-guide" aria-labelledby="cookieGuideTitle">
+        <h3 id="cookieGuideTitle">推荐做法：用浏览器插件导出</h3>
+        <ol class="cookie-steps">
+          <li><span id="cookieStep1">安装开源插件 Get cookies.txt LOCALLY。它只在本机导出，不会上传任何数据。</span>
+            <span class="cookie-links">
+              <a id="cookieLinkChrome" href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noopener noreferrer">Chrome / Edge ↗</a>
+              <a id="cookieLinkFirefox" href="https://addons.mozilla.org/firefox/addon/get-cookies-txt-locally/" target="_blank" rel="noopener noreferrer">Firefox ↗</a>
+            </span>
+          </li>
+          <li><span id="cookieStep2">在浏览器里登录目标平台，打开该网站的任意页面，点插件图标，选择 Export 导出当前网站的 cookies.txt。</span></li>
+          <li><span id="cookieStep3">用记事本打开下载的文件，全选复制，粘贴到下面的输入框（会自动识别为 Netscape 格式），然后点“导入并授权”。</span></li>
+          <li><span id="cookieStep4">回到直播入口点击“解析”。能解析成功，就说明 Cookie 有效。</span></li>
+        </ol>
+      </section>
+      <details class="cookie-explain">
+        <summary id="cookieAltTitle">不想装插件？用开发者工具复制</summary>
+        <p id="cookieAltBody">在目标网站按 F12 打开开发者工具，进入 Application（应用）→ Cookies，选中网站域名，把列表里的行整行复制下来粘贴，格式选“名称/值 多行”。这种方式不带过期时间，只建议临时使用。</p>
+      </details>
       <div class="setup-row">
         <label class="field field-grow"><span class="field-label">平台</span>
           <select id="cookiePlatform"><option value="youtube" selected>YouTube</option><option value="bilibili">Bilibili</option><option value="twitch">Twitch</option></select>
@@ -600,12 +636,9 @@
           <select id="cookieFormat"><option value="lines" selected>名称/值 多行（DevTools 复制行）</option><option value="netscape">Netscape cookies.txt</option><option value="header">请求头 Cookie 串</option></select>
         </label>
       </div>
-      <ol class="cookie-steps">
-        <li id="cookieStep1">在浏览器登录目标平台，导出 Netscape 格式的 <code>cookies.txt</code>（最可靠，能保留域名和有效期）。</li>
-        <li id="cookieStep2">选择上面的格式并粘贴内容。DevTools 复制表格也可以，但请复制完整行；请求头字符串只适合临时备用。</li>
-        <li id="cookieStep3">导入后回到直播入口，点击“解析”。只有解析成功，才说明这组 Cookie 对当前直播真正可用。</li>
-      </ol>
-      <label class="field"><span class="field-label">粘贴内容</span><textarea id="cookiePayload" rows="8" autocomplete="off" spellcheck="false" placeholder="SID　xxxxxxxx…&#10;HSID　yyyyyyyy…&#10;（推荐粘贴 cookies.txt）" required></textarea><small class="cookie-hint">Cookie 会按平台保存在本机；不会显示 Cookie 值。导入成功不等于账号验证成功。</small></label>
+      <p id="cookieImportIntro" class="cookie-platform-note">Cookie 按平台分别保存，导入前请先选对平台。</p>
+      <label class="field"><span class="field-label">粘贴内容</span><textarea id="cookiePayload" rows="7" autocomplete="off" spellcheck="false" placeholder="把 cookies.txt 的全部内容粘贴到这里&#10;（也支持开发者工具里复制的名称/值行）" required></textarea></label>
+      <p class="cookie-hint">🔒 Cookie 相当于你的登录凭据：只保存在本机，界面上不会再显示它的值。请不要把它发给任何人，也不要贴到日志或聊天里。</p>
     </div>
     <div id="cookieImportFeedback" class="settings-feedback dialog-feedback" role="status"></div>
     <footer class="dialog-foot settings-footer">
