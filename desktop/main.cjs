@@ -43,6 +43,23 @@ if (gpuForcedOff || gpuAlreadyFellBack) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');
 }
 
+/*
+ * 关掉 Chromium 的无障碍树。
+ *
+ * 划词/截图翻译、输入法一类 UI Automation 客户端一碰窗口，Chromium 就会打开
+ * 无障碍树：每条弹幕、每句字幕都要在浏览器主线程里同步更新树并向外广播事件。
+ * 弹幕密集的直播下主线程被原生代码吃满（V8 画像只看到 (idle)），整个桌面的
+ * 鼠标键盘跟着发钝。同机、同一直播（zackrawrr）、只差这一个开关的实测：
+ *
+ *   开着： Browser cpuMs 最高 4706/5s   timerLate 最高 3952ms   约 2 分钟卡死
+ *   关掉： Browser cpuMs 最高  483/5s   timerLate 最高   15ms   5 分钟无卡顿
+ *
+ * 本应用是直播播放器，不面向屏幕阅读器；LINGERLENS_ACCESSIBILITY=1 可恢复。
+ */
+if (process.env.LINGERLENS_ACCESSIBILITY !== '1') {
+  app.commandLine.appendSwitch('disable-renderer-accessibility');
+}
+
 function fallBackToSoftwareRendering(reason) {
   console.log(`[main] falling back to software rendering (${reason}); relaunching once`);
   process.env.LINGERLENS_GPU_FALLBACK = '1';
