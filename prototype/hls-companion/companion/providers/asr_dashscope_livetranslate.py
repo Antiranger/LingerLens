@@ -65,6 +65,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -304,6 +305,7 @@ class _LiveTranslateStream(ASRStream):
             self.ws = await self.session.ws_connect(
                 f"{url}{separator}model={self.provider.model}",
                 headers={"Authorization": f"Bearer {self.provider.api_key}"},
+                **proxy_kwargs(url),
             )
             await self.ws.send_json(self._session_update())
         except BaseException:

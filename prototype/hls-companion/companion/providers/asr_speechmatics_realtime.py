@@ -39,6 +39,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from .bounded import RecentIds, NumericTombstones
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none
@@ -158,6 +159,7 @@ class _SpeechmaticsStream(ASRStream):
             self.ws = await self.session.ws_connect(
                 self.provider.base_url,
                 headers={"Authorization": f"Bearer {self.provider.api_key}"},
+                **proxy_kwargs(self.provider.base_url),
             )
             await self.ws.send_json(self._start_recognition())
         except BaseException:

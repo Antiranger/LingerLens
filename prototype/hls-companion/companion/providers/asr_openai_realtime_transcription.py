@@ -45,6 +45,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -185,6 +186,7 @@ class _OpenAIRealtimeStream(ASRStream):
             self.ws = await self.session.ws_connect(
                 self.provider.base_url,
                 headers={"Authorization": f"Bearer {self.provider.api_key}"},
+                **proxy_kwargs(self.provider.base_url),
             )
             await self.ws.send_json(self._session_update())
         except BaseException:

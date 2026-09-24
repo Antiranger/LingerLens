@@ -47,6 +47,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -208,6 +209,7 @@ class _ElevenLabsScribeStream(ASRStream):
             self.ws = await self.session.ws_connect(
                 f"{self.provider.base_url}?{query}",
                 headers={"xi-api-key": self.provider.api_key},
+                **proxy_kwargs(self.provider.base_url),
             )
         except BaseException:
             await self._release()

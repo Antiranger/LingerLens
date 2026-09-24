@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -84,7 +85,7 @@ class _QwenRealtimeStream(ASRStream):
         try:
             self.session = aiohttp.ClientSession()
             url = f"{self.provider.base_url}?model={self.provider.model}"
-            self.ws = await self.session.ws_connect(url, headers={"Authorization": f"Bearer {self.provider.api_key}"})
+            self.ws = await self.session.ws_connect(url, headers={"Authorization": f"Bearer {self.provider.api_key}"}, **proxy_kwargs(url))
             options = self.provider.options
             turn = options.get("turnDetection", {})
             await self.ws.send_json({

@@ -58,6 +58,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from .bounded import RecentIds
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none
@@ -222,7 +223,7 @@ class _TencentAsrStream(ASRStream):
     async def connect(self) -> None:
         self.session = aiohttp.ClientSession()
         try:
-            self.ws = await self.session.ws_connect(self._signed_url())
+            self.ws = await self.session.ws_connect(self._signed_url(), **proxy_kwargs(self.provider.base_url))
         except BaseException:
             await self._release()
             raise
