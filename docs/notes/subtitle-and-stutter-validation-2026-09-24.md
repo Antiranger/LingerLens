@@ -69,3 +69,19 @@ Qwen 纯识别第一次日语测试在约 58.188 秒收到服务错误而中止�
 新启动脚本为根目录 `Start-Subtitle-Optimized.cmd`，使用显式 `LINGERLENS_DATA_DIR` 指向 `%LOCALAPPDATA%\LingerLens-SubtitleValidation-20260924`。这里的四条配置由用户既有凭据在本机复制，默认日语→简体中文、手动偏移为零、原生双语显式启用 MT 兜底。源配置文件哈希在复制前后一致；旧模型记录不修改。测试版日志默认关闭，用户可主动开启被动诊断。
 
 付费测试分为实际云测试与无云的控制实验，服务账单未读取，不能把音频分钟数当成最终账单。各次正常测试的临时配置均清理；后续探针将密钥保持在进程环境中、临时文件仅保存环境引用。逐字事件、媒体、账户配置和私有错误日志不提交 Git。
+
+## 最终回归、构建与 Git 交付
+
+运行时代码为 `62dd770ca643e096f847ba82de73a12bc714ff4a`。两个继承工作检查点分别为 `8d7cbd3`（卡顿调查）与 `18215ea`（字幕调查）；本轮性能/隔离配置提交为 `6995db0`。这些来源分开保留，不能把继承内容全算作新实现。
+
+第一次最终干净检出遇到一项 stderr 测试竞态：PCM 已推进到0.2秒时，独立 stderr 读取任务尚未统计最后3841字节。`77fd45615a37a6286266b2b4f754328d0aedd715` 保留原来的1MiB断言和总体超时，单独等待 stderr 计数完成；没有改变生产处理逻辑，没有放宽为少读字节也算通过。失败日志仍在 `ci-clean-final.log`。
+
+在 `77fd456` 的干净源码检出上重新运行完整 `npm run ci`，退出码0，工作树干净。复用了本机已安装依赖环境，不能称作全新机器安装认证。结果：881项Python计数测试、251项前端Node、50项根目录Node通过，共1182项；另有两套真实浏览器脚本通过。80个Python测试文件中79通过，一个未安装且不随桌面包分发的Streamlink可选测试文件跳过。发布/密钥、文件跟踪、Python导入、通知文本覆盖、文档、编译和语法检查通过。证据：`ci-clean-verified.log`。
+
+Windows后端冻结、冻结组件通知检查、解包桌面构建均通过。新EXE使用独立烟测用户目录启动，status/languages接口均为200、模型设置加载成功、合成HLS播放到0.206874s、退出码0，所属后台进程退出。这个短烟测只证明打包启动与基础播放，不替代上述真实云/播放器测量或长时稳定性测试。
+
+包内 player.js、media-clock.js、subtitle-render-loop.js、subtitle-scheduler.js、diagnostics-log.js、style.css、ui-bootstrap.js 与源码逐字哈希一致，app.asar内 desktop/main.cjs 也与源码相同。EXE的SHA256：`d5b4882a62b54b7d1344675b3aa634bf27cd4617b3e965c909a24b3a802a714e`。包目录另有 `VALIDATION.json` 记录代码身份与检查结果。
+
+启动入口：`F:\Projects\LagLingo-subtitle-final-20260924\Start-Subtitle-Optimized.cmd`。该入口选择隔离四配置；直接裸启动EXE仍可能读取通常的旧桌面配置，因此不作为本轮交付的推荐入口。两条双语配置名称明确写有“翻译兜底”，会在需要时额外调用既有独立翻译服务。
+
+私有仓库新分支：`fix/subtitle-validation-20260924`。草稿PR #2基于 `hardening/pre-release-20260923`，未合并，未发布，旧项目HEAD仍为65efeb4。最后的交付记录提交仅补充文档，不改变已构建的运行时代码。GitHub Actions状态应单独查询，不能拿本地绿色替代托管CI结果。
