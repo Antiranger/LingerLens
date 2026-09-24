@@ -19,6 +19,11 @@
     let timer = null;
     let polling = false;
     let pollingGeneration = 0;
+    // Session counters, never reset: the probe diffs them per window, and a
+    // counter that resets mid-session would read as a negative delta.
+    let polls = 0;
+    let received = 0;
+    let added = 0;
 
     async function get(path) {
       if (request) return request(path);
@@ -57,13 +62,20 @@
 
     const api = {
       async poll() {
+        polls += 1;
         try {
           const data = await get(`/api/live-messages?afterSeq=${afterSeq}`);
-          for (const incoming of data.messages || []) {
+          const batch = data.messages || [];
+          // `got` is what the backend sent, `added` is what the store actually
+          // took. A wide gap between them means we are being handed the same
+          // messages over and over, which is its own kind of danmaku flood.
+          received += batch.length;
+          for (const incoming of batch) {
             const current = store.get(incoming.id);
             if (!current || Number(incoming.seq) > Number(current.seq) || Number(incoming.revision) >= Number(current.revision)) {
               store.set(incoming.id, current ? { ...current, ...incoming } : incoming);
               storeVersion += 1;
+              added += 1;
             }
           }
           if (Number.isFinite(Number(data.maxSeq))) {
@@ -106,6 +118,7 @@
       getStore: () => store,
       getVersion: () => storeVersion,
       getStats: () => stats,
+      getCounters: () => ({ poll: polls, got: received, added }),
       getMaxSeq: () => maxSeq,
       reset() {
         afterSeq = 0;
@@ -119,8 +132,7 @@
   }
 
   /* 稳定的字符串散列：只用来给弹幕挑一个固定色调，不做任何安全用途。 */
-  function hashText(value) {
-    let hash = 0;
+  function hashText(value) {    let hash = 0;
     for (let index = 0; index < value.length; index += 1) {
       hash = (hash * 31 + value.charCodeAt(index)) | 0;
     }
@@ -144,6 +156,10 @@
     let source = options.source || (() => []);
     let filterPureEmoji = Boolean(options.filterPureEmoji);
     let lastSignature = null;
+    // Cumulative: one `innerHTML` write is one node subtree thrown away and
+    // rebuilt, and that is the timeline's real cost -- not the JS that decides
+    // to do it. Not reset by clear(), for the same delta reason as the overlay.
+    let rewrites = 0;
     // The store is polled much more often than its ordering changes. Keep a
     // sorted snapshot so moving the playback clock does not sort hundreds of
     // messages again on every UI tick.
@@ -185,6 +201,7 @@
       setSource(nextSource) { source = nextSource; },
       setFilterPureEmoji(enabled) { filterPureEmoji = Boolean(enabled); },
       getVisibleMessages: visible,
+      getStats: () => ({ rewrites }),
       render(playbackWallTime, messages = source(), options = {}) {
         const rows = visible(messages, playbackWallTime, options.version ?? null);
         const signature = rows.map((message) => `${message.id}:${message.seq}:${message.revision}:${message.translationState || ""}`).join("|");
@@ -215,6 +232,7 @@
           const badges = (author.badges || []).map((badge) => `<small>${escapeHtml(badge)}</small>`).join("");
           row.innerHTML = `<div class="timeline-time">${formatTime(message.mediaTime)}</div><div class="timeline-body"><div class="timeline-author">${escapeHtml(author.name || "Anonymous")}${badges}</div><div class="timeline-text-source" dir="auto">${escapeHtml(message.text)}</div>${message.translationState === "done" && message.translation ? `<div class="timeline-text-translated" dir="auto">${escapeHtml(message.translation)}</div>` : ""}</div>`;
           row.dataset.renderRevision = rowRevision;
+          rewrites += 1;
         }
         return { rows, changed };
       },
@@ -227,18 +245,22 @@
 
   function createChatOverlay({ container, maxRows = 6 } = {}) {
     const seen = new Set();
-    let lanes = [], previousWall = null, dropped = 0;
+    let lanes = [], previousWall = null;
+    // Cumulative session counters, deliberately NOT reset by clear(): the probe
+    // reads them as deltas, and a counter that drops to zero mid-stream would
+    // be reported as a negative window. They also read better in the indicator,
+    // where "画面省略: 312" should mean the whole session, not since the last seek.
+    let dropped = 0, launched = 0, reflows = 0, reflowMs = 0;
     function remember(id) { seen.add(id); if (seen.size > 1000) seen.delete(seen.values().next().value); }
     function clear() {
       container.replaceChildren();
       lanes = [];
       seen.clear();
       previousWall = null;
-      dropped = 0;
     }
     return {
       clear,
-      getStats: () => ({ dropped }),
+      getStats: () => ({ dropped, launched, reflows, reflowMs: Math.round(reflowMs * 10) / 10 }),
       render(wall, messages, { enabled = true, translated = false, paused = false, filterPureEmoji = false, size = 1 } = {}) {
         const scale = Math.max(0.75, Math.min(2, Number(size) || 1));
         if (!enabled || !Number.isFinite(wall)) { if (previousWall !== null) clear(); return; }
@@ -282,12 +304,18 @@
           node.style.maxWidth = `${width}px`;
           node.style.animationName = "none";
           container.append(node);
+          // 这一读是强制同步布局：append 刚让样式和布局失效，浏览器必须在这里
+          // 把账一次结清。它是整个弹幕层里唯一比周围 JS 更贵的地方，所以计时。
+          const reflowStart = nowMs();
           const textWidth = node.getBoundingClientRect().width;
+          reflowMs += nowMs() - reflowStart;
+          reflows += 1;
           node.style.setProperty("--chat-distance", `${-(width + textWidth)}px`);
           node.style.animationDuration = `${(width + textWidth) / speed}s`;
           node.style.animationName = "";
           node.addEventListener("animationend", () => node.remove(), { once: true });
           lanes[lane] = wall + (reducedMotion ? width + textWidth : textWidth + 40) / speed;
+          launched += 1;
           remember(message.id);
           // At most one launch per existing render tick; never catch up by
           // moving an immutable media timestamp seconds into the future.
@@ -297,6 +325,9 @@
     };
   }
 
+  /* 强制重排的耗时必须真的计时，所以这里要一个时钟。拿不到 performance 时
+     退化成 0：宁可在日志里显示"没测到"，也不要报一个看起来像真的假数字。 */
+  const nowMs = () => (typeof performance !== "undefined" && performance.now ? performance.now() : 0);
   const formatTime = (seconds) => global.LingerLensMediaClock?.formatWallClockTime(seconds) || "--:--:--";
   const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const exported = { createLiveMessagesClient, createLiveMessagesTimeline, createChatOverlay };

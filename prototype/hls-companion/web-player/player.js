@@ -185,12 +185,56 @@
      只有主进程能写文件（渲染进程在沙箱里），所以记录经 lingerlens:// 交给它。
      没配日志文件时 status() 回来的 enabled 是 false，之后一条都不发。 */
   const devLogClient = window.LingerLensDiagnostics?.createDevLogClient() || null;
+  // 请求画像必须在任何播放开始之前装好，否则抓不到 HLS 的分片请求。
+  const netProbe = window.LingerLensDiagnostics?.createNetProbe?.();
   const playbackProbe = window.LingerLensDiagnostics?.createPlaybackProbe({
     video,
     enabled: () => Boolean(devLogClient?.get()?.enabled),
     hidden: () => document.hidden,
-    // One aggregate every five seconds, flushed by the existing log poller.
-    emit: data => diagnosticsBar?.push("info", "playback-perf", JSON.stringify(data)),
+    /*
+     * 弹幕的成本要分四层记，因为 workMs 只看得见第一层：
+     *   JS    —— workMs 里的 chatOverlay / chatHistory（已知它很小）
+     *   DOM   —— gauges 里的节点数、动画数、store 条数
+     *   布局  —— reflow 次数与耗时（append 之后那次 getBoundingClientRect）
+     *   合成  —— jank 里的帧间隔直方图
+     * 前三层直接决定第四层；只有把四层并排放，才能说清"画面为什么掉帧"。
+     * 计数器是累计值，探针自己按窗口做差。
+     */
+    counters: () => ({
+      poll: liveMessagesClient?.getCounters?.().poll || 0,
+      got: liveMessagesClient?.getCounters?.().got || 0,
+      added: liveMessagesClient?.getCounters?.().added || 0,
+      launch: chatOverlay?.getStats?.().launched || 0,
+      drop: chatOverlay?.getStats?.().dropped || 0,
+      reflow: chatOverlay?.getStats?.().reflows || 0,
+      reflowMs: Math.round(chatOverlay?.getStats?.().reflowMs || 0),
+      rewrite: liveMessagesTimeline?.getStats?.().rewrites || 0,
+    }),
+    gauges: () => ({
+      // on / tl 是 A/B 的记账凭证：没有它们，两份日志分不出哪场关了弹幕。
+      on: chatOverlayToggle.checked,
+      tl: Boolean(el("chatTimelineList")?.offsetParent),
+      overlay: el("chatOverlay")?.children.length || 0,
+      timeline: el("chatTimelineList")?.children.length || 0,
+      anim: el("chatOverlay")?.getAnimations?.({ subtree: true }).length || 0,
+      store: liveMessagesClient?.getStore?.().size || 0,
+    }),
+    net: netProbe,
+    /*
+     * 每五秒一条的机器遥测，直接落盘，不进诊断栏的环形缓冲。
+     *
+     * 那个缓冲是给人读的：单条限长 400 字符，总共 400 格。playback-perf 一小时
+     * 720 条，两头都不合适——它会把真正的 error/warn 挤出缓冲（约 33 分钟后
+     * 面板里就只剩遥测了），而它自己又会被那个 400 字符的限长从中间截断，
+     * 弹幕计数器正好排在截断点之后，整段丢掉。它没有一行是给人当场看的，
+     * 所以只留文件这一条路。
+     */
+    emit: data => {
+      if (!devLogClient?.get()?.enabled) return;
+      const [line] = window.LingerLensDiagnostics.formatRecordLines(
+        [{ t: Date.now() / 1000, level: "info", source: "playback-perf", message: JSON.stringify(data) }]);
+      if (line) void devLogClient.send([line]);
+    },
   });
   /* 游标用插入序 order，不用数组下标也不用时间戳：环形缓冲会淘汰旧记录，而且
      后端记录的时间戳可能落在已经交出去的记录之前，两者都会漏。 */
