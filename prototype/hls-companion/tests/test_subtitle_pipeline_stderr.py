@@ -322,6 +322,11 @@ class StderrDrainTests(unittest.IsolatedAsyncioTestCase):
                 5.0,
                 "PCM to reach 0.2s: the decoder is blocked writing stderr",
             )
+            # stdout and stderr are independent pipes. The child can resume
+            # PCM while the final stderr completion is queued in the parent.
+            # PCM progress proves no deadlock, not completion of byte accounting.
+            await until(lambda: pipeline._stderr_bytes >= 1 << 20, 1.0,
+                        "the independent stderr reader to account for the full burst")
             self.assertGreaterEqual(pipeline._stderr_bytes, 1 << 20)
             self.assertLessEqual(len(pipeline._stderr_tail), _STDERR_TAIL_BYTES)
             self.assertTrue(pipeline._stderr_tail_truncated)
