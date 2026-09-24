@@ -1682,6 +1682,7 @@ class SubtitlePipeline:
             starts_mid_sentence=pending.starts_mid_sentence,
             ends_mid_sentence=pending.ends_mid_sentence,
             cut_reason=pending.cut_reason,
+            item_id=pending.item_id,
         )
         self._timing_source_counts[pending.timing_source] = self._timing_source_counts.get(pending.timing_source, 0) + 1
         if pending.item_id:
@@ -2142,6 +2143,29 @@ class SubtitlePipeline:
             # paid for were being discarded while sourceError was null.
             return bool(status.get("sourceError") or status.get("source_error"))
         return bool(status)
+
+    def caption_drafts(self) -> list[dict[str, Any]]:
+        """Preload stable source previews; the browser owns onset admission.
+
+        A viewer-position round trip at onset imposed up to a polling interval
+        of latency even when recognition was ready seconds ahead of the viewer.
+        Never guess missing media anchors or send mutable ASR hypotheses here.
+        """
+        if not self._running or self.media_epoch is None:
+            return []
+        drafts = []
+        for pending in self.caption_chunker.pending_captions():
+            text = clean_subtitle_text(pending.text)
+            if not text:
+                continue
+            begin = self._draft_media_time(self.acoustic_onset.refine(pending.begin_pcm, pending.end_pcm))
+            end = self._draft_media_time(pending.end_pcm)
+            if begin is None or end is None or end < begin:
+                continue
+            drafts.append({"text": text, "itemId": pending.item_id,
+                "generation": self._generation, "tStart": begin, "tEnd": end,
+                "lang": pending.language or self.source_language, "speaker": pending.speaker})
+        return drafts
 
     def caption_draft(self) -> dict[str, Any] | None:
         """The line the chunker is holding, so the player can draw it early.

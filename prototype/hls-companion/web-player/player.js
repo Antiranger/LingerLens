@@ -61,8 +61,8 @@
   const subtitleReadiness = new Map();
   let subtitleAfterSeq = 0;
   let subtitleMaxKnownEnd = 0;
-  // Advance by one 100ms render tick plus the measured 50ms median residual.
-  // This centers normal cue onset without increasing timer or polling work.
+  // Paint against the presented video frame. No positive timing lookahead:
+  // neither a timer interval nor network latency changes where a cue belongs.
   const SUBTITLE_RENDER_ADVANCE_SECONDS = 0;
   // A draft is cut at the playhead the backend was told about, which the status
   // poll refreshes once a second. This absorbs that gap, and hides the line when
@@ -186,7 +186,7 @@
      没配日志文件时 status() 回来的 enabled 是 false，之后一条都不发。 */
   const devLogClient = window.LingerLensDiagnostics?.createDevLogClient() || null;
   // 请求画像必须在任何播放开始之前装好，否则抓不到 HLS 的分片请求。
-  const netProbe = window.LingerLensDiagnostics?.createNetProbe?.();
+  const netProbe = window.LingerLensDiagnostics?.createNetProbe?.({ enabled: () => Boolean(devLogClient?.get()?.enabled) });
   const playbackProbe = window.LingerLensDiagnostics?.createPlaybackProbe({
     video,
     enabled: () => Boolean(devLogClient?.get()?.enabled),
@@ -2432,7 +2432,7 @@
       // Recognized but not yet a cue. Held verbatim and checked at paint time:
       // a payload that cannot be placed on the timeline is no line at all, and
       // the next poll replaces it, so a dropped poll drops the line too.
-      subtitleDraft = data.draft || null;
+      subtitleDraft = Array.isArray(data.drafts) ? data.drafts : data.draft || null;
       const maxSeq = Number(data.maxSeq);
       if (Number.isFinite(maxSeq)) subtitleAfterSeq = Math.max(subtitleAfterSeq, maxSeq);
       // 保留期裁剪以已知 cue 的时间线为基准，不用 Date.now()（RC-6）。
@@ -2757,6 +2757,7 @@
 
   /** Keep only a draft that can be placed on the timeline at all. */
   function usableDraft(draft) {
+    if (Array.isArray(draft)) return draft.slice(0, 32).map(usableDraft).filter(Boolean);
     if (!draft || typeof draft.text !== "string" || !draft.text.trim()) return null;
     if (!Number.isFinite(draft.tStart) || !Number.isFinite(draft.tEnd)) return null;
     return draft;
@@ -2767,6 +2768,15 @@
   }
 
   function draftLine(draft, position, cues) {
+    if (Array.isArray(draft)) {
+      // A future speaker cannot hide the one currently being heard. Timed
+      // previews are preloaded, but never admitted before their onset.
+      for (const candidate of [...draft].sort((a, b) => b.tStart - a.tStart)) {
+        const line = draftLine(candidate, position, cues);
+        if (line) return line;
+      }
+      return "";
+    }
     // Translation-only mode has nothing to show: a draft is source text only,
     // because the Provider has not translated a cut it has not made.
     if (!draft || subtitlePrefs.mode === "zh") return "";
@@ -2778,6 +2788,8 @@
     const held = foldForDraft(draft.text);
     // The cue that carries these words replaced the projection on the server.
     for (const cue of cues) {
+      if (draft.itemId && cue.itemId && (draft.itemId !== cue.itemId
+          || (draft.generation != null && cue.generation != null && draft.generation !== cue.generation))) continue;
       const shown = foldForDraft(cue.src);
       if (shown && (shown.startsWith(held) || held.startsWith(shown))) return "";
     }
@@ -3307,6 +3319,7 @@
     subtitleRenderTimer?.stop();
     clearInterval(timelineRenderTimer);
     playbackProbe?.dispose();
+    netProbe?.restore();
     if (liveMessagesClient) liveMessagesClient.stopPolling();
   });
 })();

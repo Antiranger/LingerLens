@@ -120,7 +120,29 @@ class FakeLiveTranslateServer:
         return ws
 
     async def send(self, payload: dict[str, Any]) -> None:
+        # Supply the documented protocol metadata formerly absent from fixtures.
+        # Deliberately malformed/late/cancelled sequences are tested directly in
+        # test_qwen_response_identity.py without this convenience helper.
+        payload = dict(payload)
+        kind = payload.get("type", "")
+        if kind == "input_audio_buffer.speech_started":
+            self._fixture_source = payload["item_id"]
+        if kind == "response.created":
+            self._fixture_response = (payload.get("response") or {}).get("id")
+            source = getattr(self, "_fixture_source", None)
+            rid = self._fixture_response
+            if source and rid:
+                output = "output-" + rid
+                await self.outbound.put({"type":"conversation.item.created", "previous_item_id":source,
+                    "item":{"id":output,"role":"assistant"}})
+                await self.outbound.put({"type":"response.output_item.added", "response_id":rid,
+                    "item":{"id":output,"role":"assistant"}})
+        rid = getattr(self, "_fixture_response", None)
+        if rid and kind.startswith("response.") and kind not in {"response.created", "response.done"}:
+            payload.setdefault("response_id", rid)
         await self.outbound.put(payload)
+        if rid and kind in {"response.text.done","response.audio_transcript.done"}:
+            await self.outbound.put({"type":"response.done","response":{"id":rid,"status":"completed"}})
 
     async def wait_for(self, check, timeout: float = 2.0) -> None:
         deadline = asyncio.get_running_loop().time() + timeout

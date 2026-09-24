@@ -56,7 +56,7 @@ async def run_case(config, profile_id, args):
     pipeline = SubtitlePipeline(asr_provider=provider, translation_provider=mt,
         cue_store=CueStore(), meta=StreamMeta('fixture','local','',args.language,args.target),
         source_policy=policy, sample_rate=rate, native_translation_bus=bus,
-        playback_delay_seconds=lambda: 15.0, translation_timeout_seconds=10.0)
+        playback_delay_seconds=lambda: 15.0, translation_timeout_seconds=(float(record.get('options',{}).get('nativeTranslationTimeoutSeconds',15)) if bus else float(next(p for p in config['translation']['providers'] if p['id']==config['translation']['active']).get('options',{}).get('timeoutSeconds',6))))
     trace, updates, first_seen, revisions = [], [], {}, {}
     raw_events = []
     stream = None; tasks = []; error = None; started = time.monotonic()
@@ -68,7 +68,7 @@ async def run_case(config, profile_id, args):
         mapper=stream._map_event
         def traced_map(raw):
             raw_events.append({'at':time.monotonic()-started, **{k:v for k,v in raw.items() if k in
-                ('type','item_id','response_id','delta','transcript','text','audio_start_ms','audio_end_ms','response','session')}})
+                ('type','item_id','response_id','delta','transcript','text','audio_start_ms','audio_end_ms','response','session','item','previous_item_id')}})
             return mapper(raw)
         stream._map_event=traced_map
         async def consume():
@@ -78,7 +78,7 @@ async def run_case(config, profile_id, args):
                 trace.append({'at':at,'type':ev.type,'item':ev.item_id,'begin':ev.begin_pcm,'end':ev.end_pcm,
                     'text':ev.text,'translation':ev.translation,'rawType':raw.get('type'),
                     'responseId':raw.get('response_id') or (raw.get('response') or {}).get('id'),
-                    'observation':dataclasses.asdict(ev.caption_observation) if ev.caption_observation else None})
+                    'errorCode':(raw.get('error') or {}).get('code') if isinstance(raw.get('error'),dict) else None, 'errorMessage':str(ev.message or '')[:240] if ev.type=='error' else None, 'observation':dataclasses.asdict(ev.caption_observation) if ev.caption_observation else None})
                 if ev.type=='error': raise RuntimeError('provider-error: '+str(ev.message)[:120])
                 await pipeline._handle_asr_event(ev)
         async def sample():
@@ -127,7 +127,7 @@ async def run_case(config, profile_id, args):
             'lateAt15':sum(v>15 for v in lag),'maxReadyFromOnset':max(lag) if lag else None}
     if not source and error is None: error='NoSourceEvidence'
     result={'profile':profile_id,'model':provider.model,'native':bus is not None,'fallbackEnabled':bool(bus is not None and args.native_fallback),
-        'audioSeconds':len(pcm)/(rate*2),'audioSha256':hashlib.sha256(pcm).hexdigest(),
+        'audioSeconds':pipeline._stream_pushed_seconds,'fixtureAudioSeconds':len(pcm)/(rate*2),'completedInput':error is None and pipeline._stream_pushed_seconds >= len(pcm)/(rate*2)-.001,'audioSha256':hashlib.sha256(pcm).hexdigest(),
         'errorCategory':error,'source':summary(source),'translation':summary(done),
         'events':trace,'updates':updates,'rawEvents':raw_events if stream else []}
     (args.output/(profile_id+'.json')).write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')

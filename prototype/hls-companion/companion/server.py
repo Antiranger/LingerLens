@@ -458,6 +458,7 @@ class CompanionApplication:
                 # Recognized but not yet released: the player may draw this, but it
                 # is not a cue and never reaches the subtitle list or an export.
                 "draft": pipeline.caption_draft() if pipeline is not None else None,
+                "drafts": getattr(pipeline, "caption_drafts", lambda: [])(),
                 "stats": pipeline_status,
             },
             headers={"Cache-Control": "no-store"},

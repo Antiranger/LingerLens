@@ -584,6 +584,26 @@ class CaptionChunker:
             speaker=_dominant(unit.speaker for unit in units),
         )
 
+    def pending_captions(self) -> tuple[PendingCaption, ...]:
+        """Stable source previews with media bounds, including future onsets.
+
+        Sending evidence ahead of playback does not display it early. The
+        renderer admits each preview on its own video timestamp; polling is
+        transport, never the caption clock. These remain non-committed previews.
+        """
+        pending = []
+        for state in self._captions.values():
+            if not state.units:
+                continue
+            begin, end = _chunk_times(state.units, state)
+            pending.append(PendingCaption(
+                item_id=_dominant(unit.item_id for unit in state.units) or "",
+                text=_join_units(state.units), begin_pcm=begin, end_pcm=end,
+                language=_dominant(unit.language for unit in state.units),
+                speaker=_dominant(unit.speaker for unit in state.units),
+            ))
+        return tuple(sorted(pending, key=lambda item: item.begin_pcm)[:32])
+
     def telemetry(self) -> CaptionChunkerTelemetry:
         ordered = sorted(self._spans)
         return CaptionChunkerTelemetry(
