@@ -130,14 +130,14 @@ function netLabel(pathname) {
   const folded = String(pathname).replace(/[0-9a-f]{8,}/gi, '#').replace(/\d+/g, '#').replace(/#+/g, '#');
   return folded.length > 30 ? `${folded.slice(0, 29)}…` : folded;
 }
-function netRowFor(pathname, startedAt) {
+function netRowFor(pathname, startedAt, headersAt = performance.now()) {
   const key = netLabel(pathname);
   const row = netWindow.get(key) || { n: 0, kb: 0, ch: 0, fms: 0, ms: 0, max: 0 };
   netWindow.set(key, row);
   row.n += 1;
   // net.fetch 返回到这里的时间，和 ms（到流读完）分开记。卡顿现场这两个数差了
   // 三个数量级——不分开，就分不清是"后端答得慢"还是"我们把响应体交出去这一段慢"。
-  row.fms += performance.now() - startedAt;
+  row.fms += Math.max(0, headersAt - startedAt);
   return row;
 }
 function finishNetRow(row, startedAt) {
@@ -161,8 +161,8 @@ function countProxyStream(pathname, body, startedAt) {
     cancel: done,
   }));
 }
-function noteProxyBuffer(pathname, bytes, startedAt) {
-  const row = netRowFor(pathname, startedAt);
+function noteProxyBuffer(pathname, bytes, startedAt, headersAt) {
+  const row = netRowFor(pathname, startedAt, headersAt);
   row.kb += (Number(bytes) || 0) / 1024;
   finishNetRow(row, startedAt);
 }
@@ -195,6 +195,13 @@ function watchGpuProcessHealth() {
     }
     fallBackToSoftwareRendering(`gpu process gone: ${details.reason}`);
   });
+}
+// Explicit local validation profiles never replace the installed app's settings.
+if (!smoke && process.env.LINGERLENS_DATA_DIR) {
+  const dataDir = process.env.LINGERLENS_DATA_DIR;
+  if (!path.isAbsolute(dataDir)) throw new Error('LINGERLENS_DATA_DIR must be absolute');
+  fsSync.mkdirSync(dataDir, { recursive: true });
+  app.setPath('userData', dataDir);
 }
 if (smoke) app.setPath('userData', path.resolve(smoke, 'user-data'));
 let window;
@@ -426,14 +433,16 @@ async function start() {
     try {
       const response = await net.fetch(target, { method: request.method, headers,
         body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer(), redirect: 'error' });
+      const headersAt = performance.now();
+      const tracing = devLog.state().active;
       const resultHeaders = new Headers(response.headers);
       resultHeaders.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'none'");
       if (PROXY_BUFFER) {
         const buffer = await response.arrayBuffer();
-        noteProxyBuffer(url.pathname, buffer.byteLength, startedAt);
+        if (tracing) noteProxyBuffer(url.pathname, buffer.byteLength, startedAt, headersAt);
         return new Response(buffer, { status: response.status, headers: resultHeaders });
       }
-      return new Response(countProxyStream(url.pathname, response.body, startedAt),
+      return new Response(tracing ? countProxyStream(url.pathname, response.body, startedAt) : response.body,
         { status: response.status, headers: resultHeaders });
     } catch { return new Response('Backend unavailable', { status: 503 }); }
   });

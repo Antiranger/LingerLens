@@ -1315,7 +1315,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
 }
 @keyframes spin-square {
   0% { transform: rotate(0deg); }
-  50% { transform: rotate(180deg) scale(.72); background: var(--lime); }
+  50% { transform: rotate(180deg) scale(.72); opacity: .55; }
   100% { transform: rotate(360deg); }
 }
 .loading-progress {
@@ -1701,11 +1701,16 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   white-space: nowrap;
   font: 800 15px/1 var(--font-mono);
   letter-spacing: .14em;
-  animation: marquee 32s linear infinite;
+  animation: marquee 32s linear infinite paused;
   width: max-content;
-  will-change: transform;
+  will-change: auto;
 }
+.marquee.decorative-visible .marquee-track { animation-play-state: running; }
 .marquee:hover .marquee-track { animation-play-state: paused; }
+.document-hidden .marquee-track,
+.document-hidden .spinner,
+.document-hidden .loading-spinner,
+.document-hidden .state-dot { animation-play-state: paused !important; }
 .marquee-track span { flex: none; }
 @keyframes marquee {
   from { transform: translateX(0); }

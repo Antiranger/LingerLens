@@ -541,7 +541,7 @@
     let counts = {}, costs = {}, lastTime = 0, wasHidden = false;
     let ltCount = 0, ltTotal = 0, ltMax = 0, ltObserver = null;
     let rafCount = 0, rafMax = 0, lastFrame = 0, rafSeen = false;
-    let originalRaf = null, rafPatched = false;
+    let originalRaf = null, wrappedRaf = null, rafToken = null, rafPatched = false;
     const rafOver = [0, 0, 0, 0];
     let previousCounters = null;
     const hasObserver = typeof PerformanceObserver === "function";
@@ -559,8 +559,8 @@
        指针掉帧」这种合成通道的问题时，这种干扰是不能接受的：它既会污染结论，也可
        能就是症状本身。
 
-       代价是应用不请求帧时这里测不到帧率。那恰恰是正确的读数：没人动画时本来就没
-       有帧可言，0 才是事实。 */
+       0 只表示没有观测到经过此包装器的 JavaScript rAF 间隔。视频帧、CSS 动画、
+       浏览器合成与显示器扫描仍可能进行，不能把它解释为零重绘或零显示帧。 */
     function onFrame(t) {
       // 同一帧里可能有多个回调拿到同一个时间戳，只按时间戳去重计数。
       if (rafSeen && t !== lastFrame) {
@@ -572,21 +572,28 @@
       rafSeen = true; lastFrame = t;
     }
     function patchRaf(on) {
-      // 用 globalThis 而不是 window：浏览器里两者同一个对象，但测试环境没有 window，
-      // 写死 window 会让包装静默失效——测出来是「一帧都没有」，而不是报错。
       if (!hasRaf || typeof globalThis === "undefined") return;
       if (on && !rafPatched) {
-        originalRaf = globalThis.requestAnimationFrame;
-        globalThis.requestAnimationFrame = function (callback) {
-          return originalRaf.call(globalThis, function (t) {
-            try { onFrame(t); } catch { /* 测量失败不该影响调用方 */ }
-            return callback(t);
+        const delegate = globalThis.requestAnimationFrame;
+        const token = {}; rafToken = token;
+        originalRaf = delegate;
+        wrappedRaf = function (callback) {
+          // Preserve the native synchronous validation and callback receiver.
+          if (typeof callback !== "function") return delegate.call(this, callback);
+          return delegate.call(this, function (t) {
+            if (rafToken === token) {
+              try { onFrame(t); } catch { /* Observation cannot break playback. */ }
+            }
+            return callback.call(this, t);
           });
         };
+        globalThis.requestAnimationFrame = wrappedRaf;
         rafPatched = true;
       } else if (!on && rafPatched) {
-        if (originalRaf) globalThis.requestAnimationFrame = originalRaf;
-        rafPatched = false; originalRaf = null; rafSeen = false;
+        // Another library may have wrapped ours. Do not erase its installation;
+        // the detached wrapper remains a pure delegate with a retired token.
+        if (globalThis.requestAnimationFrame === wrappedRaf) globalThis.requestAnimationFrame = originalRaf;
+        rafToken = null; rafPatched = false; originalRaf = wrappedRaf = null; rafSeen = false;
       }
     }
     /* Samplers run only while the log is armed, so an unarmed app pays nothing
@@ -691,9 +698,9 @@
         if (net) {
           try { summary.net = net.takeWindow(); } catch { /* 画像失败不该拖垮整条记录 */ }
         }
-        // `raf[0]` is the frame count in the window, so 5s of smooth 60Hz reads
-        // about 300; the four buckets that follow count intervals past 16.7/33/
-        // 50/100ms and are what actually names a stutter as stutter.
+        // Passive JS callback intervals, NOT video or compositor frame counts.
+        // Intentional sparse callbacks also create large gaps; pair this with
+        // playback quality and timer lateness before classifying a stall.
         const jank = {};
         if (hasRaf) jank.raf = [rafCount, ...rafOver, Math.round(rafMax)];
         if (ltObserver) jank.lt = [ltCount, Math.round(ltTotal), Math.round(ltMax)];
@@ -721,87 +728,78 @@
   function createNetProbe(options = {}) {
     const target = options.target || globalThis;
     const originalFetch = target.fetch;
-    const OriginalXhr = target.XMLHttpRequest;
-    if (typeof originalFetch !== "function" && typeof OriginalXhr !== "function") return null;
-    const clock = options.now || (() => Date.now());
+    const proto = target.XMLHttpRequest?.prototype;
+    const originalOpen = proto?.open, originalSend = proto?.send;
+    const enabled = options.enabled || (() => true);
+    const clock = options.now || (() => performance.now());
     const maxLabel = options.maxLabel || 26;
-    const byPath = new Map();
-    let requests = 0, bytes = 0, ms = 0, failures = 0;
-
+    const requestsByXhr = new WeakMap(), byPath = new Map();
+    let live = true, requests = 0, bytes = 0, ms = 0, failures = 0;
+    let fetchWrapper, openWrapper, sendWrapper;
+    if (typeof originalFetch !== "function" && !proto) return null;
+    const capturing = () => live && enabled();
     function labelFor(raw) {
-      let pathname = String(raw ?? "");
-      try { pathname = new URL(pathname, "lingerlens://app/").pathname; } catch { /* keep the raw text */ }
-      // ID、序号、分片号都折叠成 #：/seg/12.ts 和 /seg/13.ts 是同一条。
+      let pathname;
+      try { pathname = new URL(String(raw ?? ""), "lingerlens://app/").pathname; }
+      catch { return "unknown"; }
       const clean = pathname.replace(/[0-9a-f]{8,}/gi, "#").replace(/\d+/g, "#").replace(/#+/g, "#");
       return clean.length > maxLabel ? `${clean.slice(0, maxLabel - 1)}…` : clean;
     }
-
     function tally(path, elapsed, size, failed) {
-      requests += 1; ms += elapsed; bytes += size;
+      if (!capturing()) return;
+      if (!byPath.has(path) && byPath.size >= 64) path = "other";
+      elapsed = Math.max(0, Number(elapsed) || 0); size = Math.max(0, Number(size) || 0);
+      requests++; ms += elapsed; bytes += size;
       const row = byPath.get(path) || { n: 0, ms: 0, bytes: 0, max: 0, bad: 0 };
-      row.n += 1; row.ms += elapsed; row.bytes += size;
-      if (failed) { row.bad += 1; failures += 1; }
-      if (elapsed > row.max) row.max = elapsed;
-      byPath.set(path, row);
+      row.n++; row.ms += elapsed; row.bytes += size;
+      if (failed) { row.bad++; failures++; }
+      row.max = Math.max(row.max, elapsed); byPath.set(path, row);
     }
-
     if (typeof originalFetch === "function") {
-      target.fetch = function patchedFetch(input, init) {
-        const path = labelFor(typeof input === "string" ? input : input?.url);
-        const t0 = clock();
-        return originalFetch.apply(this, arguments).then(
-          (response) => {
-            // content-length 缺失就按 0 记。为了数流媒体的字节去包一层 body 流，
-            // 等于给正在被测量的那条路径加开销——宁可少一个数字，也不要污染它。
-            let size = 0;
-            try { size = Number(response?.headers?.get?.("content-length")) || 0; } catch { /* opaque headers */ }
-            tally(path, clock() - t0, size, !response?.ok);
-            return response;
-          },
-          (error) => { tally(path, clock() - t0, 0, true); throw error; },
-        );
+      fetchWrapper = function (input, init) {
+        if (!capturing()) return originalFetch.apply(this, arguments);
+        const path = labelFor(typeof input === "string" ? input : input?.url), t0 = clock();
+        return originalFetch.apply(this, arguments).then(response => {
+          let size = 0;
+          try { size = Number(response?.headers?.get?.("content-length")) || 0; } catch { }
+          tally(path, clock() - t0, size, !response?.ok);
+          return response; // Do not clone, consume or wrap the response body.
+        }, error => { tally(path, clock() - t0, 0, true); throw error; });
       };
+      target.fetch = fetchWrapper;
     }
-    if (typeof OriginalXhr === "function" && OriginalXhr.prototype) {
-      const open = OriginalXhr.prototype.open;
-      const send = OriginalXhr.prototype.send;
-      OriginalXhr.prototype.open = function patchedOpen(method, url) {
-        this.__llPath = labelFor(url);
-        this.__llT0 = clock();
-        return open.apply(this, arguments);
+    if (proto && typeof originalOpen === "function" && typeof originalSend === "function") {
+      openWrapper = function (method, url) {
+        const result = originalOpen.apply(this, arguments);
+        requestsByXhr.set(this, labelFor(url)); return result;
       };
-      OriginalXhr.prototype.send = function patchedSend() {
-        const path = this.__llPath;
-        if (path !== undefined) {
-          this.addEventListener("loadend", () => {
-            let size = 0;
-            try { size = Number(this.getResponseHeader("content-length")) || 0; } catch { /* forbidden header */ }
-            tally(path, clock() - (this.__llT0 || 0), size, this.status === 0 || this.status >= 400);
-          }, { once: true });
-        }
-        return send.apply(this, arguments);
+      sendWrapper = function () {
+        if (!capturing()) return originalSend.apply(this, arguments);
+        const path = requestsByXhr.get(this) || "unknown", t0 = clock();
+        const done = () => {
+          let size = 0;
+          try { size = Number(this.getResponseHeader("content-length")) || 0; } catch { }
+          tally(path, clock() - t0, size, this.status === 0 || this.status >= 400);
+        };
+        this.addEventListener("loadend", done, { once: true });
+        try { return originalSend.apply(this, arguments); }
+        catch (error) { this.removeEventListener?.("loadend", done); throw error; }
       };
+      proto.open = openWrapper; proto.send = sendWrapper;
     }
-
     return {
-      /*
-       * 每个窗口取一次，取完清零。探针要回答的是"这 5 秒里发生了什么"，
-       * 累计值只会一路上涨，读不出卡顿那一刻和之前的区别。
-       * 按字节降序：谁在泵数据，比谁被调用得多更接近主进程的成本。
-       */
       takeWindow(top = 4) {
-        const topPaths = [...byPath.entries()]
-          .sort((a, b) => b[1].bytes - a[1].bytes || b[1].n - a[1].n)
-          .slice(0, top)
-          .map(([path, row]) => [path, row.n, Math.round(row.bytes / 1024), Math.round(row.ms), Math.round(row.max)]);
-        const bucket = { req: requests, kb: Math.round(bytes / 1024), ms: Math.round(ms),
-          fail: failures, paths: byPath.size, top: topPaths };
-        requests = 0; bytes = 0; ms = 0; failures = 0; byPath.clear();
-        return bucket;
+        const topPaths = [...byPath.entries()].sort((a,b) => b[1].bytes-a[1].bytes || b[1].n-a[1].n)
+          .slice(0,top).map(([path,row]) => [path,row.n,Math.round(row.bytes/1024),Math.round(row.ms),Math.round(row.max)]);
+        const bucket = { req: requests, kb: Math.round(bytes/1024), ms: Math.round(ms), fail: failures, paths: byPath.size, top: topPaths };
+        requests = bytes = ms = failures = 0; byPath.clear(); return bucket;
       },
       labelFor,
       restore() {
-        if (typeof originalFetch === "function") target.fetch = originalFetch;
+        live = false; byPath.clear();
+        if (target.fetch === fetchWrapper) target.fetch = originalFetch;
+        if (proto?.open === openWrapper) proto.open = originalOpen;
+        if (proto?.send === sendWrapper) proto.send = originalSend;
       },
     };
   }

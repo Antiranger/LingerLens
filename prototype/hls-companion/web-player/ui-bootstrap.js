@@ -43,6 +43,19 @@
     setInterval(paint, 1000);
   }
 
+  // Decorative motion is not a clock. Observe visibility, never request frames
+  // just to decide whether a footer outside the viewport needs animation.
+  const updateVisibility = () => document.documentElement.classList.toggle("document-hidden", document.hidden);
+  document.addEventListener("visibilitychange", updateVisibility);
+  updateVisibility();
+  if (typeof IntersectionObserver === "function") {
+    const decorations = new IntersectionObserver(entries => {
+      for (const entry of entries) entry.target.classList.toggle("decorative-visible", entry.isIntersecting);
+    });
+    document.querySelectorAll(".marquee").forEach(node => decorations.observe(node));
+    window.addEventListener("pagehide", () => decorations.disconnect(), { once: true });
+  }
+
   /* ── 滚动揭示：进入视口时依次浮现 ── */
   const sections = document.querySelectorAll(".reveal");
   const revealAll = () => sections.forEach((node) => node.classList.add("revealed"));
