@@ -7,7 +7,7 @@ const {
   formatWallClockTime,
 } = require(path.resolve(__dirname, "../web-player/media-clock.js"));
 
-test("MediaClock uses hls.playingDate first, falls back to fragment programDateTime + offset, returns unavailable when PDT absent", () => {
+test("MediaClock supports playingDate-only sources and fragment PDT without wall-clock guessing", () => {
   // 1. hls.playingDate preferred
   const hlsWithPlayingDate = {
     playingDate: new Date("2026-04-18T12:00:10.500Z"),
@@ -67,4 +67,29 @@ test("formatWallClockTime formats epoch seconds into 24-hour HH:mm:ss in local t
   const epoch = 1776513610.5; // April 18, 2026 12:00:10.500 UTC
   const formatted = formatWallClockTime(epoch);
   assert.match(formatted, /^\d{2}:\d{2}:\d{2}$/);
+});
+
+test("parsed fragment PTS beats a stale playingDate and unparsed playlist start", () => {
+  const hls={playingDate:new Date(101000),currentLevel:0,levels:[{details:{fragments:[
+    {start:0,startPTS:1,duration:3,programDateTime:100000}
+  ]}}]};
+  const clock=createMediaClock({getHls:()=>hls,getVideo:()=>({currentTime:1})});
+  assert.equal(clock.playingWallTime(),100);
+  assert.equal(clock.wallTimeForMediaPosition(2),101);
+});
+test("each position is mapped against its own PDT interval across a discontinuity", () => {
+  const hls={currentLevel:0,levels:[{details:{fragments:[
+    {start:0,startPTS:0,duration:2,programDateTime:100000},
+    {start:2,startPTS:2,duration:2,programDateTime:107000}
+  ]}}]};
+  const clock=createMediaClock({getHls:()=>hls,getVideo:()=>({currentTime:1})});
+  assert.equal(clock.wallTimeForMediaPosition(2),107);
+  assert.equal(clock.mediaPositionForWallTime(108),3);
+  assert.equal(clock.mediaPositionForWallTime(104),null);
+});
+test("a stale level snapshot cannot override the current parsed fragment",()=>{
+  const hls={currentLevel:0,levels:[{details:{fragments:[{start:.08,startPTS:.08,duration:2,programDateTime:100000}]}}]};
+  const clock=createMediaClock({getHls:()=>hls,getVideo:()=>({currentTime:1}),
+    levelDetailsProvider:()=>({fragments:[{start:0,duration:2,programDateTime:100000}]})});
+  assert.equal(clock.playingWallTime(),100.92);
 });

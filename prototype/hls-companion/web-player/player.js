@@ -63,7 +63,7 @@
   let subtitleMaxKnownEnd = 0;
   // Advance by one 100ms render tick plus the measured 50ms median residual.
   // This centers normal cue onset without increasing timer or polling work.
-  const SUBTITLE_RENDER_ADVANCE_SECONDS = 0.15;
+  const SUBTITLE_RENDER_ADVANCE_SECONDS = 0;
   // A draft is cut at the playhead the backend was told about, which the status
   // poll refreshes once a second. This absorbs that gap, and hides the line when
   // a seek or a stalled poll leaves it behind.
@@ -1677,7 +1677,7 @@
     // turn, and the connection dies before any caption exists.
     // Saving a profile writes these numbers into providers.json, where they win
     // over the backend builtin -- so silenceDurationMs has to agree with config.py.
-    "dashscope-livetranslate-realtime": { model: "qwen3.8-livetranslate-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000, workspaceId: "", voice: "Tina", audioOutput: false, silenceDurationMs: 300, sourceLanguage: "", closeDrainTimeoutSeconds: 15 } },
+    "dashscope-livetranslate-realtime": { model: "qwen3.5-livetranslate-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000, workspaceId: "", voice: "Tina", audioOutput: false, silenceDurationMs: 800, sourceLanguage: "", nativeTranslationFallback: false, closeDrainTimeoutSeconds: 15 } },
     "dashscope-qwen-realtime": { model: "qwen3-asr-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000 } },
     "dashscope-task-asr": { model: "fun-asr-realtime-2026-02-28", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference", options: { sampleRate: 16000, heartbeat: true } },
     // No `language` here. The adapter builds its request from the global
@@ -1861,6 +1861,7 @@
         <option value="two_way"${mode === "two_way" ? " selected" : ""}>${L("opt.translationTwoWay", "双向（语言 A ↔ 语言 B 互译，需填两侧）")}</option>
       </select></label>
       <p class="provider-hint wide">${L("opt.translationHelp", "这里控制 Soniox 是否在同一会话里翻译：关闭=只识别；单向=源语言→字幕目标语言；双向=语言 A↔语言 B，适合双语对话。单向和双向都会送回原文与译文两条文本，画面上显示几行由“字幕显示→显示”决定（选了“仅译文”就只剩一行译文）。")}</p>
+      <label class="wide"><span><input data-option="nativeTranslationFallback" type="checkbox"${checked(options.nativeTranslationFallback)}> ${L("opt.nativeTranslationFallback", "原生译文缺失或无法对齐时，调用字幕翻译模型（额外费用）")}</span></label>
       <label><span>${L("opt.translationLanguageA", "双向语言 A（对话用）")}</span><input data-option="translationLanguageA" value="${escapeHtml(options.translationLanguageA || "")}" placeholder="ja"></label>
       <label><span>${L("opt.translationLanguageB", "双向语言 B（对话用）")}</span><input data-option="translationLanguageB" value="${escapeHtml(options.translationLanguageB || "")}" placeholder="zh"></label>`;
   }
@@ -1869,10 +1870,12 @@
     const options = provider.options || {};
     const L = (key, fallback) => updateLabel(key, fallback);
     if (provider.kind === "dashscope-livetranslate-realtime") return `
+      <label class="wide"><span><input data-option="nativeTranslationFallback" type="checkbox"${checked(options.nativeTranslationFallback)}> ${L("opt.nativeTranslationFallback", "原生译文缺失或无法对齐时，调用字幕翻译模型（额外费用）")}</span></label>
+      ${String(provider.model).startsWith("qwen3.8") ? `<p class="provider-hint wide">${L("opt.qwen38TimingWarning", "3.8 双语原文在实测中出现跨段错位；15 秒缓冲不能修复错误归属。字幕时序优先时请使用 3.5 配置。")}</p>` : ""}
       <label><span><input data-option="audioOutput" type="checkbox"${checked(options.audioOutput)}> ${L("opt.audioOutput", "同时输出合成语音（额外计费）")}</span></label>
       ${options.audioOutput ? `<label><span>${L("opt.livetranslateVoice", "翻译语音的音色（voice）")}</span><input data-option="voice" value="${escapeHtml(options.voice || "Tina")}" placeholder="Tina"><small>${L("opt.livetranslateVoiceHelp", "听到的译文语音用什么声音，不填默认 Tina。")}</small></label>` : ""}
       <label><span>${L("opt.pinSourceLanguage", "锁定源语言（留空=自动识别）")}</span><input data-option="sourceLanguage" value="${escapeHtml(options.sourceLanguage || "")}" placeholder="ja"></label>
-      <label><span>${L("opt.silenceDurationMs", "断句静音阈值 ms")}</span><input data-option="silenceDurationMs" type="number" min="200" max="6000" step="100" value="${Number(options.silenceDurationMs || 300)}"><small>${L("opt.silenceDurationMsHelp", "说完话之后静音多久就断句出字幕。默认 300：模型自己收尾的那条字幕一定带着译文，所以这里越小越好；它一直不收尾的长句，改由我们的 7 秒上限切开。")}</small></label>
+      <label><span>${L("opt.silenceDurationMs", "断句静音阈值 ms")}</span><input data-option="silenceDurationMs" type="number" min="200" max="6000" step="100" value="${Number(options.silenceDurationMs || (String(provider.model).startsWith("qwen3.5") ? 800 : 300))}"><small>${L("opt.silenceDurationMsHelp", "静音阈值控制断句，不校正字幕时间戳。过短会切碎话语；3.5 字幕配置使用 800 ms，长句由本地上限处理。")}</small></label>
       <label><span>${L("opt.workspaceId", "业务空间 ID（可选）")}</span><input data-option="workspaceId" value="${escapeHtml(options.workspaceId || "")}" placeholder="llm-xxxxxxxx"><small>${L("opt.workspaceIdHelp", "默认的全局地址不需要它。只有把 Base URL 换成 wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/… 这类按业务空间分配的地址时才填，填了会自动替换地址里的占位符。")}</small></label>
       <label><span>${L("opt.nativeTimeout", "内置翻译等待（秒）")}</span><input data-option="nativeTranslationTimeoutSeconds" type="number" min="3" max="60" step="1" value="${Number(options.nativeTranslationTimeoutSeconds || 15)}"></label>
       <p class="provider-hint wide">${L("opt.livetranslateHint", "这个 Profile 是字幕接口：默认只往画面上送原文和译文，不合成语音（实测一场直播下来一个语音字节都没收到）。译文语言取字幕设置里的目标语言，源语言由模型自己判断；锁定源语言只对 3.5 代模型生效，3.8 没有这个参数，始终自动识别。")}</p>`;
@@ -2407,7 +2410,10 @@
     const claim = uiGeneration;
     try {
       // 单调序列号游标（redesign Fix I）：时钟绝不参与轮询进度。
-      const data = await request(`/api/subtitles?afterSeq=${subtitleAfterSeq}`);
+      const playhead = playingWallClock();
+      const position = Number.isFinite(playhead) && observedMediaSessionId !== null
+        ? `&playhead=${playhead.toFixed(3)}&mediaSessionId=${encodeURIComponent(observedMediaSessionId)}` : "";
+      const data = await request(`/api/subtitles?afterSeq=${subtitleAfterSeq}${position}`);
       if (claim !== uiGeneration) return;
       if ("mediaSessionId" in data && data.mediaSessionId !== observedMediaSessionId) return;
       const observing = subtitleBudgetContext();
@@ -2786,10 +2792,12 @@
     row.dir = "auto";
   }
 
-  function renderSubtitle() {
+  function renderSubtitle(frameMediaTime) {
     const layer = el("subtitleLayer");
     if (!subtitlePrefs.enabled || !subtitleScheduler) { clearSubtitle(); return; }
-    const wall = playingWallClock();
+    const wall = Number.isFinite(frameMediaTime)
+      ? mediaClock?.wallTimeForMediaPosition(frameMediaTime)
+      : playingWallClock();
     if (!Number.isFinite(wall)) { clearSubtitle(); return; }
     const t = wall + subtitlePrefs.offset + SUBTITLE_RENDER_ADVANCE_SECONDS;
     // Every cue owns its own display window. active() returns all ready cues
@@ -3259,13 +3267,15 @@
   statusPoller?.start();
   subtitlePoller?.start();
   diagnosticsPoller?.start();
-  subtitleRenderTimer = setInterval(() => {
-    playbackProbe?.tick();
-    if (!document.hidden) {
-      if (playbackProbe) playbackProbe.measure("subtitle", renderSubtitle);
-      else renderSubtitle();
-    }
-  }, 100);
+  subtitleRenderTimer = window.createSubtitleRenderLoop({
+    video,
+    render: (position) => {
+      if (playbackProbe) playbackProbe.measure("subtitle", () => renderSubtitle(position));
+      else renderSubtitle(position);
+    },
+    tick: () => playbackProbe?.tick(),
+    isHidden: () => document.hidden,
+  });
   // Keep the 100ms subtitle layer responsive, but move the heavier history and
   // chat DOM pass off that cadence. Starting it half a beat later prevents the
   // two timers from repeatedly landing on the same event-loop turn.
@@ -3294,7 +3304,7 @@
     statusPoller?.stop();
     subtitlePoller?.stop();
     diagnosticsPoller?.stop();
-    clearInterval(subtitleRenderTimer);
+    subtitleRenderTimer?.stop();
     clearInterval(timelineRenderTimer);
     playbackProbe?.dispose();
     if (liveMessagesClient) liveMessagesClient.stopPolling();

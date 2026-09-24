@@ -10,6 +10,7 @@ def effective_settings(config, path=None):
     asr=active('asr'); mt=active('translation')
     readiness=asr_readiness(asr)
     native=readiness['nativeTranslation']
+    fallback=native and (asr.get('options') or {}).get('nativeTranslationFallback') is True
     options=asr.get('options') or {}
     timing={}
     for key in ('sampleRate','silenceDurationMs','maxSentenceSilence','maxEndpointDelayMs',
@@ -22,7 +23,8 @@ def effective_settings(config, path=None):
     subtitle=config.get('subtitle',{})
     return {'scope':'saved-next-start','configurationPath':str(path) if path else None,
             'asr':identity(asr),'readiness':readiness,'asrTiming':timing,
-            'subtitleTranslation':{'mode':'native-final-segment' if native else 'separate-model',
+            'subtitleTranslation':{'mode':('native-with-explicit-fallback' if fallback else 'native-final-segment') if native else 'separate-model',
+                                   'fallbackProvider':identity(mt) if fallback else None,
                                    'provider':identity(asr if native else mt),
                                    'timeoutSeconds':options.get('nativeTranslationTimeoutSeconds',15) if native else (mt.get('options') or {}).get('timeoutSeconds',6)},
             'chatTranslation':{'active':config.get('chatTranslation',{}).get('active')},

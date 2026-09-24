@@ -155,7 +155,7 @@ test("a subtitle response from before Stop cannot repopulate the cleared session
   const h = playerContext({
     state: { uiGeneration: 1, subtitleAfterSeq: 0, subtitleMaxKnownEnd: 0, observedMediaSessionId: "old" },
     globals: { subtitlePrefs: { enabled: true }, window: {}, subtitleCues: cues, request: () => pending.promise,
-      recordSubtitleReadiness: spy(), console },
+      recordSubtitleReadiness: spy(), playingWallClock: () => null, console },
     functions: ["refreshSubtitles"],
   });
   const poll = h.call("refreshSubtitles");
@@ -189,7 +189,7 @@ test("a different server session cannot advance the old subtitle cursor", async 
   const cues = new Map();
   const h = playerContext({
     state: { uiGeneration: 1, observedMediaSessionId: "A", subtitleAfterSeq: 7, subtitleMaxKnownEnd: 0 },
-    globals: { subtitlePrefs: { enabled: true }, window: {}, subtitleCues: cues, console,
+    globals: { subtitlePrefs: { enabled: true }, window: {}, subtitleCues: cues, playingWallClock: () => null, console,
       request: async () => ({ mediaSessionId: "B", maxSeq: 50, cues: [{ id: 1, seq: 50 }] }), recordSubtitleReadiness: spy() },
     functions: ["refreshSubtitles"],
   });

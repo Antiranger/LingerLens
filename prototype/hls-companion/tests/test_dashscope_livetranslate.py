@@ -430,6 +430,7 @@ class LiveTranslateTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+        await self.server.send({"type": "conversation.item.input_audio_transcription.completed", "item_id": "i1", "transcript": "こんにちは、元気"})
         await self.server.send({"type": "response.text.done", "text": "你好，很好"})
         final = await self.next_event(iterator, "final")
         self.assertEqual((final.item_id, final.translation), ("i1", "你好，很好"))
@@ -582,6 +583,7 @@ class LiveTranslateTests(unittest.IsolatedAsyncioTestCase):
                 "output": [{"content": [{"type": "text", "text": "谢谢"}]}],
             },
         })
+        await self.server.send({"type": "conversation.item.input_audio_transcription.completed", "item_id": "i1", "transcript": "ありがとう"})
         final = await self.next_event(iterator, "final")
         self.assertEqual(final.translation, "谢谢")
 

@@ -164,6 +164,10 @@ const I18N = (() => {
 
   const DICT = {
     en: {
+      "profile.bailian-qwen35-livetranslate-subtitles": "Qwen3.5 LiveTranslate (subtitle timing profile)",
+      "opt.nativeTranslationFallback": "Use the subtitle translation model when native translation is missing or unaligned (extra charges)",
+      "opt.qwen38TimingWarning": "Live tests found source text assigned to later turns on 3.8. A 15-second buffer cannot fix a wrong association. Use the 3.5 profile when subtitle timing is the priority.",
+
       "grp.bilingualExperimental": "Bilingual (experimental)",
       "dlg.model.effective": "Saved configuration (next start)",
       "provider.tier.candidate": "Acceptance candidate",
@@ -290,7 +294,7 @@ const I18N = (() => {
       "opt.audioOutput": "Also emit synthesised speech (billed extra)",
       "opt.pinSourceLanguage": "Pin source language (blank = auto-detect)",
       "opt.silenceDurationMs": "Turn-close silence (ms)",
-      "opt.silenceDurationMsHelp": "How long the model must hear silence after speech stops before it releases a caption. Default 300: a caption the model closes itself always carries its translation, so lower is better here. A turn it never closes is chopped by our own 7-second limit instead.",
+      "opt.silenceDurationMsHelp": "Silence controls segmentation, not timestamp correction. Too short can fragment speech. The 3.5 subtitle profile uses 800 ms; local limits handle long turns.",
       "opt.nativeTimeout": "Provider translation wait (s)",
       "opt.livetranslateHint": "This profile is a subtitle interface: by default it sends source text and translation to the screen and synthesises nothing — a measured live run received zero audio bytes. The translation language comes from the subtitle target language, and Qwen detects the source language itself. Pinning a source language only reaches a 3.5-generation model; 3.8 has no such field and always auto-detects.",
       "grp.bilingual": "End-to-end bilingual (recognition and translation in one session · tested live)",
@@ -474,6 +478,10 @@ const I18N = (() => {
       "action.stopping": "Stopping",
     },
     ja: {
+      "profile.bailian-qwen35-livetranslate-subtitles": "Qwen3.5 LiveTranslate（字幕タイミング設定）",
+      "opt.nativeTranslationFallback": "内蔵翻訳が未着・対応不明の場合、字幕翻訳モデルを使用（追加料金）",
+      "opt.qwen38TimingWarning": "3.8 の実測では原文が後の発話区間に割り当てられました。15 秒のバッファでは修正できません。字幕の同期を優先する場合は 3.5 設定を使用してください。",
+
       "grp.bilingualExperimental": "バイリンガル（実験的）",
       "dlg.model.effective": "保存済み設定（次回起動時）",
       "provider.tier.candidate": "実地検証待ち",
@@ -600,7 +608,7 @@ const I18N = (() => {
       "opt.audioOutput": "合成音声も出力（追加課金）",
       "opt.pinSourceLanguage": "原語を固定（空欄＝自動判定）",
       "opt.silenceDurationMs": "文を区切る無音の長さ (ms)",
-      "opt.silenceDurationMsHelp": "話し終わった後にこの時間だけ無音が続くと字幕が確定します。既定 300。モデル自身が確定させた字幕は必ず翻訳を伴うので、小さいほど有利です。確定しない長い発話は、こちら側の 7 秒上限で切られます。",
+      "opt.silenceDurationMsHelp": "無音閾値は区切りを制御し、時刻は補正しません。短すぎると発話が細切れになります。3.5 の字幕設定は 800 ms、長い発話はローカル上限で処理します。",
       "opt.nativeTimeout": "内蔵翻訳の待ち時間（秒）",
       "opt.livetranslateHint": "このプロファイルは字幕用です。既定では画面に原文と訳文だけを送り、音声は合成しません（実測したライブ配信で受信した音声は 0 バイト）。訳文の言語は字幕設定の目標言語を使い、原語はモデルが自動で判別します。原語の固定は 3.5 世代のモデルにだけ効き、3.8 にはその項目がなく常に自動判定です。",
       "grp.bilingual": "エンドツーエンドのバイリンガル（認識と翻訳が同一セッション・実機検証済み）",
@@ -784,6 +792,10 @@ const I18N = (() => {
       "action.stopping": "停止中",
     },
     de: {
+      "profile.bailian-qwen35-livetranslate-subtitles": "Qwen3.5 LiveTranslate (Untertitel-Zeitprofil)",
+      "opt.nativeTranslationFallback": "Bei fehlender oder nicht zuordenbarer nativer Übersetzung das Untertitelmodell verwenden (Zusatzkosten)",
+      "opt.qwen38TimingWarning": "Live-Tests mit 3.8 ordneten Quelltext späteren Sprechabschnitten zu. Ein 15-Sekunden-Puffer korrigiert das nicht. Für zeitgenaue Untertitel das 3.5-Profil verwenden.",
+
       "grp.bilingualExperimental": "Zweisprachig (experimentell)",
       "dlg.model.effective": "Gespeicherte Konfiguration (nächster Start)",
       "provider.tier.candidate": "Abnahme ausstehend",
@@ -910,7 +922,7 @@ const I18N = (() => {
       "opt.audioOutput": "Auch synthetische Sprache ausgeben (kostenpflichtig)",
       "opt.pinSourceLanguage": "Quellsprache festlegen (leer = automatisch)",
       "opt.silenceDurationMs": "Stille bis zum Zeilenende (ms)",
-      "opt.silenceDurationMsHelp": "Wie lange das Modell nach dem Sprechen schweigen muss, bevor eine Untertitelzeile erscheint. Standard 300: Eine Zeile, die das Modell selbst abschließt, trägt immer ihre Übersetzung — hier ist kleiner also besser. Sätze, die es nie abschließt, schneidet stattdessen unsere eigene 7-Sekunden-Grenze.",
+      "opt.silenceDurationMsHelp": "Die Stille-Schwelle steuert die Segmentierung, nicht die Zeitkorrektur. Zu kurze Werte zerstückeln Sprache. Das 3.5-Profil verwendet 800 ms; lange Abschnitte werden lokal begrenzt.",
       "opt.nativeTimeout": "Wartezeit der Provider-Übersetzung (s)",
       "opt.livetranslateHint": "Dieses Profil ist ein Untertitel-Anschluss: Standardmäßig schickt es Ausgangstext und Übersetzung auf den Bildschirm und synthetisiert keine Sprache — ein gemessener Live-Lauf empfing 0 Bytes Audiomaterial. Die Sprache der Übersetzung kommt aus der Untertitel-Zielsprache, die Ausgangssprache erkennt Qwen selbst. Eine feste Ausgangssprache erreicht nur ein Modell der 3.5-Generation; 3.8 hat dieses Feld nicht und erkennt immer automatisch.",
       "grp.bilingual": "Durchgängig zweisprachig (Erkennung und Übersetzung in einer Sitzung · live getestet)",
@@ -1094,6 +1106,10 @@ const I18N = (() => {
       "action.stopping": "Stoppt",
     },
     ru: {
+      "profile.bailian-qwen35-livetranslate-subtitles": "Qwen3.5 LiveTranslate (профиль синхронизации субтитров)",
+      "opt.nativeTranslationFallback": "Использовать модель перевода субтитров при отсутствии или несовпадении встроенного перевода (дополнительная плата)",
+      "opt.qwen38TimingWarning": "В тестах 3.8 исходный текст привязывался к более поздним репликам. Буфер 15 секунд не исправляет неверную привязку. Для точных субтитров используйте профиль 3.5.",
+
       "grp.bilingualExperimental": "Двуязычный режим (экспериментальный)",
       "dlg.model.effective": "Сохранённые настройки (следующий запуск)",
       "provider.tier.candidate": "Ожидает проверки",
@@ -1220,7 +1236,7 @@ const I18N = (() => {
       "opt.audioOutput": "Также выводить синтезированную речь (платно)",
       "opt.pinSourceLanguage": "Зафиксировать исходный язык (пусто = авто)",
       "opt.silenceDurationMs": "Тишина до конца строки (мс)",
-      "opt.silenceDurationMsHelp": "Сколько модель ждёт тишины после того, как речь прекратилась, прежде чем показать субтитр. По умолчанию 300: строку, которую модель закрыла сама, она всегда отдаёт с переводом, поэтому здесь меньше — лучше. Фразы, которые она не закрывает, режем мы сами по пределу в 7 секунд.",
+      "opt.silenceDurationMsHelp": "Порог тишины управляет сегментацией, а не коррекцией времени. Слишком короткий порог дробит речь. Профиль 3.5 использует 800 мс; длинные реплики ограничиваются локально.",
       "opt.nativeTimeout": "Ожидание перевода провайдера (с)",
       "opt.livetranslateHint": "Этот профиль — интерфейс субтитров: по умолчанию он присылает на экран оригинал и перевод и ничего не синтезирует (замер живого стрима: 0 байт звука). Язык перевода берётся из целевого языка субтитров, а исходный язык Qwen определяет сам. Фиксация исходного языка действует только на модель поколения 3.5; у 3.8 такого поля нет, она определяет язык всегда автоматически.",
       "grp.bilingual": "Сквозной двуязычный режим (распознавание и перевод в одной сессии · проверено вживую)",
@@ -1407,6 +1423,10 @@ const I18N = (() => {
 
   /* zh-CN 需要写死的动态文案（DOM 捕获不到） */
   const ZH_DYNAMIC = {
+      "profile.bailian-qwen35-livetranslate-subtitles": "百炼 Qwen3.5-LiveTranslate（字幕时序配置）",
+      "opt.nativeTranslationFallback": "原生译文缺失或无法对齐时，调用字幕翻译模型（额外费用）",
+      "opt.qwen38TimingWarning": "3.8 双语原文在实测中出现跨段错位；15 秒缓冲不能修复错误归属。字幕时序优先时请使用 3.5 配置。",
+
       "grp.bilingualExperimental": "端到端双语（实验性 · 需逐场验收）",
       "dlg.model.effective": "已保存配置（下次启动使用）",
       "provider.tier.candidate": "待实况验收",
@@ -1487,7 +1507,7 @@ const I18N = (() => {
     "opt.audioOutput": "同时输出合成语音（额外计费）",
     "opt.pinSourceLanguage": "锁定源语言（留空=自动识别）",
     "opt.silenceDurationMs": "断句静音阈值 ms",
-    "opt.silenceDurationMsHelp": "说完话之后静音多久就断句出字幕。默认 300：模型自己收尾的那条字幕一定带着译文，所以这里越小越好；它一直不收尾的长句，改由我们的 7 秒上限切开。",
+    "opt.silenceDurationMsHelp": "静音阈值控制断句，不校正字幕时间戳。过短会切碎话语；3.5 字幕配置使用 800 ms，长句由本地上限处理。",
     "opt.nativeTimeout": "内置翻译等待（秒）",
     "opt.livetranslateHint": "这个 Profile 是字幕接口：默认只往画面上送原文和译文，不合成语音（实测一场直播下来一个语音字节都没收到）。译文语言取字幕设置里的目标语言，源语言由模型自己判断；锁定源语言只对 3.5 代模型生效，3.8 没有这个参数，始终自动识别。",
     "grp.bilingual": "端到端双语（识别与翻译在同一会话 · 已实测）",

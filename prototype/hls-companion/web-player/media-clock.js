@@ -29,96 +29,73 @@
     const getHls = options.getHls || options.hlsProvider || (() => null);
     const getVideo = options.getVideo || (() => options.videoElement || null);
     const getLevelDetails = options.levelDetailsProvider || (() => null);
+    const fragments = () => {
+      const hls = getHls();
+      return hls?.levels?.[hls.currentLevel]?.details?.fragments
+        || getLevelDetails()?.fragments || [];
+    };
+    const startOf = frag => Number.isFinite(frag.startPTS) ? frag.startPTS : frag.start;
+    const pdtOf = frag => {
+      if (frag.programDateTime == null) return null;
+      const value = typeof frag.programDateTime === "number" ? frag.programDateTime
+        : new Date(frag.programDateTime).getTime();
+      return Number.isFinite(value) ? value / 1000 : null;
+    };
+    // undefined = no PDT intervals; null = measured timeline, but outside it.
+    function mapPosition(position) {
+      if (!Number.isFinite(position)) return null;
+      const list = fragments();
+      let known = false;
+      for (let i = list.length - 1; i >= 0; --i) {
+        const frag = list[i], start = startOf(frag), pdt = pdtOf(frag);
+        if (pdt === null || !Number.isFinite(start) || !Number.isFinite(frag.duration)) continue;
+        known = true;
+        if (position >= start && position <= start + frag.duration + 1e-6) {
+          return pdt + position - start;
+        }
+      }
+      return known ? null : undefined;
+    }
+    function playingDateFallback() {
+      const hls = getHls();
+      return hls?.playingDate instanceof Date && Number.isFinite(hls.playingDate.getTime())
+        ? hls.playingDate.getTime() / 1000 : null;
+    }
     return {
-      /**
-       * Returns the wall clock time (in seconds) corresponding to current video playback,
-       * or null if PDT is not available.
-       * @returns {number|null}
-       */
       getPlayingWallTime() {
-        const hls = getHls ? getHls() : null;
-        const video = getVideo ? getVideo() : null;
-        if (!hls || !video) return null;
-
-        // 1. Prefer hls.playingDate
-        if (hls.playingDate instanceof Date && !isNaN(hls.playingDate.getTime())) {
-          return hls.playingDate.getTime() / 1000;
-        }
-
-        // 2. Fallback to fragment.programDateTime + (video.currentTime - fragment.start)
-        const currentLevel = hls.currentLevel;
-        const levelDetails = getLevelDetails() || hls.levels?.[currentLevel]?.details;
-        const fragments = levelDetails?.fragments;
-        if (fragments && fragments.length > 0) {
-          const ct = video.currentTime;
-          // Find the fragment containing currentTime, or the closest prior fragment
-          let targetFrag = null;
-          for (const frag of fragments) {
-            if (frag.start <= ct && ct <= frag.start + frag.duration + 0.5) {
-              targetFrag = frag;
-              break;
-            }
-          }
-          if (!targetFrag) {
-            // Find latest fragment started before ct
-            for (let i = fragments.length - 1; i >= 0; i--) {
-              if (fragments[i].start <= ct) {
-                targetFrag = fragments[i];
-                break;
-              }
-            }
-          }
-          if (targetFrag && targetFrag.programDateTime != null) {
-            const pdtMs = typeof targetFrag.programDateTime === "number"
-              ? targetFrag.programDateTime
-              : new Date(targetFrag.programDateTime).getTime();
-            if (!isNaN(pdtMs)) {
-              return (pdtMs / 1000) + (ct - targetFrag.start);
-            }
-          }
-        }
-
-        // PDT is unavailable - do not guess with Date.now()!
-        return null;
+        const video = getVideo();
+        if (!getHls() || !video) return null;
+        const mapped = mapPosition(video.currentTime);
+        return mapped === undefined ? playingDateFallback() : mapped;
       },
-
-      /**
-       * Returns whether wall time is currently available via PDT.
-       * @returns {boolean}
-       */
-      getPlayingWallClock() {
-        return this.getPlayingWallTime();
-      },
-
-      playingWallTime() {
-        return this.getPlayingWallTime();
-      },
-
-      isWallTimeAvailable() {
-        return this.getPlayingWallTime() != null;
-      },
-
-      /**
-       * Maps a media position (in video.currentTime seconds) to wall clock seconds.
-       * wallTimeForMediaPosition(position) = current Playback Wall Time + (position - video.currentTime)
-       * @param {number} position
-       * @returns {number|null}
-       */
+      getPlayingWallClock() { return this.getPlayingWallTime(); },
+      playingWallTime() { return this.getPlayingWallTime(); },
+      isWallTimeAvailable() { return this.getPlayingWallTime() != null; },
       wallTimeForMediaPosition(position) {
-        const pwt = this.getPlayingWallTime();
-        const video = getVideo ? getVideo() : null;
-        if (pwt == null || !video || isNaN(position)) return null;
-        return pwt + (position - video.currentTime);
+        const mapped = mapPosition(position);
+        if (mapped !== undefined) return mapped;
+        const current = playingDateFallback(), video = getVideo();
+        return current !== null && video && Number.isFinite(position)
+          ? current + position - video.currentTime : null;
       },
 
       /**
        * Format an epoch or null.
        */
       mediaPositionForWallTime(epochSeconds) {
-        const current = this.getPlayingWallTime();
-        const video = getVideo();
-        if (current == null || !video || !Number.isFinite(Number(epochSeconds))) return null;
-        return video.currentTime + (Number(epochSeconds) - current);
+        const epoch = Number(epochSeconds);
+        if (!Number.isFinite(epoch)) return null;
+        const list = fragments();
+        let known = false;
+        for (let i = list.length - 1; i >= 0; --i) {
+          const frag = list[i], start = startOf(frag), pdt = pdtOf(frag);
+          if (pdt === null || !Number.isFinite(start) || !Number.isFinite(frag.duration)) continue;
+          known = true;
+          if (epoch >= pdt && epoch <= pdt + frag.duration + 1e-6) return start + epoch - pdt;
+        }
+        if (known) return null;
+        const current = playingDateFallback(), video = getVideo();
+        return current !== null && video ? video.currentTime + epoch - current : null;
       },
 
       seekableWallClockRange() {
