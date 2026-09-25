@@ -2,7 +2,7 @@
 
 ## Environment
 
-Windows development uses Python 3.11+, Node.js 22.12+, FFmpeg/ffprobe and Chrome or Edge. Use a project virtual environment and run commands from the repository root. `bootstrap.ps1 -CheckOnly` checks tools and the vendored yt-dlp SHA-256 without installing dependencies.
+Windows development uses Python 3.11+, Node.js 22.12+, FFmpeg/ffprobe and Chrome or Edge. Use a project virtual environment and run commands from the repository root. `bootstrap.ps1 -CheckOnly` checks tools and the yt-dlp SHA-256 without installing dependencies. `yt-dlp.exe` is not committed: `python scripts/fetch-yt-dlp.py` (also run by `bootstrap.ps1` and the desktop build) downloads the version pinned in `desktop/dependencies.json` and verifies it.
 
 ## Checks
 

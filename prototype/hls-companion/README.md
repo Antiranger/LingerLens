@@ -49,7 +49,7 @@
 
 - Python 3.10+（本机 yt-dlp 已提示未来应升级到 3.11+）
 - `aiohttp`
-- 当前版 `yt-dlp`（已在 `vendor/yt-dlp/yt-dlp.exe` 固定并校验；版本 2026.08.19）
+- 当前版 `yt-dlp`（版本 2026.08.19，固定在 `desktop/dependencies.json`；exe 不入库，运行 `python scripts/fetch-yt-dlp.py` 下载到 `vendor/yt-dlp/yt-dlp.exe` 并校验）
 - `ffmpeg` / `ffprobe`
 - Chrome 或 Edge
 

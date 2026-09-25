@@ -68,6 +68,8 @@ def main():
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     (media / 'notices' / 'BUILD-CONFIGURATION.txt').write_text(configuration.stdout, encoding='utf-8')
     yt = ROOT / 'prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe'
+    # yt-dlp.exe is no longer committed; fetch the pinned build if it is absent.
+    subprocess.run([sys.executable, str(ROOT / 'scripts/fetch-yt-dlp.py')], check=True)
     expected = Path(str(yt) + '.sha256').read_text(encoding='utf-8').split()[0]
     if sha256(yt) != expected:
         raise RuntimeError('yt-dlp checksum mismatch')
