@@ -65,6 +65,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -251,11 +252,14 @@ class QwenLiveTranslateASRProvider(ASRProvider):
 
 
 class _Segment:
-    __slots__ = ("source", "translation", "anchors")
+    __slots__ = ("source", "translation", "anchors", "source_done", "translation_done", "final_emitted")
 
     def __init__(self) -> None:
         self.source = ""
         self.translation = ""
+        self.source_done = False
+        self.translation_done = False
+        self.final_emitted = False
         self.anchors: tuple[tuple[str, str], ...] = ()
 
 
@@ -281,6 +285,11 @@ class _LiveTranslateStream(ASRStream):
         # owns the response currently streaming.
         self._awaiting: deque[str] = deque()
         self._responding: str | None = None
+        self._response_items: OrderedDict[str, str] = OrderedDict()
+        self._output_sources: OrderedDict[str, str] = OrderedDict()
+        self._response_outputs: OrderedDict[str, str] = OrderedDict()
+        self._pending_responses: deque[dict[str, Any]] = deque()
+        self._pending_response_bytes = 0
         self._active_item: str | None = None
         self._finished = asyncio.Event()
         self._iter_started = False
@@ -296,6 +305,7 @@ class _LiveTranslateStream(ASRStream):
             self.ws = await self.session.ws_connect(
                 f"{url}{separator}model={self.provider.model}",
                 headers={"Authorization": f"Bearer {self.provider.api_key}"},
+                **proxy_kwargs(url),
             )
             await self.ws.send_json(self._session_update())
         except BaseException:
@@ -398,7 +408,7 @@ class _LiveTranslateStream(ASRStream):
         auto-detects.
         """
         explicit = self.provider.options.get("sourceLanguage")
-        return str(explicit) if explicit else None
+        return str(explicit) if explicit else (self.policy.tag if self.policy.mode == "specified" else None)
 
     def _target_language(self) -> str:
         target = self.provider.translation_target
@@ -474,20 +484,10 @@ class _LiveTranslateStream(ASRStream):
             self._finished.set()
 
     def _next_item(self) -> str | None:
-        """The utterance the response that just began belongs to.
+        """Legacy ID-less compatibility only; not the Qwen wire join.
 
-        No frame links a response to the input item it translates -- response
-        events carry the *assistant* item id, a different id from the transcript
-        they were made from -- so the pairing can only be positional.  Turn order
-        is the position the Provider actually keeps: one response per VAD turn, in
-        the order the turns opened, including the turns that carry nothing.
-
-        Queueing off transcript arrivals was wrong and looked like off-by-one
-        subtitles.  A breath opens a turn and gets a response, but its transcript
-        never emits a delta, so it never entered the queue; the queue then handed
-        that turn's response slot to nothing and every following translation
-        landed one line early -- source ``おい、真似すんなよ`` showing an empty
-        line while the cue before it carried its Chinese.
+        Modern responses are associated by conversation.item.created.previous_item_id
+        and response.output_item.added, including when events arrive out of order.
         """
         while self._turns:
             item = self._turns.popleft()
@@ -506,7 +506,9 @@ class _LiveTranslateStream(ASRStream):
             return [ASREvent("error", message=message, raw=raw)]
         if event_type == "input_audio_buffer.speech_started":
             item = self._item_id(raw)
-            self._turns.append(item)
+            if item not in self._turns:
+                self._turns.append(item)
+            self._bound_identity_tables()
             return [ASREvent(
                 "speech_started", begin_pcm=_seconds(raw.get("audio_start_ms")),
                 item_id=item, raw=raw,
@@ -531,18 +533,44 @@ class _LiveTranslateStream(ASRStream):
             "conversation.item.input_audio_transcription.done",
         }:
             return self._source_final(raw)
-        if event_type == "response.created":
-            self._responding = self._next_item()
+        if event_type == "conversation.item.created":
+            item = raw.get("item") or {}
+            output_id, source_id = item.get("id"), raw.get("previous_item_id")
+            if item.get("role") == "assistant" and output_id and source_id:
+                self._output_sources[str(output_id)] = str(source_id)
+                self._bound_identity_tables()
+                return self._drain_linked_responses()
             return []
-        if event_type == "response.text.delta":
-            return self._translation_delta(raw)
-        if event_type == "response.audio_transcript.delta":
-            # The same running translation under the audio+text modality.
-            return self._translation_delta(raw)
-        if event_type in {"response.text.text", "response.audio_transcript.text"}:
-            return self._translation_snapshot(raw)
-        if event_type in {"response.text.done", "response.done", "response.audio_transcript.done"}:
-            return self._translation_done(raw)
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            output_id = (raw.get("item") or {}).get("id")
+            response_id = raw.get("response_id")
+            if output_id and response_id:
+                self._response_outputs[str(response_id)] = str(output_id)
+                self._bound_identity_tables()
+                return self._drain_linked_responses()
+            return []
+        if event_type == "response.created":
+            response_id = str((raw.get("response") or {}).get("id") or "")
+            # Wire responses with an ID must wait for the documented item link.
+            # Arrival order is not a source identity. Only legacy ID-less events
+            # retain the old single-response compatibility path.
+            if not response_id:
+                self._responding = self._next_item()
+            return []
+        translation_events = {
+            "response.text.delta", "response.audio_transcript.delta",
+            "response.text.text", "response.audio_transcript.text",
+            "response.text.done", "response.audio_transcript.done", "response.done",
+        }
+        if event_type in translation_events:
+            if self._response_item(raw) is None:
+                size = len(json.dumps(raw, ensure_ascii=False).encode("utf-8"))
+                if len(self._pending_responses) >= 128 or self._pending_response_bytes + size > 1024 * 1024:
+                    raise RuntimeError("native translation identity was not supplied within the bounded join window")
+                self._pending_responses.append(raw)
+                self._pending_response_bytes += size
+                return []
+            return self._dispatch_translation(raw)
         if event_type == "conversation.item.input_audio_transcription.failed":
             error = raw.get("error", raw)
             message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
@@ -566,18 +594,10 @@ class _LiveTranslateStream(ASRStream):
         return segment
 
     def _settle_boundary(self, segment: _Segment) -> None:
-        """Freeze how far the two streams have each reached, as they reached it.
+        """Bounded diagnostic snapshots, never semantic alignment evidence.
 
-        This protocol states no alignment points, so the ledger used to be able to
-        match only a whole closed segment: every caption the chunker cut at its hard
-        deadline lost its Chinese (measured on four real captures 2026-09-21 -- 0 of
-        5 and 1 of 6 cut cues kept a translation). Both strings here are the
-        Provider's own output, and the pair is frozen on either stream growing, so
-        whichever text a cue is cut on it has a boundary to land on. Freezing on the
-        transcript can only pair it with *less* translation than the model eventually
-        writes for that text -- the line trails, and the rest surfaces on the next
-        cue -- which is the direction the projection line already assumes. It can
-        never hand a cue Chinese the model has not said yet.
+        NativeTranslationBus deliberately ignores these arrival-time pairs;
+        only a completed whole source/translation segment may be consumed.
         """
         if not segment.source or not segment.translation:
             return
@@ -593,6 +613,7 @@ class _LiveTranslateStream(ASRStream):
         segment.source += str(raw.get("delta") or "")
         if item not in self._awaiting and item != self._responding:
             self._awaiting.append(item)
+            self._bound_identity_tables()
         return [self._source_event(raw, item, segment.source)]
 
     def _source_snapshot(self, raw: dict[str, Any]) -> list[ASREvent]:
@@ -608,39 +629,27 @@ class _LiveTranslateStream(ASRStream):
             segment.source = text
         if item not in self._awaiting and item != self._responding:
             self._awaiting.append(item)
+            self._bound_identity_tables()
         return [self._source_event(raw, item, segment.source)]
 
     def _source_final(self, raw: dict[str, Any]) -> list[ASREvent]:
-        """The Provider's own end of turn, which is where a caption closes.
-
-        ``transcript`` here is the complete utterance, so the cue built from it and
-        the segment the ledger holds for this item carry the same string by
-        construction rather than by luck. That equality is what the session-backed
-        join uses for a caption the Provider finished; ``_settle_boundary`` covers
-        the captions it never got to. The translation for this turn is still
-        coming, so this stays an interim for the ledger's sake: only the response
-        completion closes the segment.
-        """
         item = self._item_id(raw)
         segment = self._segment(item)
         text = str(raw.get("transcript") or raw.get("text") or "")
         if text:
             segment.source = text
+        segment.source_done = True
         self._settle_boundary(segment)
-        if item not in self._awaiting and item != self._responding:
-            self._awaiting.append(item)
-        return [ASREvent(
-            "interim",
-            text=segment.source,
-            language=canonicalize_tag_or_none(raw.get("language")),
-            item_id=item,
-            raw=raw,
-            translation=segment.translation,
-            translation_anchors=segment.anchors,
-            caption_observation=CaptionObservation(
-                "utterance_final", 0, item, stable_text=segment.source
-            ),
+        # Source completion releases its own cue independently. It does not
+        # imply that translation has finished, and the reverse is equally false.
+        events = [ASREvent(
+            "interim", text=segment.source,
+            language=canonicalize_tag_or_none(raw.get("language")), item_id=item, raw=raw,
+            translation=segment.translation, translation_anchors=segment.anchors,
+            caption_observation=CaptionObservation("utterance_final", 0, item, stable_text=segment.source),
         )]
+        events.extend(self._finish_complete_segment(item, raw))
+        return events
 
     def _source_event(self, raw: dict[str, Any], item: str, text: str) -> ASREvent:
         segment = self._segment(item)
@@ -664,13 +673,12 @@ class _LiveTranslateStream(ASRStream):
         )
 
     def _translation_delta(self, raw: dict[str, Any]) -> list[ASREvent]:
-        if self._responding is None:
-            # A response began before any `response.created` was seen: the oldest
-            # untranslated utterance owns it, which is the arrival order.
-            self._responding = self._awaiting.popleft() if self._awaiting else self._active_item
-        if self._responding is None:
+        item = self._response_item(raw)
+        if item is None:
             return []
-        segment = self._segment(self._responding)
+        segment = self._segment(item)
+        if segment.final_emitted:
+            return []
         segment.translation += str(raw.get("delta") or "")
         self._settle_boundary(segment)
         # Published as it streams, not only when the response finishes: a
@@ -683,7 +691,7 @@ class _LiveTranslateStream(ASRStream):
             text=segment.source,
             translation=segment.translation,
             translation_anchors=segment.anchors,
-            item_id=self._responding,
+            item_id=item,
             raw=raw,
         )]
 
@@ -694,11 +702,12 @@ class _LiveTranslateStream(ASRStream):
         appending it to itself is how a later cue ends up with half a sentence
         duplicated.
         """
-        if self._responding is None:
-            self._responding = self._awaiting.popleft() if self._awaiting else self._active_item
-        if self._responding is None:
+        item = self._response_item(raw)
+        if item is None:
             return []
-        segment = self._segment(self._responding)
+        segment = self._segment(item)
+        if segment.final_emitted:
+            return []
         text = self._final_text(raw)
         if text:
             segment.translation = text
@@ -708,44 +717,103 @@ class _LiveTranslateStream(ASRStream):
             text=segment.source,
             translation=segment.translation,
             translation_anchors=segment.anchors,
-            item_id=self._responding,
+            item_id=item,
             raw=raw,
         )]
 
     def _translation_done(self, raw: dict[str, Any]) -> list[ASREvent]:
-        item = self._responding
-        self._responding = None
+        item = self._response_item(raw)
         if item is None:
             return []
         segment = self._segment(item)
+        if segment.final_emitted:
+            return []
         text = self._final_text(raw)
-        # The completion is the Provider's own last word, and the live stream
-        # shows it can carry punctuation the deltas did not: taking it only when
-        # nothing arrived would drop a full stop off a finished subtitle, while
-        # taking it unconditionally would erase a text the deltas had already
-        # built whenever the completion arrives empty -- which is what 3.8 sends.
-        if text and len(text) >= len(segment.translation):
+        response = raw.get("response") or {}
+        response_id = raw.get("response_id") or response.get("id")
+        status = response.get("status")
+        if status in {"cancelled", "canceled", "failed", "incomplete"}:
+            segment.translation = ""
+        elif text:
             segment.translation = text
+        if response_id and raw.get("type") != "response.done":
+            # A text-done event is also sent for cancelled responses. Keep its
+            # text provisional until the response's terminal status is known.
+            return [ASREvent("translation", text=segment.source,
+                translation=segment.translation, item_id=item, raw=raw)]
+        segment.translation_done = True
         self._settle_boundary(segment)
+        if self._responding == item:
+            self._responding = None
+        final = self._finish_complete_segment(item, raw)
+        return final or [ASREvent("translation", text=segment.source,
+            translation=segment.translation, item_id=item, raw=raw)]
+
+    def _response_item(self, raw: dict[str, Any]) -> str | None:
+        response_id = raw.get("response_id") or (raw.get("response") or {}).get("id")
+        output_id = raw.get("item_id")
+        if not output_id and response_id:
+            output_id = self._response_outputs.get(str(response_id))
+        linked = self._output_sources.get(str(output_id)) if output_id else None
+        if linked is not None:
+            if response_id:
+                old = self._response_items.get(str(response_id))
+                if old is not None and old != linked:
+                    raise RuntimeError("native translation supplied contradictory source identities")
+                self._response_items[str(response_id)] = linked
+            return linked
+        if response_id:
+            return self._response_items.get(str(response_id))
+        if output_id:
+            return None
+        # Compatibility for old gateways omitting ALL response metadata; the
+        # current Qwen services supply IDs and never enter this path.
+        if self._responding is None and len(self._awaiting) == 1:
+            self._responding = self._awaiting.popleft()
+        return self._responding
+
+    def _dispatch_translation(self, raw: dict[str, Any]) -> list[ASREvent]:
+        kind = raw.get("type", "")
+        if kind.endswith(".delta"):
+            return self._translation_delta(raw)
+        if kind.endswith(".text"):
+            return self._translation_snapshot(raw)
+        return self._translation_done(raw)
+
+    def _drain_linked_responses(self) -> list[ASREvent]:
+        ready, waiting = [], deque()
+        for raw in self._pending_responses:
+            if self._response_item(raw) is None:
+                waiting.append(raw)
+            else:
+                ready.append(raw)
+        self._pending_responses = waiting
+        self._pending_response_bytes = sum(len(json.dumps(raw, ensure_ascii=False).encode("utf-8")) for raw in waiting)
+        events = []
+        for raw in ready:
+            events.extend(self._dispatch_translation(raw))
+        return events
+
+    def _bound_identity_tables(self) -> None:
+        for table in (self._response_items, self._output_sources, self._response_outputs):
+            while len(table) > 256:
+                table.popitem(last=False)
+        # These legacy queues must not grow in modern ID-linked sessions.
+        while len(self._turns) > 256:
+            self._turns.popleft()
+        while len(self._awaiting) > 256:
+            self._awaiting.popleft()
+
+    def _finish_complete_segment(self, item: str, raw: dict[str, Any]) -> list[ASREvent]:
+        segment = self._segment(item)
+        if not segment.source_done or not segment.translation_done or segment.final_emitted:
+            return []
+        segment.final_emitted = True
         if not segment.source and not segment.translation:
             return []
-        # The caption was usually already closed by the transcript; the chunker's
-        # item ledger keeps closed items precisely so this second final is
-        # deduplicated instead of published again. An item whose transcript never
-        # completed is released here, and either way the ledger now knows this
-        # segment is finished, which is what lets a waiting cue resolve rather
-        # than ride out its deadline.
-        return [ASREvent(
-            "final",
-            text=segment.source,
-            translation=segment.translation.strip(),
-            translation_anchors=segment.anchors,
-            item_id=item,
-            raw=raw,
-            caption_observation=CaptionObservation(
-                "utterance_final", 0, item, stable_text=segment.source
-            ),
-        )]
+        return [ASREvent("final", text=segment.source, translation=segment.translation.strip(),
+            item_id=item, raw=raw, translation_anchors=segment.anchors,
+            caption_observation=CaptionObservation("utterance_final", 0, item, stable_text=segment.source))]
 
     @staticmethod
     def _final_text(raw: dict[str, Any]) -> str:

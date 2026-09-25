@@ -31,6 +31,16 @@ test('desktop dependency download pins HTTPS and a full SHA-256', () => {
   assert.ok(manifest.ffmpeg.url.includes(manifest.ffmpeg.version));
 });
 
+// yt-dlp.exe is fetched, not committed; the pin and the checksum file that
+// bootstrap/CI/packaging verify must name the same build.
+test('yt-dlp pin is HTTPS, versioned and agrees with the checksum file', () => {
+  const pin = manifest['yt-dlp'];
+  assert.equal(new URL(pin.url).protocol, 'https:');
+  assert.ok(pin.url.includes(pin.version));
+  const recorded = fs.readFileSync(path.join(__dirname, '../prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe.sha256'), 'utf8').split(/\s+/)[0];
+  assert.equal(pin.sha256, recorded.toLowerCase());
+});
+
 // The backend's stderr can carry private stream URLs, so silence is the
 // default and anything else has to be asked for by name.
 test('dev logging stays off unless something asks for it', () => {

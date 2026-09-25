@@ -2,6 +2,7 @@ const { app, BrowserWindow, protocol, net, session, Menu, dialog, shell, screen 
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
+const { performance } = require('node:perf_hooks');
 const { spawn } = require('node:child_process');
 const { startBackend, createDevLog, localStamp } = require('./backend.cjs');
 const { defaultLogPath } = require('./devlog.cjs');
@@ -42,6 +43,23 @@ if (gpuForcedOff || gpuAlreadyFellBack) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');
 }
 
+/*
+ * 关掉 Chromium 的无障碍树。
+ *
+ * 划词/截图翻译、输入法一类 UI Automation 客户端一碰窗口，Chromium 就会打开
+ * 无障碍树：每条弹幕、每句字幕都要在浏览器主线程里同步更新树并向外广播事件。
+ * 弹幕密集的直播下主线程被原生代码吃满（V8 画像只看到 (idle)），整个桌面的
+ * 鼠标键盘跟着发钝。同机、同一直播（zackrawrr）、只差这一个开关的实测：
+ *
+ *   开着： Browser cpuMs 最高 4706/5s   timerLate 最高 3952ms   约 2 分钟卡死
+ *   关掉： Browser cpuMs 最高  483/5s   timerLate 最高   15ms   5 分钟无卡顿
+ *
+ * 本应用是直播播放器，不面向屏幕阅读器；LINGERLENS_ACCESSIBILITY=1 可恢复。
+ */
+if (process.env.LINGERLENS_ACCESSIBILITY !== '1') {
+  app.commandLine.appendSwitch('disable-renderer-accessibility');
+}
+
 function fallBackToSoftwareRendering(reason) {
   console.log(`[main] falling back to software rendering (${reason}); relaunching once`);
   process.env.LINGERLENS_GPU_FALLBACK = '1';
@@ -61,6 +79,128 @@ function fallBackToSoftwareRendering(reason) {
  *
  * 真正说明"这台机器起不来 GPU"的信号，是 GPU 进程非正常退出。
  */
+/*
+ * `app.getAppMetrics()` is the only per-process CPU breakdown Electron exposes.
+ * `[main-perf]` alone said the whole main process burned 1.4 cores; this says
+ * which of Browser / GPU / Utility / Tab spent it.
+ *
+ * `percentCPUUsage` is not usable here -- measured on Electron 44 it reports 0
+ * for every process even after seconds of work -- so the delta is taken from
+ * `cumulativeCPUUsage` (seconds) against the previous window. That also makes
+ * the numbers directly comparable with the `cpuMs` in the same summary, which
+ * is what makes "7031ms total, 6800ms of it the Browser process" readable.
+ *
+ * Compacted here rather than in health.cjs so that the probe stays a dumb
+ * recorder and keeps its Electron-free unit test.
+ */
+let previousAppMetrics = null;
+function compactAppMetrics() {
+  try {
+    const previous = previousAppMetrics || new Map();
+    const next = new Map();
+    const rows = app.getAppMetrics().map(entry => {
+      const memory = entry.memory || {};
+      const cpu = entry.cpu || {};
+      const cumulative = Number(cpu.cumulativeCPUUsage) || 0;
+      const before = previous.get(entry.pid);
+      next.set(entry.pid, cumulative);
+      const row = { pid: entry.pid,
+        type: entry.serviceName && entry.serviceName !== entry.type
+          ? `${entry.type}:${entry.serviceName}` : entry.type,
+        cpuMs: before === undefined ? null : Math.round((cumulative - before) * 1000),
+        wakeups: Math.round(Number(cpu.idleWakeupsPerSecond) || 0),
+        wsMB: Math.round((Number(memory.workingSetSize) || 0) / 1024) };
+      if (Number.isFinite(memory.privateBytes)) row.privMB = Math.round(memory.privateBytes / 1024);
+      return row;
+    });
+    previousAppMetrics = next;
+    return rows;
+  } catch { return null; }
+}
+
+/*
+ * 代理流量画像。
+ *
+ * 渲染进程的每个请求都要经过 protocol.handle（CSP 是 connect-src 'self'），
+ * 而响应体是原生流泵在推——读代码看不出它被调用了多少次。所以这里记四样：
+ *
+ *   n   请求数
+ *   kb  content-length 报出的字节。流式响应常常没有这个头，所以它经常是 0，
+ *       不能拿它当流量看。
+ *   ch  响应体被切成了多少块。这一项才是重点：如果原生泵每块只递几十字节，
+ *       一个 8 Mbps 的流就变成每秒上万次跨进程搬运，而字节数看上去完全正常。
+ *   ms  从 net.fetch 返回到流读完的总耗时。
+ *
+ * 用 TransformStream 直通计数，不用 tee：tee 会把内存流量翻倍，等于给正在被
+ * 观察的那条路径加负担。
+ */
+const NET_TOP = 4;
+/*
+ * LINGERLENS_PROXY_BUFFER=1 让代理把响应体整体读进内存再交给渲染进程，而不是
+ * 流式回传。这是给卡顿定位做的实验开关：卡顿现场主线程在原生代码里烧满一个核，
+ * 而主进程唯一随播放伸缩的工作就是这条"把原生流交给自定义协议"的路。如果改成
+ * 缓冲卡顿就消失，那答案就在这一步上，不需要再去读 ETW 的原生栈。
+ */
+const PROXY_BUFFER = process.env.LINGERLENS_PROXY_BUFFER === '1';
+let netWindow = new Map();
+function netLabel(pathname) {
+  const folded = String(pathname).replace(/[0-9a-f]{8,}/gi, '#').replace(/\d+/g, '#').replace(/#+/g, '#');
+  return folded.length > 30 ? `${folded.slice(0, 29)}…` : folded;
+}
+function netRowFor(pathname, startedAt, headersAt = performance.now()) {
+  const key = netLabel(pathname);
+  const row = netWindow.get(key) || { n: 0, kb: 0, ch: 0, fms: 0, ms: 0, max: 0 };
+  netWindow.set(key, row);
+  row.n += 1;
+  // net.fetch 返回到这里的时间，和 ms（到流读完）分开记。卡顿现场这两个数差了
+  // 三个数量级——不分开，就分不清是"后端答得慢"还是"我们把响应体交出去这一段慢"。
+  row.fms += Math.max(0, headersAt - startedAt);
+  return row;
+}
+function finishNetRow(row, startedAt) {
+  const ms = performance.now() - startedAt;
+  row.ms += ms;
+  if (ms > row.max) row.max = ms;
+}
+function countProxyStream(pathname, body, startedAt) {
+  const row = netRowFor(pathname, startedAt);
+  if (!body) { finishNetRow(row, startedAt); return body; }
+  // flush 和 cancel 都可能到达（正常读完，或渲染进程切台取消），只记一次。
+  let finished = false;
+  const done = () => { if (finished) return; finished = true; finishNetRow(row, startedAt); };
+  return body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      row.ch += 1;
+      row.kb += (chunk && chunk.byteLength ? chunk.byteLength : 0) / 1024;
+      controller.enqueue(chunk);
+    },
+    flush: done,
+    cancel: done,
+  }));
+}
+function noteProxyBuffer(pathname, bytes, startedAt, headersAt) {
+  const row = netRowFor(pathname, startedAt, headersAt);
+  row.kb += (Number(bytes) || 0) / 1024;
+  finishNetRow(row, startedAt);
+}
+function compactNetMetrics() {
+  const total = { n: 0, kb: 0, ch: 0, fms: 0, ms: 0 };
+  for (const row of netWindow.values()) {
+    total.n += row.n; total.kb += row.kb; total.ch += row.ch;
+    total.fms += row.fms; total.ms += row.ms;
+  }
+  const top = [...netWindow.entries()]
+    .sort((a, b) => b[1].ms - a[1].ms || b[1].ch - a[1].ch)
+    .slice(0, NET_TOP)
+    .map(([path, row]) => [path, row.n, Math.round(row.kb), row.ch,
+      Math.round(row.fms), Math.round(row.ms), Math.round(row.max)]);
+  netWindow = new Map();
+  const summary = { n: total.n, kb: Math.round(total.kb), ch: total.ch,
+    fms: Math.round(total.fms), ms: Math.round(total.ms), paths: top.length, top };
+  if (PROXY_BUFFER) summary.buffered = 1;
+  return summary;
+}
+
 function watchGpuProcessHealth() {
   app.on('child-process-gone', (_event, details) => {
     if (details?.type !== 'GPU' || details.reason === 'clean-exit') return;
@@ -72,6 +212,13 @@ function watchGpuProcessHealth() {
     }
     fallBackToSoftwareRendering(`gpu process gone: ${details.reason}`);
   });
+}
+// Explicit local validation profiles never replace the installed app's settings.
+if (!smoke && process.env.LINGERLENS_DATA_DIR) {
+  const dataDir = process.env.LINGERLENS_DATA_DIR;
+  if (!path.isAbsolute(dataDir)) throw new Error('LINGERLENS_DATA_DIR must be absolute');
+  fsSync.mkdirSync(dataDir, { recursive: true });
+  app.setPath('userData', dataDir);
 }
 if (smoke) app.setPath('userData', path.resolve(smoke, 'user-data'));
 let window;
@@ -275,7 +422,7 @@ async function start() {
   // Permanent, not conditional: the destination can be switched on later from
   // the diagnostics bar, which is the only way a packaged build can log at all.
   devLog = createDevLog();
-  startMainHealthProbe(devLog);
+  startMainHealthProbe(devLog, { appMetrics: compactAppMetrics, netMetrics: compactNetMetrics });
   backend = startBackend({ packaged: app.isPackaged, resources: process.resourcesPath,
     root: path.join(__dirname, '..'), dataDir: app.getPath('userData'),
     proxy: await desktopProxy(), log: devLog,
@@ -299,12 +446,21 @@ async function start() {
     headers.set('X-LingerLens-Session', endpoint.token);
     headers.set('Origin', endpoint.origin);
     headers.delete('Host');
+    const startedAt = performance.now();
     try {
       const response = await net.fetch(target, { method: request.method, headers,
         body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer(), redirect: 'error' });
+      const headersAt = performance.now();
+      const tracing = devLog.state().active;
       const resultHeaders = new Headers(response.headers);
       resultHeaders.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'none'");
-      return new Response(response.body, { status: response.status, headers: resultHeaders });
+      if (PROXY_BUFFER) {
+        const buffer = await response.arrayBuffer();
+        if (tracing) noteProxyBuffer(url.pathname, buffer.byteLength, startedAt, headersAt);
+        return new Response(buffer, { status: response.status, headers: resultHeaders });
+      }
+      return new Response(tracing ? countProxyStream(url.pathname, response.body, startedAt) : response.body,
+        { status: response.status, headers: resultHeaders });
     } catch { return new Response('Backend unavailable', { status: 503 }); }
   });
   await window.loadURL('lingerlens://app/');

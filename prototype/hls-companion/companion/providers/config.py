@@ -85,6 +85,20 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
         },
     },
     {
+        "id": "bailian-qwen35-livetranslate-subtitles",
+        "label": "百炼 Qwen3.5-LiveTranslate（字幕时序配置）",
+        "kind": "dashscope-livetranslate-realtime",
+        "model": "qwen3.5-livetranslate-flash-realtime",
+        "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "options": {
+            "sampleRate": 16000, "audioOutput": False, "voice": "Tina",
+            "silenceDurationMs": 800, "sourceLanguage": "",
+            "nativeTranslationFallback": False,
+            "closeDrainTimeoutSeconds": 15.0,
+        },
+    },
+    {
         # Third in the catalog: the same Soniox model with translating pinned
         # off, so picking "transcription only" is one choice rather than a card
         # edit. Nothing here carries a translation key: the caption path stays

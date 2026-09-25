@@ -39,6 +39,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -339,7 +340,7 @@ class _SonioxStream(ASRStream):
     async def connect(self) -> None:
         self.session = aiohttp.ClientSession()
         try:
-            self.ws = await self.session.ws_connect(self.provider.base_url)
+            self.ws = await self.session.ws_connect(self.provider.base_url, **proxy_kwargs(self.provider.base_url))
             await self.ws.send_json(self._config())
         except BaseException:
             await self.aclose()

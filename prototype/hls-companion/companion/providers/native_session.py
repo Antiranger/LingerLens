@@ -302,10 +302,12 @@ def _boundaries(segment: _Segment) -> list[tuple[str, str]]:
 class NativeSessionTranslation(TranslationProvider):
     """A Translation Provider backed by the ASR session's own translation.
 
-    No network call, no credentials, no second model: it resolves each cue from
+    Normally no second model: it resolves each cue from
     the segments the ASR Adapter already recorded. It exists so the pipeline can
     treat "the Provider translates" and "a translation model translates"
     identically -- same worker, same deadline, same cue states, same failures.
+    An explicitly configured fallback may translate unaligned/late cues; this
+    is a separate, billable request and is never enabled implicitly.
     """
 
     def __init__(
@@ -316,6 +318,7 @@ class NativeSessionTranslation(TranslationProvider):
         label: str,
         model: str,
         target_tags: tuple[str, ...] | None = None,
+        fallback: TranslationProvider | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.bus = bus
@@ -323,6 +326,7 @@ class NativeSessionTranslation(TranslationProvider):
         self.label = label
         self.model = model
         self.target_tags = target_tags
+        self.fallback = fallback
         self._monotonic = monotonic
 
     @property
@@ -331,8 +335,8 @@ class NativeSessionTranslation(TranslationProvider):
             # The Provider keeps its own context across the session; LingerLens
             # must not also send history, because the corpus/term list it was
             # configured with is the context the Provider actually honours.
-            rolling_context=False,
-            glossary=False,
+            rolling_context=bool(self.fallback and self.fallback.capabilities.rolling_context),
+            glossary=bool(self.fallback and self.fallback.capabilities.glossary),
             domains=False,
             json_output=False,
             max_input_chars=4096,
@@ -346,13 +350,28 @@ class NativeSessionTranslation(TranslationProvider):
 
     async def translate(self, request: TranslationRequest) -> TranslationResult:
         started = self._monotonic()
+        deadline = request.deadline_monotonic
+        if self.fallback is not None:
+            # A locally cut prefix has no safe slice of the native translation.
+            # Do not spend its remaining display margin waiting for one.
+            cut = request.cut_reason == "hard_deadline" or request.starts_mid_sentence is True or request.ends_mid_sentence is True
+            allowance = 0.0 if cut else 2.0
+            if deadline is not None:
+                allowance = min(allowance, max(0.0, deadline-started-3.0))
+            deadline = started + allowance
         text = await self.bus.resolve(
-            item_id=request.item_id,
-            source_text=request.source_text,
-            deadline_monotonic=request.deadline_monotonic,
-            monotonic=self._monotonic,
+            item_id=request.item_id, source_text=request.source_text,
+            deadline_monotonic=deadline, monotonic=self._monotonic,
             generation=request.generation,
         )
+        if not text and self.fallback is not None:
+            if request.generation is not None and request.generation != self.bus.generation:
+                raise ProviderRefusalError("obsolete native translation generation")
+            if request.deadline_monotonic is not None and self._monotonic() >= request.deadline_monotonic:
+                raise ProviderRefusalError("native fallback deadline expired")
+            # Same cue, source text, generation and original total deadline.
+            # The actual fallback provider id/usage is returned for accounting.
+            return await self.fallback.translate(request)
         if not text:
             raise ProviderRefusalError(
                 "the ASR Provider reported no translation for this utterance"

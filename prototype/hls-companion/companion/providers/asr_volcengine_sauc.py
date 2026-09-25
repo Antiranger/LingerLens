@@ -55,6 +55,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from .bounded import RecentIds, NumericTombstones
 from ..languages import LanguageNotSupportedError
@@ -228,7 +229,7 @@ class _VolcengineSaucStream(ASRStream):
     async def connect(self) -> None:
         self.session = aiohttp.ClientSession()
         try:
-            self.ws = await self.session.ws_connect(self.provider.base_url, headers=self._headers())
+            self.ws = await self.session.ws_connect(self.provider.base_url, headers=self._headers(), **proxy_kwargs(self.provider.base_url))
             # Session start: full client request with the JSON parameters.
             await self.ws.send_bytes(_json_frame(MSG_FULL_CLIENT_REQUEST, self._session_start()))
         except BaseException:

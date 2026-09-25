@@ -33,6 +33,7 @@ from .base import (
     ProviderUnavailableError,
 )
 from .base import TranslationRequest
+from .net_proxy import proxy_kwargs
 
 
 _session: ContextVar[aiohttp.ClientSession | None] = ContextVar("translation_http_session", default=None)
@@ -97,7 +98,7 @@ async def post_json(
         async with translation_session():
             return await post_json(url, headers=headers, payload=payload, timeout=timeout)
     try:
-        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+        async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=timeout), **proxy_kwargs(url)) as response:
             status = response.status
             retry_after = getattr(response, "headers", {}).get("Retry-After")
             try:

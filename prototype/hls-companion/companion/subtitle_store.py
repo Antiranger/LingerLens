@@ -18,7 +18,7 @@ TimingSource = Literal["asr", "vad", "approx"]
 
 _IMMUTABLE_AFTER_ADD = {
     "t_start", "t_end", "src", "lang", "timing_source", "speaker",
-    "generation", "chunk_order", "starts_mid_sentence", "ends_mid_sentence", "cut_reason",
+    "generation", "chunk_order", "starts_mid_sentence", "ends_mid_sentence", "cut_reason", "item_id",
 }
 _TERMINAL_STATES = {"done", "failed"}
 
@@ -42,6 +42,7 @@ class Cue:
     starts_mid_sentence: bool | None = None
     ends_mid_sentence: bool | None = None
     cut_reason: str | None = None
+    item_id: str | None = None
     """Provider-reported diarization label for this utterance (Ticket 02).
 
     Backend-owned metadata only: serialized for future UI use, never rendered
@@ -66,6 +67,7 @@ class Cue:
             "startsMidSentence": self.starts_mid_sentence,
             "endsMidSentence": self.ends_mid_sentence,
             "cutReason": self.cut_reason,
+            **({"itemId": self.item_id} if self.item_id is not None else {}),
         }
 
 
@@ -119,6 +121,7 @@ class CueStore:
         starts_mid_sentence: bool | None = None,
         ends_mid_sentence: bool | None = None,
         cut_reason: str | None = None,
+        item_id: str | None = None,
     ) -> Cue:
         cue = Cue(
             id=self._next_id,
@@ -137,6 +140,7 @@ class CueStore:
             starts_mid_sentence=starts_mid_sentence,
             ends_mid_sentence=ends_mid_sentence,
             cut_reason=cut_reason,
+            item_id=item_id,
         )
         self._next_id += 1
         self._cues.append(cue)

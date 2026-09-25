@@ -258,6 +258,7 @@ class CompanionApplication:
         app.router.add_get("/ui-bootstrap.js", self.static_file)
         app.router.add_get("/language-selector.js", self.static_file)
         app.router.add_get("/subtitle-scheduler.js", self.static_file)
+        app.router.add_get("/subtitle-render-loop.js", self.static_file)
         app.router.add_get("/subtitle-window-controller.js", self.static_file)
         app.router.add_get("/media-clock.js", self.static_file)
         app.router.add_get("/poll-loop.js", self.static_file)
@@ -445,6 +446,8 @@ class CompanionApplication:
             raise ValueError("invalid subtitle cursor")
         pipeline_status = self._subtitle_status()
         pipeline = self.subtitle_pipeline
+        if pipeline is not None and request.query.get("playhead") is not None and request.query.get("mediaSessionId") and request.query.get("mediaSessionId") == self.session.media_session_id:
+            pipeline.set_viewer_wall_time(request.query.get("playhead"))
         return web.json_response(
             {
                 "now": time.time(),
@@ -455,6 +458,7 @@ class CompanionApplication:
                 # Recognized but not yet released: the player may draw this, but it
                 # is not a cue and never reaches the subtitle list or an export.
                 "draft": pipeline.caption_draft() if pipeline is not None else None,
+                "drafts": getattr(pipeline, "caption_drafts", lambda: [])(),
                 "stats": pipeline_status,
             },
             headers={"Cache-Control": "no-store"},
@@ -1336,6 +1340,12 @@ class CompanionApplication:
         native_translation_bus: NativeTranslationBus | None = None
         native = asr_provider.capabilities.native_translation
         if native.enabled:
+            native_fallback = None
+            fallback_configs = []
+            if asr_config.get("options", {}).get("nativeTranslationFallback") is True:
+                fallback_configs = list(translation_configs)
+                candidates = [create_translation(item) for item in fallback_configs]
+                native_fallback = FallbackChain(candidates) if len(candidates) > 1 else candidates[0]
             native_translation_bus = NativeTranslationBus()
             asr_provider.set_translation_target(target_language)
             translation_providers = [
@@ -1345,10 +1355,19 @@ class CompanionApplication:
                     label=f"{asr_provider.label}（Provider 内置翻译）",
                     model=asr_provider.model,
                     target_tags=native.target_tags,
+                    fallback=native_fallback,
                 )
             ]
             translation_configs = [asr_config]
-            translation_pricing = {}
+            translation_pricing = {
+                item["id"]: {
+                    "input": item.get("pricePerMillionInputTokensCny"),
+                    "cachedInput": item.get("pricePerMillionCachedInputTokensCny"),
+                    "cacheWrite": item.get("pricePerMillionCacheWriteTokensCny"),
+                    "output": item.get("pricePerMillionOutputTokensCny"),
+                    "currency": provider_currency(item.get("kind"), item.get("currency")),
+                } for item in fallback_configs
+            }
         else:
             translation_configs = [self._provider_record(config["translation"], translation_id)]
             translation_configs.extend(

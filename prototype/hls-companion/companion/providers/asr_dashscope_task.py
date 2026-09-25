@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
 from .base import (
@@ -160,6 +161,7 @@ class _DashScopeTaskStream(ASRStream):
             self.ws = await self.session.ws_connect(
                 self.provider.base_url,
                 headers={"Authorization": f"Bearer {self.provider.api_key}", "X-DashScope-DataInspection": "enable"},
+                **proxy_kwargs(self.provider.base_url),
             )
             options = self.provider.options
             parameters: dict[str, Any] = {

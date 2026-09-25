@@ -206,12 +206,12 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.doesNotMatch(mediaClock.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ""), /Date\.now\(/);
   assert.match(js, /\/api\/subtitles\?afterSeq=/);
   assert.match(js, /run:\s*refreshSubtitles,[\s\S]*?intervalMs:\s*250/);
-  assert.match(js, /subtitleRenderTimer\s*=\s*setInterval\([\s\S]*?renderSubtitle\(\)[\s\S]*?,\s*100\)/);
+  assert.match(js, /subtitleRenderTimer\s*=\s*window\.createSubtitleRenderLoop/);
   assert.match(js, /subtitleScheduler\.active/);
   // The draft line: recognized text the backend holds while the Provider has not
   // ended its turn. It must be painted outside .subtitle-content, which the cue
   // reconciler clears by cueId, and it must be bounded by the playhead.
-  assert.match(js, /subtitleDraft = data\.draft \|\| null/);
+  assert.match(js, /subtitleDraft = (?:usableDraft\()?Array\.isArray\(data\.drafts\)/);
   assert.match(js, /el\("subtitleDraft"\)/);
   assert.match(js, /position > draft\.tEnd \+ SUBTITLE_DRAFT_STALE_SECONDS/);
   assert.match(js, /position < draft\.tStart/);

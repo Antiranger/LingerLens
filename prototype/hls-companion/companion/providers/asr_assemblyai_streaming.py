@@ -45,6 +45,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 
+from .net_proxy import proxy_kwargs
 from . import register
 from .bounded import RecentIds, NumericTombstones
 from ..languages import LanguageNotSupportedError, canonicalize_tag_or_none, primary_subtag
@@ -213,6 +214,7 @@ class _AssemblyAIStream(ASRStream):
                 f"{self.provider.base_url}?{query}",
                 # Official streaming auth: raw key header, no Bearer prefix.
                 headers={"Authorization": self.provider.api_key},
+                **proxy_kwargs(self.provider.base_url),
             )
         except BaseException:
             await self._release()

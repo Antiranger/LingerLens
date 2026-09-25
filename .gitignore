@@ -25,9 +25,33 @@ Thumbs.db
 # Archived stale source snapshots. Kept on disk for provenance but deliberately
 # untracked: they are same-named copies of live source, so tracking them made
 # `git grep subtitle_pipeline.py` return eight contradictory answers when only
-# one of them is the code that runs. See .archive/README.md.
-/.archive/*
-!/.archive/README.md
+# one of them is the code that runs.
+/.archive/
+
+# Maintainer working notes stay on the maintainer's machine. The repository
+# publishes only user and contributor documentation; everything else under
+# docs/ (plans, handoffs, investigation reports, session notes, research) is
+# ignored by default, so a new note cannot be committed by accident.
+/docs/*
+!/docs/README.md
+!/docs/DEVELOPMENT.md
+!/docs/PROVIDERS.md
+!/docs/RELEASING.md
+!/docs/architecture.md
+!/docs/security.md
+!/docs/en/
+!/docs/zh-CN/
+!/docs/ja/
+!/docs/de/
+!/docs/ru/
+/CONTEXT.md
+/*_handoff.md
+/Start-Subtitle-Optimized.cmd
+
+# yt-dlp.exe is fetched by scripts/fetch-yt-dlp.py (pinned in
+# desktop/dependencies.json), not committed.
+/prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe
+/prototype/hls-companion/vendor/yt-dlp/yt-dlp.download
 
 # Generated reports, benchmarks, recordings, media and logs
 output/
@@ -47,7 +71,7 @@ live-delay-*.json
 # Nothing here is needed to build or run the project, and it is where the bulk
 # lives (checkpoints alone reached 486 MB). The durable records that used to sit
 # here — investigation reports, specs, the per-session logs — were moved to
-# docs/notes/ so `rm -rf .scratch` cannot lose them.
+# docs/notes/ (local-only, see above) so `rm -rf .scratch` cannot lose them.
 #
 # Note this also covers the MPEG-TS captures that once made `guard:release` fail
 # (five committed .ts files from the 2026-09-09 startup-sync experiment).
@@ -95,3 +119,5 @@ cookies.txt
 /.venv-desktop/
 /build-desktop/
 /release/
+/release-*/
+/.smoke-*/

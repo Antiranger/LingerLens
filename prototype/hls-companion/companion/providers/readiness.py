@@ -14,6 +14,8 @@ def asr_readiness(config):
         return {'tier':'blocked','reason':'client_vad_not_implemented','nativeTranslation':False}
     if kind == 'elevenlabs-scribe-realtime' and options.get('commitStrategy','vad') == 'manual':
         return {'tier':'blocked','reason':'manual_commit_not_scheduled','nativeTranslation':False}
+    if kind == 'dashscope-livetranslate-realtime' and str(model).startswith('qwen3.8'):
+        return {'tier':'experimental','reason':'source_turn_timing_failed_live_probe','nativeTranslation':True}
     candidate = (kind in {'soniox-realtime','soniox-realtime-transcribe'} and model == 'stt-rt-v5' and not native) or (kind == 'dashscope-qwen-realtime' and model == 'qwen3-asr-flash-realtime')
     return {'tier':'candidate' if candidate else 'experimental',
             'reason':'live_acceptance_required' if not native else 'native_segment_alignment_required',

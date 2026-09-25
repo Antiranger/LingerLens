@@ -24,8 +24,9 @@ independently of any installer.
 ### yt-dlp `2026.08.19`
 
 `prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe` — **The Unlicense**.
-SHA-256 is pinned in the adjacent `yt-dlp.exe.sha256` and verified by
-`bootstrap.ps1` and by `desktop/prepare_backend.py` at build time. It matches the
+The executable is not committed; `scripts/fetch-yt-dlp.py` downloads it from the
+upstream release. SHA-256 is pinned in `desktop/dependencies.json` and the adjacent
+`yt-dlp.exe.sha256`, and verified by `bootstrap.ps1` and by `desktop/prepare_backend.py` at build time. It matches the
 upstream release's own `SHA2-256SUMS`, so this is the genuine upstream artifact
 rather than a local rebuild.
 

@@ -61,13 +61,18 @@ if ($browserPaths.Count -eq 0 -and -not (Get-Command chrome.exe, msedge.exe -Err
 
 $ytDlp = Join-Path $root "prototype\hls-companion\vendor\yt-dlp\yt-dlp.exe"
 $checksumFile = "$ytDlp.sha256"
+# yt-dlp.exe is not committed: the pinned build is downloaded and verified by
+# scripts/fetch-yt-dlp.py. A check-only run reports it instead of downloading.
+if (-not (Test-Path $ytDlp -PathType Leaf) -and -not $CheckOnly) {
+    & $Python (Join-Path $root "scripts\fetch-yt-dlp.py")
+}
 if (-not (Test-Path $ytDlp -PathType Leaf) -or -not (Test-Path $checksumFile -PathType Leaf)) {
-    Add-Failure "Vendored yt-dlp or its checksum file is missing."
+    Add-Failure "yt-dlp is missing. Run: $Python scripts\fetch-yt-dlp.py"
 } else {
     $expected = ((Get-Content $checksumFile -Encoding utf8 -Raw).Trim().Split()[0]).ToLowerInvariant()
     $actual = (Get-FileHash $ytDlp -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) { Add-Failure "Vendored yt-dlp checksum mismatch. Restore the tracked binary before continuing." }
-    else { Write-Host "[ok] vendored yt-dlp SHA-256 verified ($(& $ytDlp --version))" }
+    if ($actual -ne $expected) { Add-Failure "yt-dlp checksum mismatch. Delete it and run: $Python scripts\fetch-yt-dlp.py" }
+    else { Write-Host "[ok] yt-dlp SHA-256 verified ($(& $ytDlp --version))" }
 }
 
 if ($failures.Count -gt 0) {

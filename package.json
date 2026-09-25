@@ -22,6 +22,7 @@
     "soak:analyze": "python prototype/hls-companion/scripts/soak-analyze.py",
     "desktop:dev": "build-desktop\\electron\\electron.exe .",
     "desktop:dev:log": "node scripts/dev-log-run.js",
+    "fetch:yt-dlp": "python scripts/fetch-yt-dlp.py",
     "desktop:backend": ".venv-desktop\\Scripts\\python.exe desktop/prepare_backend.py",
     "desktop:pack": "electron-builder --config desktop/builder.cjs --dir --win --x64",
     "desktop:refresh": "npm run desktop:backend && npm run desktop:pack",

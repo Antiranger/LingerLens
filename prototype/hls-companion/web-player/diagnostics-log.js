@@ -522,18 +522,133 @@
 
   // Opt-in, fixed-size aggregates. Never retain frames, message text or URLs.
   // tick() uses the player's existing 100ms timer; no extra polling or trace.
-  function createPlaybackProbe({ video, enabled, emit, now = () => performance.now(), hidden = () => false }) {
+  //
+  // `workMs` only ever measured the JavaScript inside each component call, and
+  // that is exactly where danmaku cost does not live: the `innerHTML` batch
+  // rewrite of the chat timeline, and the getBoundingClientRect() the overlay
+  // does per bullet, both spend their time in layout and paint -- after
+  // measure() has already returned. `jank` and `chat` exist to cover that blind
+  // spot. Both are counts and gauges, never samples: we keep no frame list, no
+  // message text and no per-bullet record.
+  function createPlaybackProbe({ video, enabled, emit, now = () => performance.now(),
+      hidden = () => false, counters = null, gauges = null, net = null }) {
     const names = ["subtitle", "subtitleHistory", "chatOverlay", "chatHistory", "controls"];
     const events = ["waiting", "stalled", "playing", "seeking", "seeked", "pause", "error", "emptied"];
+    // Frame-interval thresholds, in ms. 16.7 is one 60Hz frame, 33 is a missed
+    // vsync, and 100 is the point Chrome itself calls a long task.
+    const JANK_MS = [16.7, 33, 50, 100];
     let active = false, start = 0, last = 0, gap = 0, ticks = 0, base = null;
     let counts = {}, costs = {}, lastTime = 0, wasHidden = false;
+    let ltCount = 0, ltTotal = 0, ltMax = 0, ltObserver = null;
+    let rafCount = 0, rafMax = 0, lastFrame = 0, rafSeen = false;
+    let originalRaf = null, wrappedRaf = null, rafToken = null, rafPatched = false;
+    const rafOver = [0, 0, 0, 0];
+    let previousCounters = null;
+    const hasObserver = typeof PerformanceObserver === "function";
+    const hasRaf = typeof requestAnimationFrame === "function";
     const quality = () => {
       const q = video.getVideoPlaybackQuality?.();
       return q ? [q.totalVideoFrames, q.droppedVideoFrames] : null;
     };
+    /* 被动观测：只是包一层 requestAnimationFrame，在「别人」请求帧的时候记时间差。
+       绝不自己发起帧。
+
+       上一版用一个自续的 rAF 循环（每帧回调里再请求下一帧）来测帧率。一个永远挂着
+       的 rAF 请求会强制 Chromium 持续出帧，把窗口钉死在显示器刷新率上（这台机器是
+       160Hz），合成器永不空闲——观测行为本身在制造持续合成。排查「视频流畅但鼠标
+       指针掉帧」这种合成通道的问题时，这种干扰是不能接受的：它既会污染结论，也可
+       能就是症状本身。
+
+       0 只表示没有观测到经过此包装器的 JavaScript rAF 间隔。视频帧、CSS 动画、
+       浏览器合成与显示器扫描仍可能进行，不能把它解释为零重绘或零显示帧。 */
+    function onFrame(t) {
+      // 同一帧里可能有多个回调拿到同一个时间戳，只按时间戳去重计数。
+      if (rafSeen && t !== lastFrame) {
+        const delta = t - lastFrame;
+        rafCount += 1;
+        if (delta > rafMax) rafMax = delta;
+        for (let i = 0; i < JANK_MS.length; i += 1) if (delta > JANK_MS[i]) rafOver[i] += 1;
+      }
+      rafSeen = true; lastFrame = t;
+    }
+    function patchRaf(on) {
+      if (!hasRaf || typeof globalThis === "undefined") return;
+      if (on && !rafPatched) {
+        const delegate = globalThis.requestAnimationFrame;
+        const token = {}; rafToken = token;
+        originalRaf = delegate;
+        wrappedRaf = function (callback) {
+          // Preserve the native synchronous validation and callback receiver.
+          if (typeof callback !== "function") return delegate.call(this, callback);
+          return delegate.call(this, function (t) {
+            if (rafToken === token) {
+              try { onFrame(t); } catch { /* Observation cannot break playback. */ }
+            }
+            return callback.call(this, t);
+          });
+        };
+        globalThis.requestAnimationFrame = wrappedRaf;
+        rafPatched = true;
+      } else if (!on && rafPatched) {
+        // Another library may have wrapped ours. Do not erase its installation;
+        // the detached wrapper remains a pure delegate with a retired token.
+        if (globalThis.requestAnimationFrame === wrappedRaf) globalThis.requestAnimationFrame = originalRaf;
+        rafToken = null; rafPatched = false; originalRaf = wrappedRaf = null; rafSeen = false;
+      }
+    }
+    /* Samplers run only while the log is armed, so an unarmed app pays nothing
+       for instrumentation it is not recording. */
+    function sample(on) {
+      patchRaf(on);
+      if (on && hasObserver && !ltObserver) {
+        try {
+          ltObserver = new PerformanceObserver(list => {
+            for (const entry of list.getEntries()) {
+              ltCount += 1; ltTotal += entry.duration;
+              if (entry.duration > ltMax) ltMax = entry.duration;
+            }
+          });
+          ltObserver.observe({ entryTypes: ["longtask"] });
+        } catch { ltObserver = null; }
+      }
+      if (!on && ltObserver) { try { ltObserver.disconnect(); } catch { } ltObserver = null; }
+      if (!on) previousCounters = null;
+    }
+    /* Counters arrive cumulative and are reported as per-window deltas, so a
+       value reads as "how many in these five seconds". The very first window
+       has no baseline to subtract, so it reports gauges only -- an absent key
+       says "not measured yet", where a zero would claim "none happened". A
+       counter that moved backwards belongs to a new session; reporting the
+       absolute value beats reporting a negative one. */
+    function chatSection() {
+      const out = {};
+      try {
+        const current = gauges ? gauges() : null;
+        for (const [key, value] of Object.entries(current || {})) {
+          out[key] = typeof value === "boolean" ? (value ? 1 : 0) : Math.round(Number(value) || 0);
+        }
+      } catch { /* a broken gauge must not cost us the rest of the window */ }
+      try {
+        const current = counters ? counters() : null;
+        const baselineOnly = previousCounters === null;
+        if (current) {
+          for (const [key, value] of Object.entries(current)) {
+            if (baselineOnly) continue;
+            const total = Number(value) || 0;
+            const before = Number(previousCounters[key]);
+            out[key] = !Number.isFinite(before) || total < before ? Math.round(total) : Math.round(total - before);
+          }
+          previousCounters = { ...current };
+        }
+      } catch { }
+      return out;
+    }
     function reset(t) {
       start = last = t; gap = ticks = 0; counts = {}; costs = {};
       base = quality(); lastTime = video.currentTime; wasHidden = hidden();
+      ltCount = 0; ltTotal = 0; ltMax = 0;
+      rafCount = 0; rafMax = 0; rafSeen = false;
+      for (let i = 0; i < rafOver.length; i += 1) rafOver[i] = 0;
     }
     const listeners = events.map(name => {
       const listener = () => {
@@ -555,8 +670,9 @@
         }
       },
       tick() {
-        if (!enabled()) { active = false; return; }
+        if (!enabled()) { active = false; sample(false); return; }
         const t = now();
+        sample(true);
         if (!active || wasHidden !== hidden()) { active = true; reset(t); return; }
         gap = Math.max(gap, Math.max(0, t - last - 100)); last = t; ticks++;
         if (t - start < 5000) return;
@@ -569,19 +685,127 @@
         const q = quality();
         const frames = base && q && q.every((v, i) => v >= base[i]) ? q.map((v, i) => v - base[i]) : null;
         const round = v => Math.round(v * 10) / 10;
-        emit({ ms: round(t - start), hidden: hidden(), paused: video.paused,
+        const summary = { ms: round(t - start), hidden: hidden(), paused: video.paused,
           ready: video.readyState, rate: video.playbackRate, ahead: round(ahead),
           mediaDelta: round(video.currentTime - lastTime), frames,
           timerLateMs: round(gap), ticks, events: counts,
           workMs: Object.fromEntries(Object.entries(costs).map(([k, v]) => [k, [v[0], round(v[1]), round(v[2])]])),
-        });
+        };
+        if (counters || gauges) summary.chat = chatSection();
+        // 这个窗口里渲染进程打了哪些接口、多少字节。每个请求都要过主进程的代理，
+        // 所以这份画像就是代理看到的那份流量——主进程在烧一个核的时候，
+        // 要么这里有一行特别大，要么就不是渲染进程喂出来的。
+        if (net) {
+          try { summary.net = net.takeWindow(); } catch { /* 画像失败不该拖垮整条记录 */ }
+        }
+        // Passive JS callback intervals, NOT video or compositor frame counts.
+        // Intentional sparse callbacks also create large gaps; pair this with
+        // playback quality and timer lateness before classifying a stall.
+        const jank = {};
+        if (hasRaf) jank.raf = [rafCount, ...rafOver, Math.round(rafMax)];
+        if (ltObserver) jank.lt = [ltCount, Math.round(ltTotal), Math.round(ltMax)];
+        if (Object.keys(jank).length) summary.jank = jank;
+        emit(summary);
         reset(t);
       },
-      dispose() { for (const [name, listener] of listeners) video.removeEventListener(name, listener); },
+      dispose() {
+        for (const [name, listener] of listeners) video.removeEventListener(name, listener);
+        sample(false);
+      },
+    };
+  }
+
+  /*
+   * 渲染进程的请求画像。
+   *
+   * 每个请求都要过主进程的 `protocol.handle('lingerlens')` 代理——CSP 是
+   * `connect-src 'self'`，绕不过去——所以在这一侧数，数到的就是代理看到的那份
+   * 流量。主进程那条路径是原生的流泵，读代码看不出它被调用了多少次，只能测。
+   *
+   * 只计数、计时、记字节，不保留地址：路径归一化（数字段折叠成 #）并截断，
+   * 查询串整个丢掉。和探针其它部分一样，日志里不留 URL。
+   */
+  function createNetProbe(options = {}) {
+    const target = options.target || globalThis;
+    const originalFetch = target.fetch;
+    const proto = target.XMLHttpRequest?.prototype;
+    const originalOpen = proto?.open, originalSend = proto?.send;
+    const enabled = options.enabled || (() => true);
+    const clock = options.now || (() => performance.now());
+    const maxLabel = options.maxLabel || 26;
+    const requestsByXhr = new WeakMap(), byPath = new Map();
+    let live = true, requests = 0, bytes = 0, ms = 0, failures = 0;
+    let fetchWrapper, openWrapper, sendWrapper;
+    if (typeof originalFetch !== "function" && !proto) return null;
+    const capturing = () => live && enabled();
+    function labelFor(raw) {
+      let pathname;
+      try { pathname = new URL(String(raw ?? ""), "lingerlens://app/").pathname; }
+      catch { return "unknown"; }
+      const clean = pathname.replace(/[0-9a-f]{8,}/gi, "#").replace(/\d+/g, "#").replace(/#+/g, "#");
+      return clean.length > maxLabel ? `${clean.slice(0, maxLabel - 1)}…` : clean;
+    }
+    function tally(path, elapsed, size, failed) {
+      if (!capturing()) return;
+      if (!byPath.has(path) && byPath.size >= 64) path = "other";
+      elapsed = Math.max(0, Number(elapsed) || 0); size = Math.max(0, Number(size) || 0);
+      requests++; ms += elapsed; bytes += size;
+      const row = byPath.get(path) || { n: 0, ms: 0, bytes: 0, max: 0, bad: 0 };
+      row.n++; row.ms += elapsed; row.bytes += size;
+      if (failed) { row.bad++; failures++; }
+      row.max = Math.max(row.max, elapsed); byPath.set(path, row);
+    }
+    if (typeof originalFetch === "function") {
+      fetchWrapper = function (input, init) {
+        if (!capturing()) return originalFetch.apply(this, arguments);
+        const path = labelFor(typeof input === "string" ? input : input?.url), t0 = clock();
+        return originalFetch.apply(this, arguments).then(response => {
+          let size = 0;
+          try { size = Number(response?.headers?.get?.("content-length")) || 0; } catch { }
+          tally(path, clock() - t0, size, !response?.ok);
+          return response; // Do not clone, consume or wrap the response body.
+        }, error => { tally(path, clock() - t0, 0, true); throw error; });
+      };
+      target.fetch = fetchWrapper;
+    }
+    if (proto && typeof originalOpen === "function" && typeof originalSend === "function") {
+      openWrapper = function (method, url) {
+        const result = originalOpen.apply(this, arguments);
+        requestsByXhr.set(this, labelFor(url)); return result;
+      };
+      sendWrapper = function () {
+        if (!capturing()) return originalSend.apply(this, arguments);
+        const path = requestsByXhr.get(this) || "unknown", t0 = clock();
+        const done = () => {
+          let size = 0;
+          try { size = Number(this.getResponseHeader("content-length")) || 0; } catch { }
+          tally(path, clock() - t0, size, this.status === 0 || this.status >= 400);
+        };
+        this.addEventListener("loadend", done, { once: true });
+        try { return originalSend.apply(this, arguments); }
+        catch (error) { this.removeEventListener?.("loadend", done); throw error; }
+      };
+      proto.open = openWrapper; proto.send = sendWrapper;
+    }
+    return {
+      takeWindow(top = 4) {
+        const topPaths = [...byPath.entries()].sort((a,b) => b[1].bytes-a[1].bytes || b[1].n-a[1].n)
+          .slice(0,top).map(([path,row]) => [path,row.n,Math.round(row.bytes/1024),Math.round(row.ms),Math.round(row.max)]);
+        const bucket = { req: requests, kb: Math.round(bytes/1024), ms: Math.round(ms), fail: failures, paths: byPath.size, top: topPaths };
+        requests = bytes = ms = failures = 0; byPath.clear(); return bucket;
+      },
+      labelFor,
+      restore() {
+        live = false; byPath.clear();
+        if (target.fetch === fetchWrapper) target.fetch = originalFetch;
+        if (proto?.open === openWrapper) proto.open = originalOpen;
+        if (proto?.send === sendWrapper) proto.send = originalSend;
+      },
     };
   }
 
   const exported = {
+    createNetProbe,
     createPlaybackProbe,
     createDiagnosticsLog,
     createDiagnosticsClient,

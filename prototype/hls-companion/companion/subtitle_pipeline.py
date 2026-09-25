@@ -21,6 +21,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from .caption_chunker import CaptionChunk, CaptionChunker, ChunkerDecision
+from .acoustic_onset import AcousticOnsetIndex
 from .context_manager import RollingContext
 from .providers.http import translation_session
 from .logbook import record as log_record
@@ -237,6 +238,8 @@ class PipelineStats:
     overlong_cues: int = 0
     source_only_cues: int = 0
     unmapped_observations: int = 0
+    acoustic_onset_refinements: int = 0
+    acoustic_onset_max_adjustment_ms: float = 0.0
     speaker_revisions: int = 0
     native_translation_updates: int = 0
     """Provider-side translation refreshes for an utterance still in flight.
@@ -346,6 +349,7 @@ class SubtitlePipeline:
         if sample_rate not in (16000, 24000):
             raise ValueError("sample_rate must be 16000 or 24000")
         self.sample_rate = sample_rate
+        self.acoustic_onset = AcousticOnsetIndex(sample_rate)
         self.pcm_bytes_per_second = sample_rate * 2
         self.glossary = list(glossary or [])[:30]
         self.hotwords = list(hotwords or [])
@@ -944,6 +948,7 @@ class SubtitlePipeline:
 
     async def _enqueue_pcm_chunk(self, chunk: bytes, chunk_start: float) -> None:
         """Queue decoded PCM with bounded backpressure for the production reader."""
+        self.acoustic_onset.feed(chunk, chunk_start)
         self._pcm_offset = max(
             self._pcm_offset,
             chunk_start + len(chunk) / self.pcm_bytes_per_second,
@@ -1526,10 +1531,17 @@ class SubtitlePipeline:
         # and "approx" was unreachable. The UI displayed that permanently-zero
         # counter as if it meant something.
         timing_source: TimingSource = "asr" if chunk.exact_timing else "vad"
+        begin_pcm = self.acoustic_onset.refine(chunk.begin_pcm, chunk.end_pcm)
+        adjustment = abs(begin_pcm - chunk.begin_pcm)
+        if adjustment > 0.001:
+            timing_source = "approx"  # Acoustic refinement, not vendor-exact timing.
+            self.stats.acoustic_onset_refinements += 1
+            self.stats.acoustic_onset_max_adjustment_ms = max(
+                self.stats.acoustic_onset_max_adjustment_ms, adjustment * 1000)
         emitted_at = self.monotonic()
         pending = _PendingFinal(
             text=cleaned,
-            begin_pcm=chunk.begin_pcm,
+            begin_pcm=begin_pcm,
             end_pcm=chunk.end_pcm,
             timing_source=timing_source,
             lang=chunk.language or (event.language if event is not None else None),
@@ -1670,6 +1682,7 @@ class SubtitlePipeline:
             starts_mid_sentence=pending.starts_mid_sentence,
             ends_mid_sentence=pending.ends_mid_sentence,
             cut_reason=pending.cut_reason,
+            item_id=pending.item_id,
         )
         self._timing_source_counts[pending.timing_source] = self._timing_source_counts.get(pending.timing_source, 0) + 1
         if pending.item_id:
@@ -2131,6 +2144,29 @@ class SubtitlePipeline:
             return bool(status.get("sourceError") or status.get("source_error"))
         return bool(status)
 
+    def caption_drafts(self) -> list[dict[str, Any]]:
+        """Preload stable source previews; the browser owns onset admission.
+
+        A viewer-position round trip at onset imposed up to a polling interval
+        of latency even when recognition was ready seconds ahead of the viewer.
+        Never guess missing media anchors or send mutable ASR hypotheses here.
+        """
+        if not self._running or self.media_epoch is None:
+            return []
+        drafts = []
+        for pending in self.caption_chunker.pending_captions():
+            text = clean_subtitle_text(pending.text)
+            if not text:
+                continue
+            begin = self._draft_media_time(self.acoustic_onset.refine(pending.begin_pcm, pending.end_pcm))
+            end = self._draft_media_time(pending.end_pcm)
+            if begin is None or end is None or end < begin:
+                continue
+            drafts.append({"text": text, "itemId": pending.item_id,
+                "generation": self._generation, "tStart": begin, "tEnd": end,
+                "lang": pending.language or self.source_language, "speaker": pending.speaker})
+        return drafts
+
     def caption_draft(self) -> dict[str, Any] | None:
         """The line the chunker is holding, so the player can draw it early.
 
@@ -2166,7 +2202,7 @@ class SubtitlePipeline:
         return {
             "text": text,
             "itemId": pending.item_id,
-            "tStart": self._draft_media_time(pending.begin_pcm),
+            "tStart": self._draft_media_time(self.acoustic_onset.refine(pending.begin_pcm, pending.end_pcm)),
             "tEnd": self._draft_media_time(pending.end_pcm),
             "lang": pending.language or self.source_language,
             "speaker": pending.speaker,
@@ -2179,8 +2215,8 @@ class SubtitlePipeline:
         if mapped is None and self.media_anchor is not None:
             mapped = self.media_anchor.map_pcm(pcm)
         if mapped is None:
-            # A cue cannot be stamped without an anchor; a provisional line can,
-            # because it is gone as soon as the cue that replaces it is stamped.
+            if self.media_anchor is not None or self.source_pts_mapper is not None:
+                return None  # A draft cannot invent a position a cue cannot prove.
             mapped = pcm
         return None if self.media_epoch is None else self.media_epoch + mapped
 
@@ -2238,6 +2274,8 @@ class SubtitlePipeline:
             )
         chunker = self.caption_chunker.telemetry()
         return {
+            "acousticOnsetRefinements": self.stats.acoustic_onset_refinements,
+            "acousticOnsetMaxAdjustmentMs": round(self.stats.acoustic_onset_max_adjustment_ms, 2),
             "running": self._running,
             "sampleRate": self.sample_rate,
             "sourceLanguagePolicy": self.source_policy.to_json(),

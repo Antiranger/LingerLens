@@ -555,26 +555,23 @@ class CaptionChunker:
         identity of its own would put the missing-translation bug back.
         """
         newest: _CaptionState | None = None
+        units: list[_Unit] = []
+        # Selection happens AFTER audibility filtering. A newer future speaker
+        # must not suppress an older lane that the viewer is hearing now.
         for caption in self._captions.values():
-            if caption.units and (newest is None or caption.last_touched > newest.last_touched):
-                newest = caption
+            candidates = caption.units
+            if heard_pcm is not None:
+                kept = 0
+                for unit in candidates:
+                    if unit.begin is None or unit.begin > heard_pcm:
+                        break
+                    kept += 1
+                candidates = candidates[:kept]
+            if candidates and (newest is None or caption.last_touched > newest.last_touched):
+                newest, units = caption, candidates
         if newest is None:
             return None
-        units = newest.units
-        cutoff: float | None = None
-        if heard_pcm is not None:
-            kept = 0
-            for unit in units:
-                if unit.begin is None or unit.begin > heard_pcm + _TIMESTAMP_JITTER:
-                    break
-                kept += 1
-            units = units[:kept]
-            if not units:
-                return None
-            # The window ends where the viewer is, not where the last kept unit
-            # ended: text that has been heard stays on screen while the Provider
-            # still holds the turn, instead of blinking out mid-sentence.
-            cutoff = heard_pcm
+        cutoff = heard_pcm
         begin, end = _chunk_times(units, newest)
         if cutoff is not None:
             end = max(end, cutoff)
@@ -586,6 +583,26 @@ class CaptionChunker:
             language=_dominant(unit.language for unit in units),
             speaker=_dominant(unit.speaker for unit in units),
         )
+
+    def pending_captions(self) -> tuple[PendingCaption, ...]:
+        """Stable source previews with media bounds, including future onsets.
+
+        Sending evidence ahead of playback does not display it early. The
+        renderer admits each preview on its own video timestamp; polling is
+        transport, never the caption clock. These remain non-committed previews.
+        """
+        pending = []
+        for state in self._captions.values():
+            if not state.units:
+                continue
+            begin, end = _chunk_times(state.units, state)
+            pending.append(PendingCaption(
+                item_id=_dominant(unit.item_id for unit in state.units) or "",
+                text=_join_units(state.units), begin_pcm=begin, end_pcm=end,
+                language=_dominant(unit.language for unit in state.units),
+                speaker=_dominant(unit.speaker for unit in state.units),
+            ))
+        return tuple(sorted(pending, key=lambda item: item.begin_pcm)[:32])
 
     def telemetry(self) -> CaptionChunkerTelemetry:
         ordered = sorted(self._spans)
