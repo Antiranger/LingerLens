@@ -1710,6 +1710,48 @@
     return `${prefix}-${index}`;
   }
 
+  /*
+   * 每个语音识别协议对应厂商的官网和 API Key 页面。新手最卡的一步是「Key 去哪
+   * 拿」，所以链接直接放在 API Key 输入框下面，随协议一起切换。地址在
+   * 2026-09 逐个打开核对过；未登录时先跳到登录页是正常的。DashScope 的中国大陆
+   * 与国际站是两套账号和两个控制台，所以两条都给。
+   */
+  const SONIOX_LINKS = { site: "https://soniox.com/", key: "https://console.soniox.com/" };
+  const DASHSCOPE_LINKS = {
+    site: "https://help.aliyun.com/zh/model-studio/",
+    key: "https://bailian.console.aliyun.com/?tab=model#/api-key",
+    keyIntl: "https://modelstudio.console.alibabacloud.com/?tab=playground#/api-key",
+  };
+  const OPENAI_LINKS = { site: "https://developers.openai.com/api/docs/guides/speech-to-text", key: "https://platform.openai.com/api-keys" };
+  const providerLinks = {
+    "soniox-realtime": SONIOX_LINKS,
+    "soniox-realtime-transcribe": SONIOX_LINKS,
+    "dashscope-livetranslate-realtime": DASHSCOPE_LINKS,
+    "dashscope-qwen-realtime": DASHSCOPE_LINKS,
+    "dashscope-task-asr": DASHSCOPE_LINKS,
+    "openai-audio-transcriptions": OPENAI_LINKS,
+    "openai-realtime-transcription": OPENAI_LINKS,
+    "deepgram-streaming": { site: "https://deepgram.com/", key: "https://console.deepgram.com/" },
+    "assemblyai-streaming": { site: "https://www.assemblyai.com/", key: "https://www.assemblyai.com/dashboard" },
+    "volcengine-sauc": { site: "https://www.volcengine.com/product/voice-tech", key: "https://console.volcengine.com/speech/app" },
+    "elevenlabs-scribe-realtime": { site: "https://elevenlabs.io/speech-to-text", key: "https://elevenlabs.io/app/developers/api-keys" },
+    "speechmatics-realtime": { site: "https://www.speechmatics.com/", key: "https://portal.speechmatics.com/settings/api-keys" },
+    "tencent-asr": { site: "https://cloud.tencent.com/product/asr", key: "https://console.cloud.tencent.com/cam/capi" },
+  };
+
+  function providerLinksHtml(kind) {
+    const links = providerLinks[kind];
+    if (!links) return "";
+    const link = (href, text) => `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)} ↗</a>`;
+    return `<span class="provider-links">${[
+      link(links.key, links.keyIntl
+        ? updateLabel("dlg.model.getKeyCn", "获取 API Key（中国大陆）")
+        : updateLabel("dlg.model.getKey", "获取 API Key")),
+      links.keyIntl ? link(links.keyIntl, updateLabel("dlg.model.getKeyIntl", "获取 API Key（国际站）")) : "",
+      link(links.site, updateLabel("dlg.model.officialSite", "官网")),
+    ].join("")}</span>`;
+  }
+
   function applyProviderKindDefaults(provider, kind) {
     const defaults = providerDefaults[kind];
     if (!defaults) return;
@@ -1855,7 +1897,7 @@
           <label><span>${updateLabel("field.protocol", "协议")}</span><select data-field="kind">${kinds}</select></label>
           <label><span>${updateLabel("field.model", "模型")}</span><input data-field="model" value="${escapeHtml(provider.model || "")}" placeholder="${updateLabel("ph.modelId", "填写厂商模型 ID")}" required></label>
           <label><span>Base URL</span><input data-field="baseUrl" value="${escapeHtml(provider.baseUrl || "")}" required></label>
-          <label class="wide"><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>${updateLabel("dlg.model.keyLocal", "凭据保存在本机。")}</small><button type="button" class="secondary compact" data-action="reveal">${updateLabel("action.showKey", "显示 Key")}</button></label>
+          <label class="wide"><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>${updateLabel("dlg.model.keyLocal", "凭据保存在本机。")}</small>${section === "asr" ? providerLinksHtml(provider.kind) : ""}<button type="button" class="secondary compact" data-action="reveal">${updateLabel("action.showKey", "显示 Key")}</button></label>
           <details class="wide"><summary>${updateLabel("dlg.model.advanced", "价格与高级设置")}</summary><div class="provider-fields">${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
           ${section === "asr" ? asrOptionFields(provider) : translationOptionFields(provider)}</div></details>
         </div>`;

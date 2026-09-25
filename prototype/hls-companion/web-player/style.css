@@ -1888,6 +1888,21 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
 .provider-fields > label > span { font-size: 12px; font-weight: 700; color: var(--ink-70); }
 .provider-fields .provider-hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-45); }
 .provider-fields small { font-size: 11px; color: var(--ink-45); }
+/* API Key 下方的厂商链接：获取 Key / 官网 */
+.provider-links { display: flex; flex-wrap: wrap; gap: var(--s2); margin: 2px 0 var(--s2); }
+.provider-links a {
+  padding: 3px var(--s3);
+  border: 2px solid var(--ink);
+  background: var(--card);
+  box-shadow: 2px 2px 0 var(--ink);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.provider-links a:first-child { background: var(--lime); }
+.provider-links a:hover { background: var(--yellow); }
+.provider-links a:active { transform: translate(2px, 2px); box-shadow: none; }
 .provider-fields details {
   border: 2px dashed var(--ink-45);
   padding: var(--s3);
