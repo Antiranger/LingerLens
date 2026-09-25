@@ -163,11 +163,11 @@ function checkDocs() {
   const required = [
     "README.md", "README.zh-CN.md", "README.ja.md", "README.de.md", "README.ru.md",
     "docs/README.md", "docs/en/guide.md", "docs/zh-CN/guide.md", "docs/ja/guide.md", "docs/de/guide.md", "docs/ru/guide.md",
-    "docs/DEVELOPMENT.md", "docs/PROVIDERS.md", "docs/RELEASING.md", "docs/OPEN_SOURCE_READINESS.md", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md", "SUPPORT.md", "CHANGELOG.md",
+    "docs/DEVELOPMENT.md", "docs/PROVIDERS.md", "docs/RELEASING.md", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md", "SUPPORT.md", "CHANGELOG.md",
   ];
   const findings = required.filter((relative) => !fs.existsSync(path.join(REPO_ROOT, relative))).map((relative) => `missing required document: ${relative}`);
   const tracked = new Set(git(["ls-files"]).split(/\r?\n/).filter(Boolean));
-  const files = [...tracked].filter((file) => /^README(?:\.[^/]+)?\.md$|^docs\/(?:README|DEVELOPMENT|PROVIDERS|RELEASING|OPEN_SOURCE_READINESS)\.md$|^docs\/(?:en|zh-CN|ja|de|ru)\/guide\.md$|^(?:CONTRIBUTING|SECURITY|CODE_OF_CONDUCT|SUPPORT|CHANGELOG)\.md$/.test(file));
+  const files = [...tracked].filter((file) => /^README(?:\.[^/]+)?\.md$|^docs\/(?:README|DEVELOPMENT|PROVIDERS|RELEASING|architecture|security)\.md$|^docs\/(?:en|zh-CN|ja|de|ru)\/guide\.md$|^(?:CONTRIBUTING|SECURITY|CODE_OF_CONDUCT|SUPPORT|CHANGELOG)\.md$/.test(file));
   const links = /\[[^\]]*\]\(([^)#]+)(?:#[^)]+)?\)/g;
   for (const relative of files) {
     const text = fs.readFileSync(path.join(REPO_ROOT, relative), "utf8");
@@ -176,7 +176,11 @@ function checkDocs() {
       if (/^(?:https?:|mailto:|#)/i.test(target)) continue;
       const clean = target.replace(/^<|>$/g, "");
       const resolved = path.resolve(REPO_ROOT, path.dirname(relative), clean);
-      if (!resolved.startsWith(REPO_ROOT + path.sep) || !fs.existsSync(resolved)) findings.push(`${relative}: broken local link ${target}`);
+      if (!resolved.startsWith(REPO_ROOT + path.sep) || !fs.existsSync(resolved)) { findings.push(`${relative}: broken local link ${target}`); continue; }
+      // Maintainer notes stay on disk but are not published, so a link to one
+      // works locally and 404s on GitHub. A file target must be tracked.
+      const repoPath = path.relative(REPO_ROOT, resolved).split(path.sep).join("/");
+      if (fs.statSync(resolved).isFile() && !tracked.has(repoPath)) findings.push(`${relative}: links to unpublished file ${target}`);
     }
   }
   if (findings.length) { for (const finding of findings) console.error(finding); return 1; }
