@@ -54,7 +54,6 @@ jobs:
           npm run guard:licences
           npm run check:docs
           npm test
-          "${{ matrix.python }}" -m unittest discover -s desktop/tests -p 'test_*.py'
       - name: Freeze Windows backend
         if: runner.os == 'Windows'
         run: "${{ matrix.python }} desktop/prepare_backend.py"
@@ -65,6 +64,7 @@ jobs:
         env:
           LINGERLENS_TEST_BACKEND: ${{ github.workspace }}/${{ matrix.backend }}
         run: |
+          export PATH="$PWD/build-desktop/media/bin:$PATH"
           "${{ matrix.python }}" -m unittest discover -s desktop/tests -p 'test_*.py'
           npm run guard:licences:frozen
       - name: Package Windows
