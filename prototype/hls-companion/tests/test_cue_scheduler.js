@@ -76,15 +76,25 @@ test("a translation landing after the source keeps the same admission", () => {
   assert.equal(scheduler.stats.lateCues, 0, "an upgrade is not a late admission");
 });
 
-test("a source-only cue past the late window stays dropped, translation or not", () => {
-  const scheduler = createSubtitleScheduler({ maxLateSeconds: 2 });
+test("a just-late translation may revive a source-only cue once", () => {
+  const scheduler = createSubtitleScheduler({ maxLateSeconds: 2, lateTranslationPatchSeconds: 3 });
   const item = cue(1, 9, 10, "src", 1, null);
   assert.equal(scheduler.pick([item], 13.1), null);
   assert.equal(scheduler.stats.droppedLateCues, 1);
   item.state = "done";
   item.zh = "译文";
-  assert.equal(scheduler.pick([item], 13.2), null, "the fallback must not revive it");
-  assert.equal(scheduler.stats.droppedLateCues, 1);
+  assert.equal(scheduler.pick([item], 13.2).id, 1, "a recent translation revision gets one catch-up window");
+  assert.equal(scheduler.stats.lateTranslationRevives, 1);
+});
+
+test("an old translation revision never resurrects stale subtitles", () => {
+  const scheduler = createSubtitleScheduler({ maxLateSeconds: 2, lateTranslationPatchSeconds: 3 });
+  const item = cue(1, 9, 10, "src", 1, null);
+  assert.equal(scheduler.pick([item], 14.2), null);
+  item.state = "done";
+  item.zh = "译文";
+  assert.equal(scheduler.pick([item], 14.3), null);
+  assert.equal(scheduler.stats.lateTranslationRevives, 0);
 });
 
 // The video overlay renders through active(), not pick(). media-clock.js used to
@@ -184,7 +194,7 @@ test("a non-overlapping successor owns the display after its start instead of st
   const next = cue(2, 8.4, 10, "done", 1.5);
   assert.deepEqual(scheduler.active([previous, next], 8.39).map((item) => item.id), [1]);
   assert.deepEqual(scheduler.active([previous, next], 8.4).map((item) => item.id), [2]);
-  assert.deepEqual(scheduler.stats, { lateCues: 0, droppedLateCues: 0, sourceOnlyCues: 0 });
+  assert.deepEqual(scheduler.stats, { lateCues: 0, droppedLateCues: 0, sourceOnlyCues: 0, lateTranslationRevives: 0 });
 });
 
 test("a contiguous successor owns the exact shared boundary", () => {

@@ -34,6 +34,7 @@ from .providers.base import (
     ASRStream,
     SourceLanguagePolicy,
     StreamMeta,
+    ProviderRefusalError,
     TranslationProvider,
     TranslationRequest,
 )
@@ -242,10 +243,10 @@ class PipelineStats:
     acoustic_onset_max_adjustment_ms: float = 0.0
     speaker_revisions: int = 0
     native_translation_updates: int = 0
-    """Provider-side translation refreshes for an utterance still in flight.
-
-    Counted so a session that is translating on the ASR Provider's own session
-    is visibly different from one that is not, rather than silently silent."""
+    """Provider-side translation refreshes for an utterance still in flight."""
+    native_fallback_used: int = 0
+    native_translation_late_patches: int = 0
+    """Source-only cues later upgraded to translated cues in-place."""
     last_error: str | None = None
     last_translation_error: str | None = None
     last_translation_latency_ms: int | None = None
@@ -1311,6 +1312,7 @@ class SubtitlePipeline:
                 self.native_translation_bus.close_item(
                     event.item_id, source_text=event.text, translation=event.translation,
                     anchors=event.translation_anchors,
+                    anchors_trusted=event.translation_anchors_trusted,
                 )
             elif event.translation or event.translation_stash or event.translation_anchors:
                 self.native_translation_bus.record(
@@ -1318,7 +1320,12 @@ class SubtitlePipeline:
                     source_text=event.text,
                     translation=event.translation,
                     anchors=event.translation_anchors,
+                    anchors_trusted=event.translation_anchors_trusted,
                 )
+            if event.translation_anchors_trusted and event.translation_anchors:
+                self.caption_chunker.set_translation_boundaries(event.item_id, event.translation_anchors)
+            if event.type in {"translation", "final"} and (event.translation or event.translation_anchors):
+                await self._repair_native_translation_cues(event.item_id)
         if event.type == "speech_started":
             # The provider reports the true onset offset; no lag compensation.
             # Estimating this from _last_sent_pcm_offset was measured wrong by
@@ -1763,6 +1770,49 @@ class SubtitlePipeline:
         self._translation_queue.put_nowait(cue)
         self._track_translation_pressure()
 
+    async def _repair_native_translation_cues(self, item_id: str) -> None:
+        """Upgrade retained source-only cues when native evidence arrives later.
+
+        The normal worker owns pending cues. This path only revisits cues already
+        published as ``source_only`` so it cannot race the worker for the same
+        translation boundary. It performs a non-blocking ledger lookup; if the
+        Provider still has no exact boundary, the cue simply remains source-only.
+        """
+        bus = self.native_translation_bus
+        if bus is None:
+            return
+        for cue in self.store.by_item_id(item_id):
+            if cue.state != "source_only" or cue.zh:
+                continue
+            translated = await bus.resolve(
+                item_id=item_id,
+                source_text=cue.src,
+                deadline_monotonic=self.monotonic() + 0.001,
+                monotonic=self.monotonic,
+                generation=cue.generation,
+            )
+            if not translated:
+                continue
+            self.context.add(
+                cue.src, translated,
+                generation=cue.generation,
+                chunk_order=cue.chunk_order,
+                media_t_end=cue.t_end,
+            )
+            with contextlib.suppress(KeyError, ValueError):
+                self.store.update(
+                    cue.id,
+                    zh=translated,
+                    state="done",
+                    hold=calculate_hold(
+                        cue.src, translated,
+                        minimum=self.hold_minimum,
+                        seconds_per_char=self.hold_seconds_per_char,
+                        maximum=self.hold_maximum,
+                    ),
+                )
+                self.stats.native_translation_late_patches += 1
+
     async def _translation_worker(self) -> None:
         async with translation_session():
             await self._translation_worker_loop()
@@ -1851,8 +1901,9 @@ class SubtitlePipeline:
                     # ignores the field.
                     item_id=self._cue_item_ids.get(cue.id),
                 )
+                native_provider = bool(getattr(provider, "is_native_session", False))
                 with contextlib.suppress(KeyError, ValueError):
-                    self.store.update(cue.id, state="translating")
+                    self.store.update(cue.id, state="waiting_native" if native_provider else "translating")
                 self._active_translation_provider_id = provider.id
                 # This module spends one bounded request per cue.  A configured
                 # FallbackChain owns the primary -> fallback handoff; repeating
@@ -1867,6 +1918,9 @@ class SubtitlePipeline:
                     provider.translate(request), timeout=max(0.001, remaining)
                 )
                 self._record_translation_usage(result.provider_id, result.usage)
+                if native_provider and result.provider_id != provider.id:
+                    self.stats.native_fallback_used += 1
+                self._active_translation_provider_id = result.provider_id
                 translated = (result.text or "").strip()
                 if not translated:
                     raise ValueError("translation provider returned empty text")
@@ -1890,6 +1944,14 @@ class SubtitlePipeline:
                     media_t_end=cue.t_end,
                 )
                 self.context.trim(generation=cue.generation, at_media_time=cue.t_end)
+                late_native_patch = (
+                    native_provider
+                    and cue.zh is None
+                    and self._viewer_wall_time is not None
+                    and self.monotonic() - self._viewer_wall_time_at <= VIEWER_POSITION_TTL_SECONDS
+                    and cue.t_start is not None
+                    and self._viewer_wall_time >= cue.t_start
+                )
                 with contextlib.suppress(KeyError, ValueError):
                     self.store.update(
                         cue.id,
@@ -1903,6 +1965,8 @@ class SubtitlePipeline:
                             maximum=self.hold_maximum,
                         ),
                     )
+                if late_native_patch:
+                    self.stats.native_translation_late_patches += 1
                 self._record_ready_lag(cue.id, success=True)
                 self._translation_failure_recorded = False
             except asyncio.CancelledError:
@@ -1931,9 +1995,20 @@ class SubtitlePipeline:
         latency = self._cue_latencies.get(cue.id)
         if latency is not None and latency.translation_started is not None:
             latency.provider_finished = self.monotonic()
+        native_source_only = (
+            self.native_translation_bus is not None
+            and isinstance(exc, ProviderRefusalError)
+            and getattr(self.translation_provider, "fallback", None) is None
+        )
+        self.stats.last_translation_error = self._error_text(exc)
+        if native_source_only:
+            with contextlib.suppress(KeyError, ValueError):
+                self.store.update(cue.id, state="source_only")
+            self.stats.source_only_cues += 1
+            self._record_ready_lag(cue.id, success=False)
+            return
         self.stats.translation_failures += 1
         self.stats.translation_provider_failures += 1
-        self.stats.last_translation_error = self._error_text(exc)
         self._record_error(exc)
         if not self._translation_failure_recorded:
             # The cue is published as source-only, so nothing on screen says a
@@ -1953,7 +2028,7 @@ class SubtitlePipeline:
         """Hide stale/overflowed work without invoking a translation adapter."""
 
         with contextlib.suppress(KeyError, ValueError):
-            self.store.update(cue.id, state="failed")
+            self.store.update(cue.id, state="source_only" if self.native_translation_bus is not None else "failed")
         self.stats.translation_dropped += 1
         self.stats.source_only_cues += 1
         self._record_ready_lag(cue.id, success=False)
@@ -2371,6 +2446,13 @@ class SubtitlePipeline:
             "translationContextMissingImmediatePredecessor": self.stats.translation_context_missing_immediate_predecessor,
             "overlongCues": self.stats.overlong_cues,
             "sourceOnlyCues": self.stats.source_only_cues,
+            "nativeTranslationUpdates": self.stats.native_translation_updates,
+            "nativeTranslationPending": self.native_translation_bus.pending if self.native_translation_bus is not None else 0,
+            "nativeTranslationWaiting": self.native_translation_bus.waiting if self.native_translation_bus is not None else 0,
+            "nativeTranslationUnaligned": self.native_translation_bus.unaligned_total if self.native_translation_bus is not None else 0,
+            "nativeSegmentClosedWithoutTranslation": self.native_translation_bus.closed_without_translation_total if self.native_translation_bus is not None else 0,
+            "nativeFallbackUsed": self.stats.native_fallback_used,
+            "lateTranslationPatched": self.stats.native_translation_late_patches,
             "unmappedObservations": self.stats.unmapped_observations,
             "finalDiscarded": self.stats.final_discarded,
             "speakerRevisions": self.stats.speaker_revisions,

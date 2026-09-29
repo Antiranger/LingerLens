@@ -446,15 +446,18 @@ class ASREvent:
     ``translation`` alone, because a tentative tail may be rewritten after the
     cue has already been shown."""
     translation_anchors: tuple[tuple[str, str], ...] = ()
-    """(source text, translation text) pairs the Provider itself aligned.
+    """(source text, translation text) cumulative prefix pairs from the Adapter.
 
-    Both sides are cumulative from the start of this utterance, in the order the
-    Provider's stream settled them. A realtime translation model gives a
-    translated token no timestamp and no id for the words it renders, so stream
-    order is the only alignment that exists -- which means a caption cut inside
-    one Provider segment can still be attributed, and only at these points.
-    Empty for Adapters with nothing to report; see
-    ``native_session.NativeTranslationBus``."""
+    They are semantic alignment evidence only when ``translation_anchors_trusted``
+    is true. Some Providers expose arrival-time snapshots that are useful for
+    diagnostics but do not prove correspondence, so the bus must not consume
+    them merely because the tuple is populated."""
+    translation_anchors_trusted: bool = False
+    """Whether ``translation_anchors`` are Provider-order alignment boundaries.
+
+    Soniox sets this only for boundaries derived from its documented unified
+    token ordering (source chunk -> translation chunk -> next source chunk).
+    Adapters whose snapshots are only coincident in time leave it false."""
 
 
 class ASRStream(abc.ABC):

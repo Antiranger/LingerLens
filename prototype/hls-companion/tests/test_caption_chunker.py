@@ -596,6 +596,25 @@ class ReleaseBudgetTests(unittest.TestCase):
         self.assertLessEqual(held[0].end_pcm, HARD_DEADLINE_SECONDS + 1.0,
                              "the released line is bounded by the deadline, not by the run-on")
 
+    def test_hard_deadline_prefers_trusted_translation_boundary(self) -> None:
+        chunker = CaptionChunker(realtime=True, segments_only=True)
+        chunker.set_translation_boundaries(
+            "soniox-turn",
+            (("one two three", "一二三"),),
+        )
+        chunker.observe(stable(
+            token("one ", 0.0, 0.9),
+            token("two ", 1.0, 1.9),
+            token("three ", 2.0, 2.9),
+            token("four ", 3.0, 3.9),
+            token("five", 4.0, 4.9),
+            item_id="soniox-turn",
+        ), now=0.5)
+        cues = chunker.expire(HARD_DEADLINE_SECONDS + 0.6).chunks
+        self.assertGreaterEqual(len(cues), 2)
+        self.assertEqual(cues[0].text.strip(), "one two three")
+        self.assertEqual(cues[0].cut_reason, "hard_deadline")
+
     def test_a_backlog_releases_in_pieces_bounded_by_speech(self) -> None:
         """Sixteen seconds arriving at once is not one subtitle.
 

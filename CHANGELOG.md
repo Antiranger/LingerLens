@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Soniox bilingual subtitles now consume trusted source/translation chunk boundaries from the unified token stream, prefer one-way translation for live captions, fall back only for missing/unaligned native text, keep source-only cues repairable by late translations, and briefly revive just-late translated revisions instead of losing Chinese permanently.
+- Subtitle diagnostics now expose native-translation waiting, unaligned/missing segments, fallback use, and late-patch counts; the hard-deadline chunker prefers trusted Provider translation boundaries before making a local cut.
 - Fix desktop-wide mouse/keyboard lag during chat-heavy streams: Chromium's accessibility tree is now off by default (`LINGERLENS_ACCESSIBILITY=1` restores it). UI Automation clients such as translation or IME tools had switched it on, and every chat and caption update then ran through the browser main thread.
 - Speech-recognition and translation connections now follow the network setting (system proxy / direct / manual). Previously they always connected directly, so Soniox and other overseas services failed intermittently on networks that need a proxy. Local and private addresses always stay direct; SOCKS proxies fall back to direct with a log warning.
 - Model settings: each speech-recognition protocol links straight to its vendor's API-key page and official site (DashScope gets both the mainland-China and international consoles).

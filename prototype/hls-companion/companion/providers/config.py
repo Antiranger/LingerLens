@@ -38,6 +38,11 @@ BUILTIN_ASR_PROVIDERS: tuple[dict[str, Any], ...] = (
             # conversations and needs translationLanguageA/B. Empty string keeps
             # the profile transcript-only.
             "translationType": "one_way",
+            # Native translation is preferred, but a locally cut/unaligned cue
+            # must not become permanently source-only. The configured subtitle
+            # translator is used only for those exceptional cues.
+            "nativeTranslationFallback": True,
+            "nativeTranslationTimeoutSeconds": 15.0,
             "translationTerms": [],
         },
     },

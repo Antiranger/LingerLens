@@ -1689,7 +1689,7 @@
     // carries one loads, round-trips and is ignored, as before.
     "openai-audio-transcriptions": { model: "", baseUrl: "https://api.openai.com/v1", options: { windowSeconds: 3, requestTimeoutSeconds: 20 } },
     "deepgram-streaming": { model: "nova-3", baseUrl: "wss://api.deepgram.com/v1/listen", options: { interimResults: true, smartFormat: true, endpointingMs: 100, vadEvents: true, utteranceEndMs: 1000, keepAliveSeconds: 8 } },
-    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3, translationType: "one_way" } },
+    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3, translationType: "one_way", nativeTranslationFallback: true, nativeTranslationTimeoutSeconds: 15 } },
     "soniox-realtime-transcribe": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3 } },
     "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
     "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", continuousPartials: true, speakerLabels: true, maxSpeakers: 6 } },

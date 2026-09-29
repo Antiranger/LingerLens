@@ -59,11 +59,12 @@ class _Segment:
     translation: str = ""
     closed: bool = False
     anchors: tuple[tuple[str, str], ...] = ()
-    """(cumulative source, cumulative translation) the Provider itself aligned.
+    anchors_trusted: bool = False
+    """Whether ``anchors`` are safe correspondence boundaries.
 
-    Written only by an Adapter. A realtime translation model gives a translated
-    token no timestamp and no id for the words it renders, so the order its
-    stream arrived in is the only alignment that exists at all.
+    Soniox can prove such boundaries from the documented ordering of its unified
+    source/translation token stream. Other adapters may publish arrival-time
+    snapshots for diagnostics; those stay untrusted and are never consumed.
     """
     consumed_source: str = ""
     consumed_translation: str = ""
@@ -90,6 +91,8 @@ class NativeTranslationBus:
         self.generation = 0
         self._retired: "OrderedDict[str, None]" = OrderedDict()
         self._waiters: dict[tuple[int, str | None], int] = {}
+        self.unaligned_total = 0
+        self.closed_without_translation_total = 0
 
     # -- Adapter side ----------------------------------------------------
 
@@ -100,6 +103,7 @@ class NativeTranslationBus:
         source_text: str,
         translation: str,
         anchors: tuple[tuple[str, str], ...] = (),
+        anchors_trusted: bool = False,
     ) -> None:
         """Replace one segment's current source, translation and alignment.
 
@@ -120,6 +124,8 @@ class NativeTranslationBus:
         segment.translation = translation
         if anchors:
             segment.anchors = tuple(anchors)
+        if anchors_trusted:
+            segment.anchors_trusted = True
         self._changed.set()
         self._reclaim()
 
@@ -130,6 +136,7 @@ class NativeTranslationBus:
         source_text: str = "",
         translation: str = "",
         anchors: tuple[tuple[str, str], ...] = (),
+        anchors_trusted: bool = False,
     ) -> None:
         """Mark a Provider segment complete: no further text will arrive."""
         key = str(item_id)
@@ -145,7 +152,12 @@ class NativeTranslationBus:
             segment.translation = translation
         if anchors:
             segment.anchors = tuple(anchors)
+        if anchors_trusted:
+            segment.anchors_trusted = True
+        was_closed = segment.closed
         segment.closed = True
+        if not was_closed and segment.source and not segment.translation:
+            self.closed_without_translation_total += 1
         self._changed.set()
         self._reclaim()
 
@@ -160,6 +172,11 @@ class NativeTranslationBus:
     def pending(self) -> int:
         """Segments recorded but never consumed; diagnostics only."""
         return sum(1 for segment in self._segments.values() if not segment.consumed)
+
+    @property
+    def waiting(self) -> int:
+        """Active cue resolvers waiting for native translation evidence."""
+        return sum(self._waiters.values())
 
     # -- Pipeline side ---------------------------------------------------
 
@@ -192,6 +209,10 @@ class NativeTranslationBus:
                     if text:
                         return text
                     if self._is_finished(item_id):
+                        key = str(item_id) if item_id is not None else None
+                        segment = self._segments.get(key) if key is not None else None
+                        if segment is not None and segment.translation:
+                            self.unaligned_total += 1
                         return None
                 remaining = _POLL_SECONDS if deadline_monotonic is None else deadline_monotonic - monotonic()
                 if remaining <= 0:
@@ -287,19 +308,38 @@ class NativeTranslationBus:
 
 
 def _boundaries(segment: _Segment) -> list[tuple[str, str]]:
-    """Only a completed segment establishes a source/translation correspondence.
+    """Return only correspondence points the Adapter is allowed to assert.
 
-    Arrival-time prefix pairs are NOT semantic alignment. In particular a full
-    source with the first translated token must never consume a whole cue.
-    Keep legacy anchors as diagnostic metadata only; locally cut fragments
-    without a provider-defined alignment remain source-only.
+    Trusted anchors are cumulative prefixes derived from Provider ordering, not
+    wall-clock coincidence. They let a hard-deadline cue consume exactly the
+    prefix Soniox already translated. A completed whole segment remains the
+    final boundary. Prefix rewrites are rejected rather than guessed.
     """
+    points: list[tuple[str, str]] = []
+    if segment.anchors_trusted:
+        previous_source = ""
+        previous_translation = ""
+        for source, translation in segment.anchors:
+            if not source or not translation:
+                continue
+            if previous_source and not source.startswith(previous_source):
+                continue
+            if previous_translation and not translation.startswith(previous_translation):
+                continue
+            pair = (source, translation)
+            if not points or points[-1] != pair:
+                points.append(pair)
+            previous_source, previous_translation = source, translation
     if segment.closed and segment.source and segment.translation:
-        return [(segment.source, segment.translation)]
-    return []
+        whole = (segment.source, segment.translation)
+        if not points or points[-1] != whole:
+            points.append(whole)
+    return points
 
 
 class NativeSessionTranslation(TranslationProvider):
+    is_native_session = True
+
     """A Translation Provider backed by the ASR session's own translation.
 
     Normally no second model: it resolves each cue from
