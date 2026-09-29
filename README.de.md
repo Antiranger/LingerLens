@@ -8,6 +8,8 @@ Livestreams mit etwas Zeit für die Untertitel: LingerLens spielt **YouTube Live
 
 **Vorschau für Windows und macOS · Anwendungscode unter MIT · Eigene Zugangsdaten erforderlich.** Verfügbarkeit und Sprachunterstützung hängen von Stream, Konto und Dienst ab.
 
+![Oberfläche beim ersten Start ohne Zugangsdaten](docs/assets/player.png)
+
 ## Download
 
 [**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)

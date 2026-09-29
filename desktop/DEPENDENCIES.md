@@ -1,16 +1,21 @@
 # LingerLens desktop dependencies
 
-Windows x64 desktop builds include Chromium and Node.js through Electron, a frozen
+Windows x64 and macOS arm64/x64 desktop builds include Chromium and Node.js through Electron, a frozen
 Python 3.11 interpreter, the Companion's Python packages, Japanese dictionary,
 hls.js, yt-dlp, and FFmpeg/ffprobe. End users do not install Python, Node, npm,
 FFmpeg, Chrome, Edge, or WebView2 to run the desktop player.
 
-The installer installs these files privately for the current user. It does not
+The Windows installer or macOS app bundle carries these files privately. It does not
 change system PATH or existing Python installations. Provider credentials are
 configured by the user. A local Whisper-compatible server and model weights are
 optional external services and are not installed or downloaded automatically.
 
 ## Third-party redistribution
+
+- macOS compiles the pinned FFmpeg source with `desktop/prepare_macos.py`, without
+  automatic Homebrew library detection, GPL or nonfree components. Its LGPL-2.1
+  license, source provenance and build configuration ship with the backend.
+- Windows per-user installation disables the unnecessary `elevate.exe` helper.
 
 - Electron includes its LICENSE and LICENSES.chromium.html in the application.
 - Python package metadata/licenses, fugashi native libraries, and unidic-lite

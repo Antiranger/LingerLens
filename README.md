@@ -10,6 +10,8 @@ Watch live video with time for the subtitles to catch up. LingerLens plays a loc
 
 [![CI](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml/badge.svg)](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4B3FE0.svg)](LICENSE)
 
+![Application preview — fresh profile, no credentials](docs/assets/player.png)
+
 ## Download
 
 [**Download from GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)

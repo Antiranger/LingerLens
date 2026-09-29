@@ -266,8 +266,8 @@ async function handleAppUpdate(request, url) {
   });
   // The checksum-verified NSIS updater is Windows-only. macOS uses the release DMG.
   if (process.platform !== 'win32') {
-    return json({ ...buildInfo(), update: { status: 'unsupported',
-      error: 'Download macOS updates from GitHub Releases.' } });
+    const update = { status: 'unsupported', error: 'Download macOS updates from GitHub Releases.' };
+    return json(url.pathname === '/api/app-update' ? { ...buildInfo(), update } : update);
   }
   if (url.pathname === '/api/app-update' && request.method === 'GET') {
     return json({ ...buildInfo(), update: updater.getState() });

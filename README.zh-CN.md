@@ -10,6 +10,8 @@
 
 [![CI](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml/badge.svg)](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4B3FE0.svg)](LICENSE)
 
+![应用界面预览：全新配置，未填入密钥](docs/assets/player.png)
+
 ## 下载
 
 [**前往 GitHub Releases 下载 →**](https://github.com/Antiranger/LingerLens/releases)

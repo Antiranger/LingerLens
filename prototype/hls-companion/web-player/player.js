@@ -374,7 +374,7 @@
     if (!button) return;
     // Source/browser mode has no installer to run. Keep the product action
     // visible only in the packaged desktop build where it can work.
-    if (state?.packaged !== true) {
+    if (state?.packaged !== true || update.status === "unsupported") {
       button.hidden = true;
       return;
     }

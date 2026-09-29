@@ -8,6 +8,8 @@
 
 **Windows・macOS 向けプレビュー版 · アプリのコードは MIT ライセンス · API の認証情報は各自で用意。** 再生可否や対応言語は配信元とサービスに依存します。
 
+![初回起動時の画面：認証情報なし](docs/assets/player.png)
+
 ## ダウンロード
 
 [**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
