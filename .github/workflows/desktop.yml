@@ -56,6 +56,8 @@ jobs:
           npm test
       - name: Freeze Windows backend
         if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: "${{ matrix.python }} desktop/prepare_backend.py"
       - name: Freeze macOS backend
         if: runner.os == 'macOS'

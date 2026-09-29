@@ -18,9 +18,13 @@
     "version": "9.0.1",
     "flavour": "lgpl",
     "build": "n9.0.1-29-gad500d59cb",
-    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-14-13-17/ffmpeg-n9.0.1-29-gad500d59cb-win64-lgpl-9.0.zip",
+    "url": "https://github.com/Antiranger/LingerLens/releases/download/deps-20260914/ffmpeg-n9.0.1-29-gad500d59cb-win64-lgpl-9.0.zip",
     "sha256": "084874559d629b29cea0cae5b4d3cbb8e384d323f4eb3f1835bd9705d83bf58e",
-    "release": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-14-13-17"
+    "release": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-14-13-17",
+    "upstreamUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-14-13-17/ffmpeg-n9.0.1-29-gad500d59cb-win64-lgpl-9.0.zip",
+    "mirrorRepository": "Antiranger/LingerLens",
+    "mirrorTag": "deps-20260914",
+    "mirrorAsset": "ffmpeg-n9.0.1-29-gad500d59cb-win64-lgpl-9.0.zip"
   },
   "yt-dlp": {
     "version": "2026.08.19",

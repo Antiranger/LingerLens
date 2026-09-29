@@ -2,11 +2,13 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
 import sys
 import urllib.request
+import urllib.error
 import zipfile
 from prepare_electron import prepare as prepare_electron
 
@@ -29,8 +31,17 @@ def main():
     if not archive.exists() or sha256(archive) != dep['sha256']:
         temporary = BUILD / 'ffmpeg.download'
         print('Downloading pinned FFmpeg build (build machine only)...', flush=True)
-        with urllib.request.urlopen(dep['url'], timeout=120) as response, temporary.open('wb') as output:
-            shutil.copyfileobj(response, output)
+        try:
+            with urllib.request.urlopen(dep['url'], timeout=120) as response, temporary.open('wb') as output:
+                shutil.copyfileobj(response, output)
+        except urllib.error.HTTPError as error:
+            if error.code != 404 or not os.environ.get('GH_TOKEN') or not dep.get('mirrorRepository'):
+                raise
+            # A private source repository needs an authenticated build-time fetch.
+            # gh owns authentication; no token is put in argv, URLs or package data.
+            subprocess.run(['gh', 'release', 'download', dep['mirrorTag'],
+                            '--repo', dep['mirrorRepository'], '--pattern', dep['mirrorAsset'],
+                            '--output', str(temporary), '--clobber'], check=True)
         if sha256(temporary) != dep['sha256']:
             raise RuntimeError('FFmpeg SHA-256 mismatch; refusing to package.')
         temporary.replace(archive)
