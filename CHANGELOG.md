@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Use the purple LL mark for application, installer and shortcut icons.
+- Add native macOS Intel and Apple Silicon packaging alongside Windows x64.
+- Refresh all five README pages and installation guides, with bundled dependency,
+  provider credential, unsigned build and privacy details.
+- Prepare same-repository GitHub Releases with checksums and a Windows update manifest.
+- Omit the unnecessary Windows elevation helper from per-user installers.
+
 - Soniox bilingual subtitles now consume trusted source/translation chunk boundaries from the unified token stream, prefer one-way translation for live captions, fall back only for missing/unaligned native text, keep source-only cues repairable by late translations, and briefly revive just-late translated revisions instead of losing Chinese permanently.
 - Subtitle diagnostics now expose native-translation waiting, unaligned/missing segments, fallback use, and late-patch counts; the hard-deadline chunker prefers trusted Provider translation boundaries before making a local cut.
 - Fix desktop-wide mouse/keyboard lag during chat-heavy streams: Chromium's accessibility tree is now off by default (`LINGERLENS_ACCESSIBILITY=1` restores it). UI Automation clients such as translation or IME tools had switched it on, and every chat and caption update then ran through the browser main thread.

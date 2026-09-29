@@ -15,16 +15,16 @@ function draftHarness() {
 test('prefetched text appears at its onset without another HTTP response',()=>{
   const h=draftHarness();
   const drafts=h.usableDraft([{text:'heard',tStart:10,tEnd:12},{text:'future',tStart:20,tEnd:22}]);
-  assert.equal(h.draftLine(drafts,9.999,[]),'');
-  assert.equal(h.draftLine(drafts,10,[]),'heard');
-  assert.equal(h.draftLine(drafts,13,[]),'');
-  assert.equal(h.draftLine(drafts,20,[]),'future');
+  assert.equal(h.draftLine(drafts,9.999,[]),null);
+  assert.equal(h.draftLine(drafts,10,[]).source,'heard');
+  assert.equal(h.draftLine(drafts,13,[]),null);
+  assert.equal(h.draftLine(drafts,20,[]).source,'future');
 });
 test('a repeated phrase from another item is not hidden by an older cue hold',()=>{
   const h=draftHarness(), preview={text:'Again',tStart:10,tEnd:12,itemId:'new',generation:2};
-  assert.equal(h.draftLine(preview,10,[{src:'Again',itemId:'old',generation:2}]),'Again');
-  assert.equal(h.draftLine(preview,10,[{src:'Again',itemId:'new',generation:1}]),'Again');
-  assert.equal(h.draftLine(preview,10,[{src:'Again',itemId:'new',generation:2}]),'');
+  assert.equal(h.draftLine(preview,10,[{src:'Again',itemId:'old',generation:2}]).source,'Again');
+  assert.equal(h.draftLine(preview,10,[{src:'Again',itemId:'new',generation:1}]).source,'Again');
+  assert.equal(h.draftLine(preview,10,[{src:'Again',itemId:'new',generation:2}]),null);
 });
 test('passive frame instrumentation schedules nothing and respects a later wrapper',()=>{
   const previous=globalThis.requestAnimationFrame;

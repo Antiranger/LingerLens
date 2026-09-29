@@ -2881,33 +2881,41 @@
         const line = draftLine(candidate, position, cues);
         if (line) return line;
       }
-      return "";
+      return null;
     }
-    // Translation-only mode has nothing to show: a draft is source text only,
-    // because the Provider has not translated a cut it has not made.
-    if (!draft || subtitlePrefs.mode === "zh") return "";
-    if (position < draft.tStart) return "";
+    if (!draft) return null;
+    const translated = typeof draft.translation === "string" ? draft.translation.trim() : "";
+    // Translation-only mode may draw a draft once the Provider has supplied a
+    // trusted translated prefix. Before that, do not substitute source text.
+    if (subtitlePrefs.mode === "zh" && !translated) return null;
+    if (position < draft.tStart) return null;
     // The backend cut the text at the playhead it was last told about, which is
     // a poll behind this one. The bound absorbs that and hides the line when a
     // seek leaves it behind.
-    if (position > draft.tEnd + SUBTITLE_DRAFT_STALE_SECONDS) return "";
+    if (position > draft.tEnd + SUBTITLE_DRAFT_STALE_SECONDS) return null;
     const held = foldForDraft(draft.text);
     // The cue that carries these words replaced the projection on the server.
     for (const cue of cues) {
       if (draft.itemId && cue.itemId && (draft.itemId !== cue.itemId
           || (draft.generation != null && cue.generation != null && draft.generation !== cue.generation))) continue;
       const shown = foldForDraft(cue.src);
-      if (shown && (shown.startsWith(held) || held.startsWith(shown))) return "";
+      if (shown && (shown.startsWith(held) || held.startsWith(shown))) return null;
     }
-    return draft.text;
+    return { source: draft.text, translated };
   }
 
-  function paintDraft(text) {
+  function paintDraft(lines) {
     const row = el("subtitleDraft");
-    if (!row || row.textContent === text) return;
-    row.textContent = text;
-    row.hidden = !text;
-    row.dir = "auto";
+    if (!row) return;
+    const source = lines?.source || "";
+    const translated = lines?.translated || "";
+    const zhLine = row.querySelector(".subtitle-zh");
+    const srcLine = row.querySelector(".subtitle-src");
+    if (zhLine && zhLine.textContent !== translated) zhLine.textContent = translated;
+    if (srcLine && srcLine.textContent !== source) srcLine.textContent = source;
+    row.hidden = !source && !translated;
+    if (zhLine) zhLine.dir = "auto";
+    if (srcLine) srcLine.dir = "auto";
   }
 
   function renderSubtitle(frameMediaTime) {
@@ -2934,7 +2942,7 @@
     const targetLanguage = targetSelector?.value || "";
     const paintKey = `${subtitlePrefs.mode}\u001e${targetLanguage}\u001e${cues.map((cue) => [
       cue.id, cue.seq, cue.revision, cue.src, cue.zh,
-    ].join("\u001f")).join("\u001e")}\u001e${draft}`;
+    ].join("\u001f")).join("\u001e")}\u001e${draft?.translated || ""}\u001f${draft?.source || ""}`;
     // The scheduler still runs every 100ms so admissions follow the playhead,
     // but avoid rebuilding the same DOM rows when the visible cue set did not
     // change. This is the common case between two cue boundaries.
@@ -3007,7 +3015,7 @@
     if (!layer.classList.contains("off")) layer.classList.add("off");
     const content = layer.querySelector(".subtitle-content");
     if (content.childElementCount) content.replaceChildren();
-    paintDraft("");
+    paintDraft(null);
   }
 
   function applySubtitlePrefs() {

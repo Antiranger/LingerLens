@@ -2237,7 +2237,11 @@ class SubtitlePipeline:
             end = self._draft_media_time(pending.end_pcm)
             if begin is None or end is None or end < begin:
                 continue
-            drafts.append({"text": text, "itemId": pending.item_id,
+            translated = (
+                self.native_translation_bus.preview(item_id=pending.item_id, source_text=text)
+                if self.native_translation_bus is not None else None
+            )
+            drafts.append({"text": text, "translation": translated, "itemId": pending.item_id,
                 "generation": self._generation, "tStart": begin, "tEnd": end,
                 "lang": pending.language or self.source_language, "speaker": pending.speaker})
         return drafts
@@ -2274,8 +2278,13 @@ class SubtitlePipeline:
         text = clean_subtitle_text(pending.text)
         if not text:
             return None
+        translated = (
+            self.native_translation_bus.preview(item_id=pending.item_id, source_text=text)
+            if self.native_translation_bus is not None else None
+        )
         return {
             "text": text,
+            "translation": translated,
             "itemId": pending.item_id,
             "tStart": self._draft_media_time(self.acoustic_onset.refine(pending.begin_pcm, pending.end_pcm)),
             "tEnd": self._draft_media_time(pending.end_pcm),

@@ -610,10 +610,18 @@ class ReleaseBudgetTests(unittest.TestCase):
             token("five", 4.0, 4.9),
             item_id="soniox-turn",
         ), now=0.5)
-        cues = chunker.expire(HARD_DEADLINE_SECONDS + 0.6).chunks
-        self.assertGreaterEqual(len(cues), 2)
-        self.assertEqual(cues[0].text.strip(), "one two three")
-        self.assertEqual(cues[0].cut_reason, "hard_deadline")
+        first = chunker.expire(HARD_DEADLINE_SECONDS + 0.6).chunks
+        self.assertEqual(len(first), 1, "a trusted boundary must not flush the unaligned remainder")
+        self.assertEqual(first[0].text.strip(), "one two three")
+        self.assertEqual(first[0].cut_reason, "hard_deadline")
+        self.assertEqual(chunker.pending_caption().text.strip(), "four five")
+
+        chunker.set_translation_boundaries(
+            "soniox-turn",
+            (("one two three", "一二三"), ("one two three four five", "一二三四五")),
+        )
+        second = chunker.expire(2 * HARD_DEADLINE_SECONDS + 0.7).chunks
+        self.assertEqual([cue.text.strip() for cue in second], ["four five"])
 
     def test_a_backlog_releases_in_pieces_bounded_by_speech(self) -> None:
         """Sixteen seconds arriving at once is not one subtitle.

@@ -4,7 +4,9 @@
 
 ## Run
 
-The supported desktop target is Windows x64. The installer includes Electron, Python, FFmpeg/ffprobe, yt-dlp and the Japanese dictionary. Cloud accounts and a local Whisper server are separate. Verify the installer source and SHA-256; an unsigned preview is not a signed stable release.
+Desktop build targets are Windows x64 and macOS arm64/x64. Download available packages from [Releases](https://github.com/Antiranger/LingerLens/releases). Windows uses an EXE installer; on Mac open the DMG for your chip and drag LingerLens to Applications. Preview packages are unsigned and macOS packages are not notarized. Verify the download against `SHA256SUMS.txt`.
+
+The installer includes Electron, Python, FFmpeg/ffprobe, yt-dlp, fonts and the Japanese dictionary. Cloud accounts, API charges and optional local Whisper servers/model weights are separate. No developer tools are needed. Mac data lives in `~/Library/Application Support/LingerLens`. Mac updates are installed by downloading a new DMG; the in-app installer updater is Windows-only.
 
 For browser development install Python 3.11+, Node.js 22.12+, FFmpeg/ffprobe and Chrome or Edge, then run from the repository root:
 

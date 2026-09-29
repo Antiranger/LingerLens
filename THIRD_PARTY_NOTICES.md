@@ -162,13 +162,20 @@ its vendored `llhttp`), `aiohappyeyeballs`, `aiosignal`, `attrs`, `frozenlist`,
 | libffi (`libffi-8.dll`) | MIT | [`licenses/MIT-libffi.txt`](licenses/MIT-libffi.txt) |
 | MS VC++ runtime / UCRT | Microsoft redistributable terms, not OSS | — |
 
-### `elevate.exe`
+### Windows elevation helper
 
-Injected by electron-builder's NSIS target (`© 2007 Johannes Passing`,
-<http://int3.de/>). **Its licence could not be established**: the upstream
-repository publishes no `LICENSE` file at `master` or `main`, and the binary
-embeds no licence text. A third-party redistribution asserts MIT with unfilled
-placeholders. Flagged rather than guessed — this is unresolved.
+The per-user NSIS installer disables `packElevateHelper`; `elevate.exe` is not
+redistributed. Machine-wide installation is not offered.
+
+### macOS media tools
+
+macOS builds compile FFmpeg 9.0.1 from the checksum-pinned upstream release
+archive in `desktop/dependencies.json`. `desktop/prepare_macos.py` records the
+configuration and bundles COPYING.LGPLv2.1. GPL/nonfree options and automatic
+external-library detection are disabled. macOS system frameworks provide TLS.
+The unmodified universal `yt-dlp_macos` build is pinned separately; upstream
+notices accompany it. Python and native package versions are recorded in each
+build's frozen package metadata; Windows DLL names above apply only to Windows.
 
 ---
 

@@ -5,10 +5,12 @@ const asar = require('@electron/asar');
 // Build inclusion and post-pack validation share one explicit manifest.
 const APP_FILES = Object.freeze(['desktop/main.cjs', 'desktop/backend.cjs', 'desktop/devlog.cjs',
   'desktop/health.cjs', 'desktop/updater.cjs', 'desktop/smoke.cjs',
-  'desktop/loading.html', 'package.json']);
+  'desktop/loading.html', 'desktop/assets/icon.png', 'package.json']);
 
-function auditPackage(directory) {
-  const root = path.join(directory, 'resources');
+function auditPackage(directory, platform = process.platform) {
+  const root = platform === 'darwin'
+    ? path.join(directory, 'LingerLens.app', 'Contents', 'Resources')
+    : path.join(directory, 'resources');
   const findings = [];
   function walk(dir) {
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -20,7 +22,7 @@ function auditPackage(directory) {
     }
   }
   walk(root);
-  const allowed = new Set(['/desktop', ...APP_FILES.map(file => '/' + file)]);
+  const allowed = new Set(['/desktop', '/desktop/assets', ...APP_FILES.map(file => '/' + file)]);
   for (const file of asar.listPackage(path.join(root, 'app.asar'))) {
     if (!allowed.has(file.replaceAll('\\', '/'))) findings.push(file);
   }

@@ -178,6 +178,36 @@ class NativeTranslationBus:
         """Active cue resolvers waiting for native translation evidence."""
         return sum(self._waiters.values())
 
+    def preview(self, *, item_id: str | None, source_text: str) -> str | None:
+        """Return the latest safe native translation prefix without consuming it.
+
+        Used only for the on-screen draft of an utterance that is still open.
+        A preview may cover less source than ``source_text`` but never more: the
+        viewer can see a translation only for words already included in the held
+        source draft. Consumed cue prefixes are removed from both sides, and this
+        method never advances those cursors.
+        """
+        key = self._key_for(item_id, source_text)
+        if key is None:
+            return None
+        segment = self._segments[key]
+        heard = subtitle_match_key(source_text)
+        if not heard:
+            return None
+        best: str | None = None
+        for source, translation in _boundaries(segment):
+            if (not source.startswith(segment.consumed_source)
+                    or not translation.startswith(segment.consumed_translation)):
+                continue
+            source_remainder = source[len(segment.consumed_source):]
+            translation_remainder = translation[len(segment.consumed_translation):].strip()
+            source_key = subtitle_match_key(source_remainder)
+            if not source_key or not translation_remainder:
+                continue
+            if heard.startswith(source_key):
+                best = translation_remainder
+        return best
+
     # -- Pipeline side ---------------------------------------------------
 
     async def resolve(

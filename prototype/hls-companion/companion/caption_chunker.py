@@ -462,17 +462,25 @@ class CaptionChunker:
         return ChunkerDecision(tuple(chunks))
 
     def _cut_over_budget(self, key: tuple[str, str | None], now: float) -> list[CaptionChunk]:
-        """Give up on a lane the Provider will not close, in pieces one can read.
+        """Release readable text when a lane outlives its waiting budget.
 
-        The wall-clock deadline decides *when* to stop waiting; it must not also
-        decide how much speech one caption carries. It used to, and on the four real
-        captures replayed 2026-09-22 that produced 11.1, 11.9 and 12.4 s captions,
-        because a stalled path delivers several seconds of evidence at once. Each
-        piece is therefore bounded in seconds of speech -- the same number, in the
-        unit the viewer reads against -- and a backlog drains in this one call
-        instead of one caption per deadline.
+        For native translation, a trusted Provider boundary is strictly better
+        than a local mechanical cut: emit only through that boundary and keep the
+        remainder open for the next native translation chunk. Without a trusted
+        boundary we retain the existing bounded backlog drain so a stalled
+        Provider can never hold arbitrarily old source text.
         """
         caption = self._captions[key]
+        if self.segments_only:
+            trusted = self._trusted_translation_boundary_index(caption)
+            if trusted is not None:
+                chunk = self._emit(caption, trusted, "hard_deadline")
+                if caption.units:
+                    caption.hard_deadline = now + HARD_DEADLINE_SECONDS
+                    caption.last_touched = now
+                else:
+                    del self._captions[key]
+                return [chunk]
         chunks = self._release(caption, "hard_deadline")
         del self._captions[key]
         return chunks

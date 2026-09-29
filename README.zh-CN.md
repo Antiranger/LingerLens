@@ -1,10 +1,30 @@
-# LingerLens
+<p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
+<h1 align="center">LingerLens</h1>
+<p align="center"><strong>看直播，也看懂直播。</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
 给字幕留出一点时间，再看直播。LingerLens 将 **YouTube、哔哩哔哩、Twitch 直播**延迟后在本机播放，配合语音识别、双语字幕和直播聊天，让跨语言观看更方便。
 
-**Windows x64 预览版 · 应用代码采用 MIT 许可证 · 模型服务需自备账户和密钥。** 当前版本为 0.1.0，尚不提供受支持的 macOS、Linux 或 Android 安装包。平台是否可用、支持哪些识别及翻译语言，取决于直播、账户和所选服务。
+**Windows 与 macOS 预览版 · 应用代码采用 MIT 许可证 · 模型服务需自备账户和密钥。** 平台及语言支持取决于直播、账户和所选服务。
+
+[![CI](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml/badge.svg)](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4B3FE0.svg)](LICENSE)
+
+## 下载
+
+[**前往 GitHub Releases 下载 →**](https://github.com/Antiranger/LingerLens/releases)
+
+| 系统 | 安装包 |
+| --- | --- |
+| Windows x64 | `LingerLens-<版本>-windows-x64-setup.exe` |
+| macOS · Apple Silicon | `LingerLens-<版本>-macos-arm64.dmg` |
+| macOS · Intel | `LingerLens-<版本>-macos-x64.dmg` |
+
+实际可下载的平台以已发布 Release 附件为准。预览安装包尚未签名，macOS 包尚未公证。Mac 打开对应 DMG 后，将 LingerLens 拖入「应用程序」。可以使用 Release 中的 `SHA256SUMS.txt` 核对下载文件。
+
+## 为什么要延迟画面？
+
+语音识别和翻译需要时间。LingerLens 让画面稍等一会儿，让说话声和译文尽量一起到达。可以从默认的 15 秒目标延迟开始，再根据服务速度和网络状况调整。
 
 ## 功能
 
@@ -16,9 +36,9 @@
 
 ## 开始使用
 
-获得维护者提供的 Windows x64 安装包后，安装并打开 **LingerLens**。安装包自带 Electron、Python、FFmpeg/ffprobe、yt-dlp 和日语词典，无需安装开发工具。预览安装包可能尚未签名，运行前请核对来源及校验和。
+安装对应系统的安装包后，打开 **LingerLens**。包内包含 Electron、Python、FFmpeg/ffprobe、yt-dlp、字体和日语词典，无需打开终端或另装开发工具。云端识别与翻译仍需联网、自备 API 密钥，并承担服务商费用。可选的本地 Whisper 服务及模型权重不随包提供。
 
-程序配置的下载渠道为 [LingerLens Releases](https://github.com/Antiranger/LingerLens-releases/releases)。这个链接不表示已有经过验收的公开版本；没有合适的安装包时，请使用下方源码方式。
+详细配置见[中文使用指南](docs/zh-CN/guide.md)。Windows 和 macOS 的源码打包步骤见[桌面构建文档](desktop/README.md)。
 
 1. 打开「连接与密钥」，填写自己的识别和翻译服务配置。
 2. 选择直播原语言、字幕目标语言，按需启用字幕。

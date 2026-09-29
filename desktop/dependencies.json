@@ -2,7 +2,17 @@
   "electron": {
     "version": "44.2.0",
     "url": "https://github.com/electron/electron/releases/download/v44.2.0/electron-v44.2.0-win32-x64.zip",
-    "sha256": "4021363e3090d67a144ebedb90765cf193b0e61f300c519c83f0174502a481da"
+    "sha256": "4021363e3090d67a144ebedb90765cf193b0e61f300c519c83f0174502a481da",
+    "darwin": {
+      "arm64": {
+        "url": "https://github.com/electron/electron/releases/download/v44.2.0/electron-v44.2.0-darwin-arm64.zip",
+        "sha256": "f906dff5d054b1b92e5711781b13cc206fd7139ce66467503b9d0a3e6fbc9b02"
+      },
+      "x64": {
+        "url": "https://github.com/electron/electron/releases/download/v44.2.0/electron-v44.2.0-darwin-x64.zip",
+        "sha256": "0c58057eebd23859389e2eba1555975bcbc8adebcc5aa97ff36c036125e2b21a"
+      }
+    }
   },
   "ffmpeg": {
     "version": "9.0.1",
@@ -16,5 +26,15 @@
     "version": "2026.08.19",
     "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
     "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"
+  },
+  "ffmpeg-source": {
+    "version": "9.0.1",
+    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+    "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+  },
+  "yt-dlp-macos": {
+    "version": "2026.08.19",
+    "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos",
+    "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202"
   }
 }

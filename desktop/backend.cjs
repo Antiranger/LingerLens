@@ -15,8 +15,9 @@ function localStamp(date = new Date()) {
 function startBackend({ packaged, resources, root, dataDir, proxy = null, log = createDevLog(),
   onExit = () => {} }) {
   const command = packaged
-    ? path.join(resources, 'backend', 'lingerlens-backend.exe')
-    : (process.env.LINGERLENS_PYTHON || path.join(root, '.venv-desktop', 'Scripts', 'python.exe'));
+    ? path.join(resources, 'backend', process.platform === 'win32' ? 'lingerlens-backend.exe' : 'lingerlens-backend')
+    : (process.env.LINGERLENS_PYTHON || path.join(root, '.venv-desktop',
+      ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'])));
   const args = packaged ? [] : [path.join(root, 'desktop', 'companion_entry.py')];
   args.push('--data-dir', dataDir);
   const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };

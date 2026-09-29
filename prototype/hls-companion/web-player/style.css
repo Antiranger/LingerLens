@@ -1051,20 +1051,21 @@ video::-webkit-media-controls-fullscreen-button { display: none; }
   color: var(--speaker-color);
 }
 
-/* 草稿行：已经听到、但还没有成为字幕的话（Provider 自己还没结束这一轮）。
-   它是原文，所以用原文的字体和颜色，只压暗一档：读起来是“正在说”，不是“已定稿”。
-   它不是字幕条目，所以不进 .subtitle-content（那里按 cueId 对账会把它删掉）。 */
+/* 草稿行：已经听到、但还没有成为最终 cue 的当前语句。
+   原文可立即出现；当原生 Provider 给出可信翻译前缀时，译文也在同一草稿行上方补入。
+   整体压暗一档，表示“正在说/仍可能增长”，最终 cue 会无缝替换它。 */
 .subtitle-draft {
-  font-family: var(--font-jp);
-  font-size: 1em;
-  font-weight: 700;
-  color: var(--subtitle-source-color);
+  display: grid;
+  gap: 0.1em;
+  justify-items: center;
+  width: fit-content;
+  max-width: 100%;
   opacity: .62;
   justify-self: center;
-  max-width: 100%;
   pointer-events: none;
-  unicode-bidi: isolate;
 }
+.subtitle-draft .subtitle-zh { color: var(--subtitle-translation-color); }
+.subtitle-draft .subtitle-src { color: var(--subtitle-source-color); }
 .subtitle-draft[hidden] { display: none; }
 
 /* 缓冲横幅（原型 657-677） */

@@ -2,7 +2,7 @@
   "name": "lingerlens",
   "version": "0.1.0",
   "private": true,
-  "description": "Windows-first local delayed live player with real-time ASR and translated subtitles.",
+  "description": "Live video with synchronized original and translated subtitles.",
   "license": "MIT",
   "scripts": {
     "test": "node --test",
@@ -30,7 +30,9 @@
     "desktop:dist": "electron-builder --config desktop/builder.cjs --win nsis --x64 --publish never",
     "release:manifest": "node scripts/make-update-manifest.js",
     "desktop:test": "node --test tests/desktop.test.js && .venv-desktop\\Scripts\\python.exe -m unittest discover -s desktop/tests -p test_*.py",
-    "guard:python-imports": "python scripts/check-python-imports.py"
+    "guard:python-imports": "python scripts/check-python-imports.py",
+    "desktop:backend:mac": ".venv-desktop/bin/python desktop/prepare_macos.py",
+    "desktop:dist:mac": "electron-builder --config desktop/builder.cjs --mac --publish never"
   },
   "engines": {
     "node": ">=22.12.0"

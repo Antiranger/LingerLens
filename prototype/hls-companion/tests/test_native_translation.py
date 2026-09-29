@@ -178,6 +178,25 @@ class BusTests(unittest.IsolatedAsyncioTestCase):
             "三四",
         )
 
+    async def test_preview_returns_only_trusted_heard_prefix_without_consuming(self) -> None:
+        bus = NativeTranslationBus()
+        bus.record(
+            item_id="preview", source_text="one two three four", translation="一二三四",
+            anchors=(("one two", "一二"), ("one two three", "一二三")),
+            anchors_trusted=True,
+        )
+        self.assertEqual(bus.preview(item_id="preview", source_text="one two three four"), "一二三")
+        self.assertEqual(bus.preview(item_id="preview", source_text="one two"), "一二")
+        self.assertIsNone(bus.preview(item_id="preview", source_text="one"), "never preview future source")
+        self.assertFalse(bus._segments["preview"].consumed, "preview must not consume the ledger")
+
+        untrusted = NativeTranslationBus()
+        untrusted.record(
+            item_id="preview", source_text="one two", translation="一二",
+            anchors=(("one two", "一二"),), anchors_trusted=False,
+        )
+        self.assertIsNone(untrusted.preview(item_id="preview", source_text="one two"))
+
     async def test_a_cut_the_provider_never_aligned_fails_fast_once_closed(self) -> None:
         """No anchor and not the whole segment: nothing can arrive later either."""
         bus = NativeTranslationBus()
@@ -507,6 +526,23 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             pipeline.caption_draft(),
             "the cue replaced the projection, so drawing both would double the line",
         )
+
+    async def test_caption_draft_includes_safe_native_translation_prefix(self) -> None:
+        bus = NativeTranslationBus()
+        pipeline, worker = await self.pipeline(bus)
+        pipeline._push_breadcrumbs.append((0.0, 0.0))
+        try:
+            await pipeline._handle_asr_event(self.held("hello world again", end=3.0))
+            bus.record(
+                item_id="1", source_text="hello world again", translation="你好世界",
+                anchors=(("hello world", "你好世界"),), anchors_trusted=True,
+            )
+            draft = pipeline.caption_draft()
+            self.assertEqual(draft["text"], "hello world again")
+            self.assertEqual(draft["translation"], "你好世界")
+            self.assertFalse(bus._segments["1"].consumed, "drawing a draft must not consume translation")
+        finally:
+            await self.stop(pipeline, worker)
 
     async def test_caption_draft_stops_where_the_viewer_has_heard(self) -> None:
         """The audio leg runs ahead of the playhead, so the held text does too."""

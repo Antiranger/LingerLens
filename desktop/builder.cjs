@@ -4,7 +4,7 @@ module.exports = {
   directories: { output: 'release' },
   asar: true,
   electronDist: 'build-desktop/electron',
-  afterPack: async context => require('./audit-package.cjs').auditPackage(context.appOutDir),
+  afterPack: async context => require('./audit-package.cjs').auditPackage(context.appOutDir, context.electronPlatformName),
   // electron-builder normalizes this array in place; keep the audit manifest immutable.
   files: [...require('./audit-package.cjs').APP_FILES],
   extraResources: [
@@ -14,8 +14,12 @@ module.exports = {
     { from: 'licenses', to: 'licenses', filter: ['**/*'] },
     { from: 'desktop/DEPENDENCIES.md', to: 'DEPENDENCIES.md' },
   ],
-  win: { target: [{ target: 'nsis', arch: ['x64'] }],
+  win: { icon: 'desktop/assets/icon.ico', target: [{ target: 'nsis', arch: ['x64'] }],
     artifactName: 'LingerLens-${version}-windows-${arch}-setup.${ext}' },
+  mac: { icon: 'desktop/assets/icon.png', category: 'public.app-category.video',
+    target: ['dmg', 'zip'], identity: null,
+    artifactName: 'LingerLens-${version}-macos-${arch}.${ext}' },
   nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false,
+    packElevateHelper: false,
     createDesktopShortcut: true, createStartMenuShortcut: true, runAfterFinish: false },
 };

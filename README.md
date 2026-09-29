@@ -1,10 +1,30 @@
-# LingerLens
+<p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
+<h1 align="center">LingerLens</h1>
+<p align="center"><strong>Live video. Subtitles that keep up.</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
 Watch live video with time for the subtitles to catch up. LingerLens plays a locally delayed stream from **YouTube Live, Bilibili Live or Twitch**, adds speech recognition and translated subtitles, and keeps live chat alongside the player.
 
-**Windows x64 preview · MIT application code · Bring your own provider credentials.** Current version: 0.1.0. Supported macOS, Linux and Android packages are not available. Playback and speech/translation language coverage depend on the stream, account and selected provider.
+**Windows and macOS preview · MIT application code · Bring your own provider credentials.** Playback and language coverage depend on the stream, account and selected provider.
+
+[![CI](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml/badge.svg)](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4B3FE0.svg)](LICENSE)
+
+## Download
+
+[**Download from GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
+
+| System | Package |
+| --- | --- |
+| Windows x64 | `LingerLens-<version>-windows-x64-setup.exe` |
+| macOS · Apple Silicon | `LingerLens-<version>-macos-arm64.dmg` |
+| macOS · Intel | `LingerLens-<version>-macos-x64.dmg` |
+
+Only files attached to a published release are available downloads. Preview builds are unsigned; macOS builds are not notarized. On macOS, open the matching DMG and drag LingerLens to Applications. Compare the download with the release's `SHA256SUMS.txt`.
+
+## Why delay the video?
+
+Recognition and translation take time. LingerLens holds the picture briefly so speech and translated captions can arrive together. Start with the default 15-second target, then adjust it to your provider and network.
 
 ## Features
 
@@ -16,9 +36,9 @@ Watch live video with time for the subtitles to catch up. LingerLens plays a loc
 
 ## Start watching
 
-Install a Windows x64 package supplied by the maintainer and open **LingerLens**. Electron, Python, FFmpeg/ffprobe, yt-dlp and the Japanese dictionary are included; developer tools are not needed. Preview installers may be unsigned. Verify the download source and checksum before running one.
+Install the package for your system and open **LingerLens**. Electron, Python, FFmpeg/ffprobe, yt-dlp, fonts and the Japanese dictionary are included; no terminal or developer tools are needed. Cloud recognition and translation still need internet access, your own API keys and any provider fees. Optional local Whisper servers and model weights are not included.
 
-The configured download channel is [LingerLens releases](https://github.com/Antiranger/LingerLens-releases/releases). This link does not guarantee that a reviewed public build exists. If no suitable release is available, use the source instructions below.
+The [complete English guide](docs/en/guide.md) explains configuration and troubleshooting. See [desktop builds](desktop/README.md) to build Windows or macOS from source.
 
 1. Open **Connections & keys** and configure your recognition and translation services.
 2. Choose the spoken and target subtitle languages, then enable subtitles if needed.

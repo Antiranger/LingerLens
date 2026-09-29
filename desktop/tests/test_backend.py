@@ -25,7 +25,7 @@ class BackendTests(unittest.TestCase):
         command = [binary] if binary else [sys.executable, str(ROOT / 'desktop/companion_entry.py')]
         env = dict(os.environ, PYTHONUTF8='1')
         if binary:
-            env['PATH'] = os.path.join(os.environ['SystemRoot'], 'System32')
+            env['PATH'] = os.path.join(os.environ['SystemRoot'], 'System32') if os.name == 'nt' else '/usr/bin:/bin'
         self.process = subprocess.Popen(command + ['--data-dir', str(self.data)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -87,7 +87,7 @@ class BackendTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('LINGERLENS_TEST_BACKEND'), 'packaged dependency check')
     def test_packaged_dependencies_without_system_tools(self):
-        env = dict(os.environ, PATH=os.path.join(os.environ['SystemRoot'], 'System32'))
+        env = dict(os.environ, PATH=os.path.join(os.environ['SystemRoot'], 'System32') if os.name == 'nt' else '/usr/bin:/bin')
         result = subprocess.run([os.environ['LINGERLENS_TEST_BACKEND'], '--check-dependencies'],
             capture_output=True, text=True, encoding='utf-8', env=env, timeout=45,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

@@ -7,6 +7,8 @@ const { spawn } = require('node:child_process');
 const { startBackend, createDevLog, localStamp } = require('./backend.cjs');
 const { defaultLogPath } = require('./devlog.cjs');
 const { createUpdater } = require('./updater.cjs');
+
+if (process.platform === 'win32') app.setAppUserModelId('io.github.antiranger.lingerlens');
 const { startMainHealthProbe } = require('./health.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'lingerlens', privileges: {
@@ -262,6 +264,11 @@ async function handleAppUpdate(request, url) {
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
+  // The signed/verified NSIS updater is Windows-only. macOS uses the release DMG.
+  if (process.platform !== 'win32') {
+    return json({ ...buildInfo(), update: { status: 'unsupported',
+      error: 'Download macOS updates from GitHub Releases.' } });
+  }
   if (url.pathname === '/api/app-update' && request.method === 'GET') {
     return json({ ...buildInfo(), update: updater.getState() });
   }
@@ -394,6 +401,7 @@ async function start() {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const fitsBoard = workAreaSize.width >= 1280;
   window = new BrowserWindow({
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     width: Math.min(workAreaSize.width, 1680),
     height: Math.min(workAreaSize.height, 1000),
     minWidth: 1080, minHeight: 700,

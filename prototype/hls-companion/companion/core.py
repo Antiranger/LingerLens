@@ -43,7 +43,7 @@ except ImportError:
         from companion import logbook  # type: ignore[import-not-found]
     except ImportError:
         import logbook  # type: ignore[import-not-found,no-redef]
-VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
+VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp")
 SUPPORTED_COOKIE_SUFFIXES = ("youtube.com", "google.com", "bilibili.com", "twitch.tv")
 VIDEO_CODEC_PREFIXES = ("avc1", "avc", "h264")
 AUDIO_CODEC_PREFIXES = ("mp4a", "aac")

@@ -51,6 +51,7 @@ Thumbs.db
 # yt-dlp.exe is fetched by scripts/fetch-yt-dlp.py (pinned in
 # desktop/dependencies.json), not committed.
 /prototype/hls-companion/vendor/yt-dlp/yt-dlp.exe
+/prototype/hls-companion/vendor/yt-dlp/yt-dlp
 /prototype/hls-companion/vendor/yt-dlp/yt-dlp.download
 
 # Generated reports, benchmarks, recordings, media and logs
