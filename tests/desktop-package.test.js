@@ -17,7 +17,9 @@ test('packager and package audit consume the same manifest',()=>{
 async function fixture(extra, verify) {
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ll-package-'));
   try {
-    const input=path.join(temp,'input'),app=path.join(temp,'app'),resources=path.join(app,'resources');
+    const input=path.join(temp,'input'),app=path.join(temp,'app');
+    const resources=process.platform === 'darwin'
+      ? path.join(app,'LingerLens.app','Contents','Resources') : path.join(app,'resources');
     fs.mkdirSync(resources,{recursive:true});
     for(const name of [...APP_FILES,...extra]) {
       const file=path.join(input,name);fs.mkdirSync(path.dirname(file),{recursive:true});

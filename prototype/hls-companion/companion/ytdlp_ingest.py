@@ -44,7 +44,7 @@ except ImportError:  # direct test/module loading
     from companion.win_job import ProcessTreeJob  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / "yt-dlp.exe"
+VENDORED_YT_DLP = ROOT / "vendor" / "yt-dlp" / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp")
 
 
 class _TcpPump:

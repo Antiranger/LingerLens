@@ -264,7 +264,7 @@ async function handleAppUpdate(request, url) {
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-  // The signed/verified NSIS updater is Windows-only. macOS uses the release DMG.
+  // The checksum-verified NSIS updater is Windows-only. macOS uses the release DMG.
   if (process.platform !== 'win32') {
     return json({ ...buildInfo(), update: { status: 'unsupported',
       error: 'Download macOS updates from GitHub Releases.' } });
@@ -475,11 +475,11 @@ async function start() {
   // Check once per run, well after startup so it never competes with the first
   // stream a user opens. Failures are reported, never retried in a loop: an
   // update check that hammers a dead host is worse than no update check.
-  setTimeout(() => { void updater?.check(); }, 10000);
+  if (process.platform === 'win32' && !smoke) setTimeout(() => { void updater?.check(); }, 10000);
   if (smoke) {
     const { runSmoke } = require('./smoke.cjs');
     await runSmoke({ window, dataDir: app.getPath('userData'), outputDir: smoke, backendPid: backend.pid,
-      ffmpeg: app.isPackaged ? path.join(process.resourcesPath, 'backend', '_internal', 'bin', 'ffmpeg.exe') : 'ffmpeg' });
+      ffmpeg: app.isPackaged ? path.join(process.resourcesPath, 'backend', '_internal', 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg') : 'ffmpeg' });
     app.quit();
   }
 }
