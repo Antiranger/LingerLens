@@ -493,7 +493,7 @@ def validate_config(config: dict[str, Any]) -> None:
                 raise ValueError(
                     f"{section_name} provider currency must be one of {', '.join(SUPPORTED_CURRENCIES)}"
                 )
-        if section.get("active") not in ids:
+        if section.get("active") not in ids and not (not ids and section.get("active") is None):
             raise ValueError(f"{section_name}.active must name a configured provider")
         if section_name == "translation":
             fallback = section.get("fallback", [])
@@ -504,7 +504,8 @@ def validate_config(config: dict[str, Any]) -> None:
     chat = config["chatTranslation"]
     if not isinstance(chat, dict) or set(chat) - {"active"}:
         raise ValueError("chatTranslation only accepts active")
-    if chat.get("active") not in {p.get("id") for p in config.get("translation", {}).get("providers", [])}:
+    translation_ids = {p.get("id") for p in config.get("translation", {}).get("providers", [])}
+    if chat.get("active") not in translation_ids and not (not translation_ids and chat.get("active") is None):
         raise ValueError("chatTranslation.active must reference a configured translation model")
 
 
@@ -543,7 +544,7 @@ def update_model_settings(path: str | Path, settings: dict[str, Any]) -> dict[st
     A legacy single-record payload is still accepted so existing local clients
     can upgrade without a flag day. New clients send complete provider lists;
     replacing the list is the CRUD operation and validation protects active and
-    fallback references as well as the at-least-one-record invariant.
+    fallback references. Empty sections have no active selection.
     """
     path = Path(path)
     current = load_config(path)

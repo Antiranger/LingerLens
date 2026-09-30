@@ -59,9 +59,19 @@ def session_guard(token):
 async def serve(data: Path, token: str, ready_output):
     from aiohttp import web
     from companion.server import CompanionApplication, errors
+    from companion.providers.config import DEFAULT_CONFIG, atomic_write_config
+    import copy
 
     media, providers = runtime_paths(data)
     providers.parent.mkdir(parents=True, exist_ok=True)
+    # A distributed desktop app starts without configured accounts or models.
+    # Existing user profiles belong to their owner and survive upgrades.
+    if not providers.exists():
+        blank = copy.deepcopy(DEFAULT_CONFIG)
+        blank['asr'] = {'active': None, 'providers': []}
+        blank['translation'] = {'active': None, 'fallback': [], 'providers': []}
+        blank['chatTranslation'] = {'active': None}
+        atomic_write_config(providers, blank)
     args = backend_arguments(media, providers)
     companion = CompanionApplication(args, enable_native_control=False)
     application = companion.routes()

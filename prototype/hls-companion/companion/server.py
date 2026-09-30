@@ -610,8 +610,20 @@ class CompanionApplication:
         UI can block unsupported settings before playback starts.
         """
         config = load_config(self.providers_path)
+        from companion.providers.readiness import asr_readiness
+        active_asr = next((p for p in config['asr']['providers'] if p['id'] == config['asr']['active']), {})
+        if not active_asr or (not config['translation']['providers'] and not asr_readiness(active_asr)['nativeTranslation']):
+            subtitle = config.get('subtitle', {})
+            return web.json_response({
+                'catalogVersion': language_catalog().get('version'),
+                'cldrVersion': language_catalog().get('cldrVersion'),
+                'languages': catalog_entries(), 'asr': None, 'translation': None,
+                'defaults': {
+                    'sourceLanguage': subtitle.get('sourceLanguage', {'mode': 'specified', 'tag': 'ja'}),
+                    'targetLanguage': subtitle.get('targetLanguage', 'zh-Hans'),
+                },
+            }, headers={'Cache-Control': 'no-store'})
         asr_record = self._provider_record(config["asr"], config["asr"]["active"])
-        translation_record = self._provider_record(config["translation"], config["translation"]["active"])
         asr_provider = create_asr(asr_record)
         native = asr_provider.capabilities.native_translation
         if native.enabled:
@@ -626,6 +638,7 @@ class CompanionApplication:
                 target_tags=native.target_tags,
             )
         else:
+            translation_record = self._provider_record(config["translation"], config["translation"]["active"])
             translation_provider = create_translation(translation_record)
         subtitle = config.get("subtitle", {})
         asr_language = asr_provider.capabilities.language
@@ -1318,7 +1331,7 @@ class CompanionApplication:
         asr_id = config["asr"]["active"]
         translation_id = config["translation"]["active"]
         asr_config = self._provider_record(config["asr"], asr_id)
-        translation_configs = [self._provider_record(config["translation"], translation_id)]
+        translation_configs = [self._provider_record(config["translation"], translation_id)] if translation_id else []
         translation_configs.extend(
             self._provider_record(config["translation"], provider_id)
             for provider_id in config["translation"].get("fallback", [])
@@ -1348,6 +1361,8 @@ class CompanionApplication:
             native_fallback = None
             fallback_configs = []
             if asr_config.get("options", {}).get("nativeTranslationFallback") is True:
+                if not translation_configs:
+                    raise ValueError('Configure a translation model before enabling native translation fallback')
                 fallback_configs = list(translation_configs)
                 candidates = [create_translation(item) for item in fallback_configs]
                 native_fallback = FallbackChain(candidates) if len(candidates) > 1 else candidates[0]

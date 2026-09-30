@@ -17,7 +17,7 @@ function auditPackage(directory, platform = process.platform) {
       const file = path.join(dir, item.name);
       const relative = path.relative(root, file).replaceAll('\\', '/');
       if (/(^|\/)(?:\.scratch|\.planning|\.playwright-cli|\.venv-desktop)(\/|$)/.test(relative)
-          || /(^|\/)(?:providers\.json|auth-snapshot\.json|control\.secret|\.env)$/.test(relative)) findings.push(relative);
+          || /(^|\/)(?:providers\.json(?:\..*)?|providers\.example\.json|auth-snapshot\.json(?:\..*)?|control\.secret|\.env(?:\..*)?|cookies?(?:\.txt|\.json|-journal)?|local storage|session storage|indexeddb|login data|preferences)$/i.test(relative)) findings.push(relative);
       if (item.isDirectory()) walk(file);
     }
   }

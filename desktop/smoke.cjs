@@ -37,6 +37,10 @@ async function runSmoke({ window, dataDir, ffmpeg, outputDir, backendPid }) {
     const status = await fetch('/api/status');
     const languages = await fetch('/api/languages');
     const settings = await fetch('/api/model-settings').then(r => r.json());
+    const cleanProfile = ['asr', 'translation'].every(section =>
+      settings[section]?.providers?.length === 0 && settings[section]?.active === null)
+      && settings.chatTranslation?.active === null;
+    if (!cleanProfile) throw new Error('Fresh packaged profile contains configured models');
     const previous = localStorage.getItem('desktop-smoke'); localStorage.setItem('desktop-smoke', 'persisted');
     const video = document.createElement('video'); video.muted = true; document.body.append(video);
     const hls = new Hls();
@@ -51,9 +55,13 @@ async function runSmoke({ window, dataDir, ffmpeg, outputDir, backendPid }) {
       });
     } finally { hls.destroy(); video.remove(); }
     return { title: document.title, video: !!document.querySelector('video'), status: status.status,
-      languages: languages.status, settingsLoaded: !!settings, previous, syntheticPlaybackSeconds: played };
+      languages: languages.status, settingsLoaded: !!settings, cleanProfile, previous, syntheticPlaybackSeconds: played };
   })()`);
   if (!result.video || result.status !== 200 || result.languages !== 200 || result.syntheticPlaybackSeconds < 0.2) throw new Error('Smoke failed');
+  try {
+    await fs.access(path.join(dataDir, 'runtime', 'auth-snapshot.json'));
+    throw new Error('Fresh packaged profile contains saved authentication');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await fs.mkdir(outputDir, { recursive: true });
   await fs.writeFile(path.join(outputDir, 'result.json'), JSON.stringify({ ...result, backendPid }, null, 2));
   await fs.writeFile(path.join(outputDir, 'window.png'), (await window.webContents.capturePage()).toPNG());

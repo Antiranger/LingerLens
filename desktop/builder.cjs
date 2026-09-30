@@ -19,7 +19,8 @@ module.exports = {
   mac: { icon: 'desktop/assets/icon.png', category: 'public.app-category.video',
     target: ['dmg', 'zip'], identity: null,
     artifactName: 'LingerLens-${version}-macos-${arch}.${ext}' },
-  nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false,
+  nsis: { oneClick: false, perMachine: false, allowElevation: false,
+    allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false,
     packElevateHelper: false,
     createDesktopShortcut: true, createStartMenuShortcut: true, runAfterFinish: false },
 };

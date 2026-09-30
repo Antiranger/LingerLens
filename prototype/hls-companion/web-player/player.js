@@ -1775,6 +1775,10 @@
     };
     applyProviderKindDefaults(provider, kind);
     providerCatalog[section].providers.push(provider);
+    if (!providerCatalog[section].active) providerCatalog[section].active = provider.id;
+    if (section === 'translation' && !providerCatalog.chatTranslation?.active) {
+      providerCatalog.chatTranslation = { active: provider.id };
+    }
     editingModel[section] = provider.id;
     renderProviderProfiles();
   }

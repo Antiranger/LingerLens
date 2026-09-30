@@ -4,6 +4,10 @@
 
 ## 运行
 
+Windows 默认安装目录为 `%LOCALAPPDATA%/Programs/lingerlens`，用户数据另存于 `%APPDATA%/LingerLens`。0.1.1 起采用安装向导，支持选择安装目录。
+
+首次运行时没有已配置的模型、API Key 或导入的 Cookie，请在模型设置中添加自己的连接。升级或重装会保留这台电脑之前保存的用户数据，因此开发电脑上看到旧配置不代表它包含在安装包中。需要录制空白界面时，请使用独立的新用户数据目录；不要把用户数据目录或其中的备份加入发布包。
+
 桌面构建支持 Windows x64、macOS arm64 和 x64。可下载的安装包见 [Releases](https://github.com/Antiranger/LingerLens/releases)：Windows 运行 EXE；Mac 按芯片选择 DMG，打开后拖入「应用程序」。预览包尚未签名，Mac 包尚未公证；请使用 `SHA256SUMS.txt` 核对下载文件。
 
 安装包包含 Electron、Python、FFmpeg/ffprobe、yt-dlp、字体和日语词典，无需额外安装开发工具。云服务账户、API 费用，以及可选本地 Whisper 服务和模型权重需自行准备。Mac 数据目录为 `~/Library/Application Support/LingerLens`。Mac 更新时下载新版 DMG 覆盖应用；内置安装更新器仅适用于 Windows。
