@@ -83,6 +83,10 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --config desktop/builder.cjs --mac --${{ matrix.arch }} --publish never
+      - name: Verify signatures in the application, DMG and ZIP
+        # Verify the mounted DMG and extracted ZIP, not only the build folder.
+        if: runner.os == 'macOS'
+        run: "${{ matrix.python }} scripts/verify-macos-signature.py"
       - name: Play synthetic video in the packaged application
         run: "${{ matrix.python }} scripts/desktop-smoke.py"
       - uses: actions/upload-artifact@v4

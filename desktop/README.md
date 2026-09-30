@@ -49,12 +49,13 @@ python3.11 -m venv .venv-desktop
 npm ci --ignore-scripts
 npm run desktop:backend:mac
 npm run desktop:dist:mac
+.venv-desktop/bin/python scripts/verify-macos-signature.py
 ```
 
 构建过程下载校验过的 Electron、yt-dlp 和 FFmpeg 源码，以系统框架提供 TLS，
 不链接开发机器上自动发现的 Homebrew 库。Python、媒体工具和词典进入 App Bundle。
 在 Intel 和 Apple Silicon 上分别构建；Windows 主机无法验证 Mac 原生安装包。
-输出 DMG 与 ZIP；当前预览版未签名、未公证。Mac 用户数据位于
+输出 DMG 与 ZIP；应用和嵌套代码进行 ad-hoc 本地签名，构建后检查应用、DMG 和 ZIP 的签名完整性。当前没有 Apple Developer ID 签名和公证。Mac 用户数据位于
 `~/Library/Application Support/LingerLens`，更新通过下载新 DMG 覆盖应用完成。
 
 ### Windows 验证

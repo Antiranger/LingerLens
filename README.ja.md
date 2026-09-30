@@ -22,7 +22,7 @@ LingerLens は映像を約 **15秒**バッファリングし、音声認識、�
 
 [**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
 
-Windows x64 は `.exe`、Mac は Apple Silicon 用の `macos-arm64.dmg` または Intel 用の `macos-x64.dmg` を選びます。DMG を開き、LingerLens を「アプリケーション」にドラッグしてください。公開済み Release の添付ファイルが配布対象です。プレビュー版は未署名で、macOS 版は未公証です。`SHA256SUMS.txt` でダウンロードを確認できます。
+Windows x64 は `.exe`、Mac は Apple Silicon 用の `macos-arm64.dmg` または Intel 用の `macos-x64.dmg` を選びます。DMG を開き、LingerLens を「アプリケーション」にドラッグしてください。公開済み Release の添付ファイルが配布対象です。Windows 版は未署名です。macOS 版は整合性確認用のアドホック署名済みですが、Apple Developer ID 署名と公証はありません。`SHA256SUMS.txt` でダウンロードを確認できます。
 
 ## 映像を遅らせる理由
 

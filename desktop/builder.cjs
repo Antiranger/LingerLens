@@ -17,7 +17,9 @@ module.exports = {
   win: { icon: 'desktop/assets/icon.ico', target: [{ target: 'nsis', arch: ['x64'] }],
     artifactName: 'LingerLens-${version}-windows-${arch}-setup.${ext}' },
   mac: { icon: 'desktop/assets/icon.png', category: 'public.app-category.video',
-    target: ['dmg', 'zip'], identity: null,
+    // Re-seal modified Electron resources and every nested executable. Leaving
+    // signing disabled retains the runtime's invalid original bundle signature.
+    target: ['dmg', 'zip'], identity: '-', hardenedRuntime: false,
     artifactName: 'LingerLens-${version}-macos-${arch}.${ext}' },
   nsis: { oneClick: false, perMachine: false, allowElevation: false,
     allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false,

@@ -22,7 +22,7 @@ LingerLens буферизует видео примерно на **15 секун
 
 [**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
 
-Для Windows x64 выберите `.exe`. Для Mac — `macos-arm64.dmg` (Apple Silicon) или `macos-x64.dmg` (Intel). Откройте DMG и перенесите LingerLens в «Программы». Доступны вложения опубликованных релизов. Предварительные сборки не подписаны; сборки macOS не нотарифицированы. Контрольные суммы находятся в `SHA256SUMS.txt`.
+Для Windows x64 выберите `.exe`. Для Mac — `macos-arm64.dmg` (Apple Silicon) или `macos-x64.dmg` (Intel). Откройте DMG и перенесите LingerLens в «Программы». Доступны вложения опубликованных релизов. Сборки Windows не подписаны. Сборки macOS имеют ad hoc подпись для проверки целостности, но не подпись Apple Developer ID и не нотарифицированы. Контрольные суммы находятся в `SHA256SUMS.txt`.
 
 ## Зачем задерживать видео?
 

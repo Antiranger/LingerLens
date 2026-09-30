@@ -1,6 +1,6 @@
 # LingerLens Benutzerhandbuch
 
-[Dokumentation](../README.md) · Stand 0.1.2 · Aktualisiert 2026-09-30
+[Dokumentation](../README.md) · Stand 0.1.3 · Aktualisiert 2026-09-30
 
 ## Start
 
@@ -8,7 +8,7 @@ Der Windows-Installationsordner ist standardmäßig `%LOCALAPPDATA%/Programs/lin
 
 Ein neues Profil enthält keine konfigurierten Modelle, API-Schlüssel oder importierten Cookies. Fügen Sie eigene Verbindungen in den Modelleinstellungen hinzu. Updates und Neuinstallationen behalten vorhandene lokale Benutzerdaten; alte Einstellungen auf einem Entwicklungsrechner stammen daher nicht zwangsläufig aus dem Installer. Verwenden Sie für Aufnahmen ein neues Datenverzeichnis und nehmen Sie weder Benutzerdaten noch deren Sicherungen in Veröffentlichungspakete auf.
 
-Buildziele sind Windows x64 und macOS arm64/x64. Verfügbare Pakete stehen unter [Releases](https://github.com/Antiranger/LingerLens/releases). Windows: EXE ausführen. Mac: passendes DMG öffnen und die App in Programme ziehen. Vorschaupakete sind unsigniert, Mac-Pakete nicht notarisiert. Prüfe `SHA256SUMS.txt`.
+Buildziele sind Windows x64 und macOS arm64/x64. Verfügbare Pakete stehen unter [Releases](https://github.com/Antiranger/LingerLens/releases). Windows: EXE ausführen. Mac: passendes DMG öffnen und die App in Programme ziehen. Windows-Pakete sind unsigniert. Mac-Pakete sind ad hoc signiert, jedoch ohne Apple Developer ID und Notarisierung. Prüfe `SHA256SUMS.txt`.
 
 Electron, Python, FFmpeg/ffprobe, yt-dlp, Schriftarten und das japanische Wörterbuch sind enthalten. Cloudkonten, API-Kosten und optionale lokale Whisper-Server samt Modellen sind separat. Mac-Daten liegen unter `~/Library/Application Support/LingerLens`. Mac-Updates erfolgen über ein neues DMG; der integrierte Installer-Updater gilt nur für Windows.
 

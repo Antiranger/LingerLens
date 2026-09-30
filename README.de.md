@@ -22,7 +22,7 @@ Englische Oberfläche mit zweisprachigen Untertiteln, verzögerter Wiedergabe un
 
 [**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
 
-Windows x64: `.exe`. Mac: `macos-arm64.dmg` für Apple Silicon oder `macos-x64.dmg` für Intel. DMG öffnen und LingerLens in Programme ziehen. Verfügbar sind die Anhänge eines veröffentlichten Releases. Vorschaupakete sind unsigniert; macOS-Pakete sind nicht notarisiert. Prüfe den Download mit `SHA256SUMS.txt`.
+Windows x64: `.exe`. Mac: `macos-arm64.dmg` für Apple Silicon oder `macos-x64.dmg` für Intel. DMG öffnen und LingerLens in Programme ziehen. Verfügbar sind die Anhänge eines veröffentlichten Releases. Windows-Pakete sind unsigniert. macOS-Pakete sind zur Integritätsprüfung ad hoc signiert, jedoch ohne Apple Developer ID und Notarisierung. Prüfe den Download mit `SHA256SUMS.txt`.
 
 ## Warum die Verzögerung?
 
