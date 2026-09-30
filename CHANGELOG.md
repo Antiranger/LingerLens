@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — preview
+
+- Windows installation now uses a wizard with an installation folder selector.
+- Fresh desktop profiles start without configured speech or translation models, API keys or imported cookies. Users add their own connections; upgrades preserve their existing local profile.
+- Remove the provider example file from frozen packages and reject configuration backups and browser profile files during package auditing.
+- Verify blank model settings and absence of saved authentication in every native packaged smoke test.
+
 ## 0.1.0 — preview
 
 - Use the purple LL mark for application, installer and shortcut icons.

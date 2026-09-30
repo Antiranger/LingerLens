@@ -85,6 +85,42 @@ class BackendTests(unittest.TestCase):
         self.assertFalse((self.data / 'runtime' / 'control.secret').exists())
         self.stop()
 
+    def test_fresh_profile_has_no_configured_models_or_cookies(self):
+        self.launch()
+        with self.request('/api/model-settings') as response:
+            settings = json.load(response)
+        for section in ('asr', 'translation'):
+            self.assertEqual(settings[section]['providers'], [])
+            self.assertIsNone(settings[section]['active'])
+        self.assertIsNone(settings['chatTranslation']['active'])
+        self.assertFalse((self.data / 'runtime' / 'auth-snapshot.json').exists())
+        with self.request('/api/languages') as response:
+            languages = json.load(response)
+        self.assertTrue(languages['languages'])
+        self.assertIsNone(languages['asr'])
+        self.stop()
+
+    def test_first_native_model_can_be_saved_without_a_translation_model(self):
+        self.launch()
+        with self.request('/api/model-settings') as response:
+            settings = json.load(response)
+        settings['asr'] = {'active': 'own-soniox', 'providers': [{
+            'id': 'own-soniox', 'label': 'Test connection', 'kind': 'soniox-realtime',
+            'model': 'stt-rt-v5', 'baseUrl': 'wss://stt-rt.soniox.com/transcribe-websocket',
+            'apiKey': 'offline-test-key', 'options': {'translationType': 'one_way'},
+        }]}
+        request = urllib.request.Request(self.origin + '/api/model-settings',
+            data=json.dumps(settings).encode('utf-8'), method='POST',
+            headers={'X-LingerLens-Session': 'a' * 64, 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            saved = json.load(response)
+        self.assertEqual(saved['translation']['providers'], [])
+        with self.request('/api/languages') as response:
+            languages = json.load(response)
+        self.assertEqual(languages['asr']['providerId'], 'own-soniox')
+        self.assertTrue(languages['translation']['native'])
+        self.stop()
+
     @unittest.skipUnless(os.environ.get('LINGERLENS_TEST_BACKEND'), 'packaged dependency check')
     def test_packaged_dependencies_without_system_tools(self):
         env = dict(os.environ, PATH=os.path.join(os.environ['SystemRoot'], 'System32') if os.name == 'nt' else '/usr/bin:/bin')

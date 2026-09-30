@@ -19,7 +19,6 @@ if not python_license.exists():
 datas = [(str(python_license), 'third-party/python'),
          (str(app_root / 'web-player'), 'web-player'),
          (str(app_root / 'companion' / 'data' / 'languages.json'), 'companion/data'),
-         (str(app_root / 'runtime' / 'providers.example.json'), 'examples'),
          (str(media / 'notices'), 'third-party/ffmpeg')]
 datas += [(str(yt_dlp / name), 'vendor/yt-dlp') for name in yt_dlp_notices]
 suffix = '.exe' if sys.platform == 'win32' else ''

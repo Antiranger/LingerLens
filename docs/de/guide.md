@@ -4,7 +4,9 @@
 
 ## Start
 
-Der Windows-Installationsordner ist standardmäßig `%LOCALAPPDATA%/Programs/lingerlens`; Benutzerdaten liegen separat unter `%APPDATA%/LingerLens`. Der veröffentlichte Installer 0.1.0 installiert per Klick. Künftige Installer verwenden einen Assistenten mit Ordnerauswahl.
+Der Windows-Installationsordner ist standardmäßig `%LOCALAPPDATA%/Programs/lingerlens`; Benutzerdaten liegen separat unter `%APPDATA%/LingerLens`. Ab 0.1.1 lässt sich der Ordner im Installationsassistenten auswählen.
+
+Ein neues Profil enthält keine konfigurierten Modelle, API-Schlüssel oder importierten Cookies. Fügen Sie eigene Verbindungen in den Modelleinstellungen hinzu. Updates und Neuinstallationen behalten vorhandene lokale Benutzerdaten; alte Einstellungen auf einem Entwicklungsrechner stammen daher nicht zwangsläufig aus dem Installer. Verwenden Sie für Aufnahmen ein neues Datenverzeichnis und nehmen Sie weder Benutzerdaten noch deren Sicherungen in Veröffentlichungspakete auf.
 
 Buildziele sind Windows x64 und macOS arm64/x64. Verfügbare Pakete stehen unter [Releases](https://github.com/Antiranger/LingerLens/releases). Windows: EXE ausführen. Mac: passendes DMG öffnen und die App in Programme ziehen. Vorschaupakete sind unsigniert, Mac-Pakete nicht notarisiert. Prüfe `SHA256SUMS.txt`.
 

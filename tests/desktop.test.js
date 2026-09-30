@@ -10,6 +10,26 @@ const { localStamp } = require('../desktop/backend.cjs');
 const { createDevLog, defaultLogPath, MAX_LINES_PER_POST } = require('../desktop/devlog.cjs');
 const updater = require('../desktop/updater.cjs');
 
+test('package audit rejects private configuration backups and browser cookies', async () => {
+  const { auditPackage } = require('../desktop/audit-package.cjs');
+  const asar = require('@electron/asar');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-package-audit-'));
+  try {
+    const source = path.join(dir, 'source');
+    const resources = path.join(dir, 'resources');
+    fs.mkdirSync(source); fs.mkdirSync(resources);
+    fs.writeFileSync(path.join(source, 'package.json'), '{}');
+    await asar.createPackage(source, path.join(resources, 'app.asar'));
+    auditPackage(dir);
+    for (const name of ['providers.json.bak-test', 'auth-snapshot.json', 'Cookies', 'providers.example.json']) {
+      const file = path.join(resources, name);
+      fs.writeFileSync(file, '{}');
+      assert.throws(() => auditPackage(dir), /Unexpected packaged paths/);
+      fs.unlinkSync(file);
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('installer keeps user data and installs per user without starting itself', () => {
   assert.equal(config.nsis.perMachine, false);
   assert.equal(config.nsis.deleteAppDataOnUninstall, false);

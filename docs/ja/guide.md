@@ -4,7 +4,9 @@
 
 ## 起動
 
-Windows の既定のインストール先は `%LOCALAPPDATA%/Programs/lingerlens`、ユーザーデータは別の `%APPDATA%/LingerLens` に保存されます。公開済みの 0.1.0 はワンクリック方式です。次のインストーラーから保存先を選べるウィザードに変更します。
+Windows の既定のインストール先は `%LOCALAPPDATA%/Programs/lingerlens`、ユーザーデータは別の `%APPDATA%/LingerLens` に保存されます。0.1.1 以降はウィザードでインストール先を選択できます。
+
+初回起動時には設定済みモデル、API キー、インポート済み Cookie はありません。モデル設定で自分の接続を追加してください。更新や再インストールではこのコンピューターの既存データが保持されるため、開発環境で以前の設定が表示されても配布物に含まれるとは限りません。録画には新しい専用データディレクトリを使い、ユーザーデータやバックアップを配布物に含めないでください。
 
 ビルド対象は Windows x64 と macOS arm64/x64 です。[Releases](https://github.com/Antiranger/LingerLens/releases) の公開済みファイルから選んでください。Windows は EXE、Mac はチップに合う DMG を開き、アプリケーションにドラッグします。プレビュー版は未署名、Mac 版は未公証です。`SHA256SUMS.txt` で確認してください。
 

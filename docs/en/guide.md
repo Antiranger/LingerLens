@@ -4,7 +4,9 @@
 
 ## Run
 
-The default Windows installation folder is `%LOCALAPPDATA%/Programs/lingerlens`; user data is stored separately in `%APPDATA%/LingerLens`. The published 0.1.0 installer uses one-click installation. Subsequent installers use a wizard with a folder selection page.
+The default Windows installation folder is `%LOCALAPPDATA%/Programs/lingerlens`; user data is stored separately in `%APPDATA%/LingerLens`. Starting with 0.1.1, the installation wizard lets you choose the folder.
+
+A fresh profile has no configured models, API keys or imported cookies. Add your own connections in model settings. Upgrades and reinstalls preserve this computer's existing user data, so old settings on a development computer do not indicate that they are bundled. Use a separate fresh data directory for clean recordings; never add user data or its backups to release packages.
 
 Desktop build targets are Windows x64 and macOS arm64/x64. Download available packages from [Releases](https://github.com/Antiranger/LingerLens/releases). Windows uses an EXE installer; on Mac open the DMG for your chip and drag LingerLens to Applications. Preview packages are unsigned and macOS packages are not notarized. Verify the download against `SHA256SUMS.txt`.
 
