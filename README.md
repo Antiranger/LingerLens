@@ -1,16 +1,22 @@
 <p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
 <h1 align="center">LingerLens</h1>
-<p align="center"><strong>Live video. Subtitles that keep up.</strong></p>
+<p align="center"><strong>About 15 seconds of delay. More stable, complete and readable live translations.</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
-Watch live video with time for the subtitles to catch up. LingerLens plays a locally delayed stream from **YouTube Live, Bilibili Live or Twitch**, adds speech recognition and translated subtitles, and keeps live chat alongside the player.
+LingerLens is a **bilingual live player for YouTube, Bilibili and Twitch**, with speech translation, live chat translation and translated chat overlays to make streams in other languages easier to follow.
 
-**Windows and macOS preview · MIT application code · Bring your own provider credentials.** Playback and language coverage depend on the stream, account and selected provider.
+Real-time translation often prioritizes showing text immediately. But while a speaker is still talking, recognition and translation models work with incomplete sentences. New audio can cause the subtitles to grow, change or be rewritten entirely. This **subtitle flickering / revision churn** makes viewers reread the same line and interrupts the viewing experience.
 
-[![CI](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml/badge.svg)](https://github.com/Antiranger/LingerLens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4B3FE0.svg)](LICENSE)
+LingerLens buffers video for about **15 seconds**, giving speech recognition, sentence segmentation and translation time to settle before displaying bilingual subtitles along the playback timeline. The buffer reduces revisions of temporary results and helps deliver more stable translations with fuller context when the corresponding video plays. **The delay is adjustable; translated live chat can also appear as an overlay on the video.**
 
-![Application preview — fresh profile, no credentials](docs/assets/player.png)
+![LingerLens — English interface](docs/assets/player.en.png)
+
+## Watch it in action
+
+English interface: bilingual captions, delayed playback and live chat.
+
+![LingerLens — English demo](docs/assets/demo.en.gif)
 
 ## Download
 
@@ -26,7 +32,7 @@ Only files attached to a published release are available downloads. Preview buil
 
 ## Why delay the video?
 
-Recognition and translation take time. LingerLens holds the picture briefly so speech and translated captions can arrive together. Start with the default 15-second target, then adjust it to your provider and network.
+Recognition and translation run ahead of delayed playback. The default target is 15 seconds, adjustable from 11–60 seconds. This is not a fixed end-to-end latency: the stream, network and provider still affect the result. Long speech may be split into captions, and providers without word timestamps use approximate timing. The buffer reduces revision churn but cannot guarantee that every translation arrives on time or is accurate.
 
 ## Features
 
@@ -51,7 +57,7 @@ The [complete English guide](docs/en/guide.md) covers installation, providers, C
 
 ## Run from source
 
-Browser mode requires Windows, Python **3.11+**, Node.js **22.12+**, FFmpeg/ffprobe on PATH, and Chrome or Edge. Cloning requires GitHub access while this repository remains private.
+Browser mode requires Windows, Python **3.11+**, Node.js **22.12+**, FFmpeg/ffprobe on PATH, and Chrome or Edge.
 
 ```powershell
 git clone https://github.com/Antiranger/LingerLens.git
@@ -65,6 +71,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 Open <http://127.0.0.1:8765/>. Bootstrap validates tools and the yt-dlp checksum, then installs dependencies; `-CheckOnly` checks without installing. It does not build the desktop application.
 
 Without `-Prototype`, `start-lingerlens.cmd` launches an existing `release/win-unpacked/LingerLens.exe`. See the [desktop build instructions](desktop/README.md) to create it.
+
+## Model setup
+
+Choose a speech protocol, then select a recommended model to fill its ID or enter a custom ID. Tencent selections also update the speech engine. Provider-native bilingual modes can recognize and translate in one session; other modes require a separate translation service. See [provider settings](docs/PROVIDERS.md) and [ASR timing compatibility](docs/ASR-COMPATIBILITY.md).
+
+## Updates
+
+Windows installed builds check GitHub Releases for updates. Choose to download the newer installer; the app verifies its size and SHA-256 before running it. Source mode hides the update button. On macOS, download the new DMG and replace the application. Existing local settings are preserved; a fresh profile contains no personal models, API keys or cookies.
 
 ## Privacy and limitations
 

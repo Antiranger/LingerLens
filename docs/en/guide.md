@@ -1,6 +1,6 @@
 # LingerLens user guide
 
-[Documentation index](../README.md) · Baseline 0.1.0 · Updated 2026-09-29
+[Documentation index](../README.md) · Baseline 0.1.2 · Updated 2026-09-30
 
 ## Run
 

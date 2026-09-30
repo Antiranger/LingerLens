@@ -1,6 +1,6 @@
 # LingerLens Benutzerhandbuch
 
-[Dokumentation](../README.md) · Stand 0.1.0 · Aktualisiert 2026-09-29
+[Dokumentation](../README.md) · Stand 0.1.2 · Aktualisiert 2026-09-30
 
 ## Start
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- Reduce overlapping caption intervals for ASR results without word timestamps by preserving each utterance's estimated start and advancing the finalized frontier.
+- Audit all configured ASR protocol paths for timing, translation routing, duplicate results, reconnects and stable-text release deadlines. Provider timing precision still varies.
+- Shorten speech protocol labels and add recommended model selections while preserving custom model IDs and credentials; Tencent selections update its engine type.
+- New Soniox profiles do not require a separate translation model unless native-translation fallback is enabled.
+- Rewrite the five README introductions around subtitle flickering / revision churn and delayed playback, with Chinese screenshots/GIF for Simplified Chinese and English media for the other four languages.
+- Publish a public GitHub release channel with verified Windows update metadata; retain user data during upgrades and keep fresh packages free of personal configuration.
+
 ## 0.1.1 — preview
 
 - Windows installation now uses a wizard with an installation folder selector.

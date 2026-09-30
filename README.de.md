@@ -1,14 +1,22 @@
 <p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
 <h1 align="center">LingerLens</h1>
-<p align="center"><strong>Livestreams verstehen. Mit passenden Untertiteln.</strong></p>
+<p align="center"><strong>Etwa 15 Sekunden Verzögerung für stabilere, vollständigere und lesbare Liveübersetzungen.</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
-Livestreams mit etwas Zeit für die Untertitel: LingerLens spielt **YouTube Live, Bilibili Live und Twitch** lokal verzögert ab und ergänzt Spracherkennung, übersetzte Untertitel und Livechat.
+LingerLens ist ein **zweisprachiger Liveplayer für YouTube, Bilibili und Twitch**. Er übersetzt gesprochene Inhalte und Livechat und kann übersetzte Kommentare über dem Video anzeigen, damit fremdsprachige Streams leichter verständlich werden.
 
-**Vorschau für Windows und macOS · Anwendungscode unter MIT · Eigene Zugangsdaten erforderlich.** Verfügbarkeit und Sprachunterstützung hängen von Stream, Konto und Dienst ab.
+Echtzeitübersetzung zeigt Text möglichst schnell an. Solange ein Satz noch nicht beendet ist, müssen Erkennung und Übersetzung jedoch mit unvollständigen Informationen arbeiten. Neue Sprache führt dazu, dass Untertitel ergänzt, korrigiert oder vollständig umgeschrieben werden. Dieses **Untertitelflackern durch laufende Überarbeitung (subtitle flickering / revision churn)** zwingt Zuschauer, dieselbe Zeile mehrfach zu lesen, und unterbricht das Seherlebnis.
 
-![Oberfläche beim ersten Start ohne Zugangsdaten](docs/assets/player.png)
+LingerLens puffert das Video etwa **15 Sekunden**, um Spracherkennung, Satzaufteilung und Übersetzung Zeit zu geben. Anschließend erscheinen zweisprachige Untertitel entlang der Wiedergabezeitleiste. Der Puffer reduziert Änderungen vorläufiger Ergebnisse und ermöglicht stabilere Übersetzungen mit mehr Kontext zur passenden Szene. **Die Verzögerung ist einstellbar; übersetzter Livechat kann auch als Overlay im Video erscheinen.**
+
+![LingerLens — English interface](docs/assets/player.en.png)
+
+## Demo
+
+Englische Oberfläche mit zweisprachigen Untertiteln, verzögerter Wiedergabe und Livechat.
+
+![LingerLens — English demo](docs/assets/demo.en.gif)
 
 ## Download
 
@@ -18,7 +26,7 @@ Windows x64: `.exe`. Mac: `macos-arm64.dmg` für Apple Silicon oder `macos-x64.d
 
 ## Warum die Verzögerung?
 
-Erkennung und Übersetzung brauchen Zeit. LingerLens verzögert das Bild kurz, damit Sprache und übersetzte Untertitel gemeinsam ankommen. Beginne mit 15 Sekunden und passe das Ziel an Anbieter und Netzwerk an.
+Erkennung und Übersetzung laufen vor der verzögerten Wiedergabe. Das Standardziel beträgt 15 Sekunden und ist von 11–60 Sekunden einstellbar. Die gesamte Verzögerung hängt außerdem vom Stream, Netzwerk und Anbieter ab. Lange Äußerungen können aufgeteilt werden; ohne Wortzeitstempel werden Zeitabschnitte geschätzt. Der Puffer reduziert Überarbeitungen, garantiert aber weder rechtzeitige noch fehlerfreie Übersetzungen.
 
 ## Funktionen
 
@@ -43,7 +51,7 @@ Die [deutsche Anleitung](docs/de/guide.md) behandelt Einrichtung, Dienste, Cooki
 
 ## Aus dem Quellcode starten
 
-Benötigt werden Windows, Python **3.11+**, Node.js **22.12+**, FFmpeg/ffprobe im PATH sowie Chrome oder Edge. Solange das Repository privat ist, brauchst du GitHub-Zugriffsrechte.
+Benötigt werden Windows, Python **3.11+**, Node.js **22.12+**, FFmpeg/ffprobe im PATH sowie Chrome oder Edge.
 
 ```powershell
 git clone https://github.com/Antiranger/LingerLens.git
@@ -57,6 +65,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 Öffne <http://127.0.0.1:8765/>. Bootstrap prüft Werkzeuge und die yt-dlp-Prüfsumme und installiert Abhängigkeiten. Mit `-CheckOnly` wird nur geprüft. Ein Desktop-Build entsteht dabei nicht.
 
 Ohne `-Prototype` startet der Befehl eine vorhandene `release/win-unpacked/LingerLens.exe`. Die [Desktop-Bauanleitung](desktop/README.md) beschreibt deren Erstellung.
+
+## Modelle einrichten
+
+Wähle ein Spracherkennungsprotokoll und übernimm eine empfohlene Modell-ID oder trage sie manuell ein. Bei Tencent wird auch die Erkennungsengine angepasst. Anbietereigene zweisprachige Modi erkennen und übersetzen in einer Sitzung; andere Modi benötigen einen separaten Übersetzungsdienst. Siehe [Anbieter](docs/PROVIDERS.md) und [ASR-Zeitabgleich](docs/ASR-COMPATIBILITY.md).
+
+## Updates
+
+Installierte Windows-Versionen prüfen GitHub Releases auf Updates. Auf Wunsch wird der neue Installer heruntergeladen, anhand von Größe und SHA-256 geprüft und gestartet. Im Quellcodemodus ist die Schaltfläche verborgen. Unter macOS ersetzt du die Anwendung mit dem neuen DMG. Vorhandene Einstellungen bleiben erhalten; neue Profile enthalten keine persönlichen Modelle, API-Schlüssel oder Cookies.
 
 ## Datenschutz und Grenzen
 
