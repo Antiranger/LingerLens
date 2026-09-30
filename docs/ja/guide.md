@@ -1,6 +1,6 @@
 # LingerLens 利用ガイド
 
-[文書一覧](../README.md) · 対象 0.1.3 · 更新日 2026-09-30
+[文書一覧](../README.md) · 対象 0.1.4 · 更新日 2026-09-30
 
 ## 起動
 
@@ -28,6 +28,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 接続先とキーで正確なモデル ID、エンドポイント、認証を登録します。認識と翻訳は別設定が基本で、Qwen LiveTranslate や Soniox の内蔵翻訳も利用できます。翻訳は OpenAI 互換、Qwen-MT、Anthropic Messages、Google Gemini、認識は DashScope、Soniox、Deepgram、OpenAI、AssemblyAI、Volcano Engine、ElevenLabs、Speechmatics、Tencent のプロトコルに対応します。これは実アカウントで全モデルを確認したという意味ではありません。
 
 プロトコルは短いサービス名で表示されます。ASR を選んだらモデル一覧から対応モデル ID を入力するか、独自サービスの ID を手動で入力してください。Tencent の選択はエンジンも更新します。新しい Soniox 設定では別の翻訳モデルは不要です。翻訳フォールバックは翻訳モデルを設定した後に有効にしてください。7 秒の上限は確定済み字幕の公開期限であり、未確定の仮説やサービスがまだ返していない結果には適用できません。時刻と翻訳の制約は [ASR 互換性監査](../ASR-COMPATIBILITY.md) を参照してください。
+
+千問の認識では `qwen-audio-3.1-asr-flash-streaming` を推奨します。モデルに応じてストリーミングプロトコルを選び、旧 Realtime モデルも維持します。一時的な翻訳失敗は独立したバックグラウンド処理で最大5回再試行し、各要求に新しい30秒の期限を設定します。遅れて届いた訳文は元の字幕履歴に補完され、現在の字幕を巻き戻しません。認証・要求エラーは再試行しません。停止、訳先言語の変更、履歴の期限切れで古い補完を中止します。
 
 YouTube、Bilibili、Twitch の HTTPS URL を入力し、H.264/AVC と AAC を優先して開始します。遅延は 11～60 秒、初期値 15 秒です。実際の遅延は配信元とネットワーク次第です。プレーヤーの全画面ボタンを使うと字幕も全画面になります。公開配信はまず Cookie なしで試し、必要な場合だけ対応形式を取り込みます。Bilibili ログインには `SESSDATA` が必要です。Cookie は DRM、購入制限、地域制限、ボット対策を回避しません。
 

@@ -272,3 +272,14 @@ test("bridges gaps shorter than 300ms without clearing", () => {
   assert.equal(scheduler.pick([first, second], 11.05).id, 1);
   assert.equal(scheduler.pick([first, second], 11.2).id, 2);
 });
+
+
+test("undiarized ASR chunks replace old overlapping text at the next onset", () => {
+  const scheduler = createSubtitleScheduler();
+  const first = {...cue(1, 2, 20), generation: 1, chunkOrder: 1};
+  const second = {...cue(2, 4, 20), generation: 1, chunkOrder: 2};
+  const third = {...cue(3, 6, 20), generation: 1, chunkOrder: 3};
+  assert.deepEqual(scheduler.active([first, second, third], 3).map(c => c.id), [1]);
+  assert.deepEqual(scheduler.active([first, second, third], 5).map(c => c.id), [2]);
+  assert.deepEqual(scheduler.active([first, second, third], 7).map(c => c.id), [3]);
+});

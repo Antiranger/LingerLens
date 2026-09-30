@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.1.3
+## 0.1.4
+
+- Recommend Qwen Audio 3.1 streaming recognition and select the correct transport while preserving legacy Realtime profiles and credentials.
+- Preserve confirmed word timestamps for task-ASR caption segmentation and use faster Qwen VAD endpoint settings.
+- Replace older overlapping undiarized caption rows when newer speech begins, preventing current text from being clipped below the video.
+- Retry temporary translation failures in a separate background lane and fill retained history, with bounded attempts, fresh deadlines and language/lifecycle guards.
+
+## 0.1.3 — unreleased build
 
 - Fix invalid macOS bundle signatures by re-signing the modified application and nested executable code with an ad-hoc identity.
 - Verify strict recursive signature integrity in the app, extracted ZIP and mounted DMG on both native Mac architectures before uploading packages.

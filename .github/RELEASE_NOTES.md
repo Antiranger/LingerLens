@@ -1,4 +1,4 @@
-# LingerLens 0.1.3
+# LingerLens 0.1.4
 
 Watch YouTube Live, Bilibili Live and Twitch with locally delayed video, original
 and translated subtitles, and live chat. Includes English, 简体中文, 日本語,
@@ -6,11 +6,21 @@ Deutsch and Русский interfaces and documentation.
 
 ## Choose your download
 
-- **Windows x64:** `LingerLens-0.1.3-windows-x64-setup.exe`.
-- **Mac with Apple Silicon:** `LingerLens-0.1.3-macos-arm64.dmg`.
-- **Mac with Intel:** `LingerLens-0.1.3-macos-x64.dmg`.
+- **Windows x64:** `LingerLens-0.1.4-windows-x64-setup.exe`.
+- **Mac with Apple Silicon:** `LingerLens-0.1.4-macos-arm64.dmg`.
+- **Mac with Intel:** `LingerLens-0.1.4-macos-x64.dmg`.
 
 ## What's fixed
+
+- Add Qwen Audio 3.1 streaming to the Qwen model selector, with automatic protocol
+  selection, confirmed word timestamps and faster VAD endpoints. Legacy models
+  and saved credentials remain supported.
+- Prevent older undiarized captions from stacking over newer sentences and
+  clipping current subtitles below the video.
+- Retry temporary translation failures in a separate background lane, up to five
+  attempts with fresh 30-second deadlines. Late translations fill the original
+  retained history entry. Authentication/request errors are not retried; stopping,
+  changing target language and expiring history prevent obsolete updates.
 
 - Fix the invalid application signature in the macOS 0.1.2 packages. Re-sign the
   modified Electron application and all nested executable code before packaging.
@@ -18,7 +28,7 @@ Deutsch and Русский interfaces and documentation.
   macOS signature checks on both Apple Silicon and Intel before uploading.
 
 **Mac users upgrading from 0.1.2:** replace the old application with the matching
-0.1.3 DMG. Local model settings and cookies remain in your user data directory.
+0.1.4 DMG. Local model settings and cookies remain in your user data directory.
 
 The Windows installer lets you choose the installation folder. A fresh desktop
 profile has no configured models, API keys or imported cookies. Add your own

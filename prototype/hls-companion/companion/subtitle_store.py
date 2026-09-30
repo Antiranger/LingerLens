@@ -191,6 +191,27 @@ class CueStore:
     def get(self, cue_id: int) -> Cue | None:
         return self._by_id.get(cue_id)
 
+    def repair_translation(self, cue_id: int, translated: str, hold: float) -> Cue:
+        """Fill a retained failed translation without changing its audio or text.
+
+        Normal updates keep terminal results immutable. Only a successful
+        background repair may fill a missing translation; existing translations
+        are never overwritten by a retry.
+        """
+        cue = self._by_id.get(cue_id)
+        if cue is None:
+            raise KeyError(cue_id)
+        if cue.zh or cue.state not in {"failed", "source_only"}:
+            raise ValueError("cue does not need translation repair")
+        if not translated.strip():
+            raise ValueError("repair requires a translation")
+        cue.zh = translated.strip()
+        cue.state = "done"
+        cue.hold = hold
+        cue.revision += 1
+        cue.seq = self._advance_seq()
+        return cue
+
     def query(self, *, after_seq: int = 0) -> list[Cue]:
         """Return cues whose sequence number advanced past ``after_seq``."""
         self._prune()

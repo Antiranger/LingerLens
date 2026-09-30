@@ -293,5 +293,64 @@ class DashScopeTaskASRTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+    async def test_qwen31_uses_task_protocol_from_the_qwen_connection(self) -> None:
+        provider = create_asr({"id": "qwen31", "kind": "dashscope-qwen-realtime",
+            "model": "qwen-audio-3.1-asr-flash-streaming", "baseUrl": self.server.url,
+            "apiKey": "fake-key", "options": {"vadModel": "near_meeting_16k"}})
+        self.assertEqual(provider.capabilities.language.max_candidates, 4)
+        stream = await provider.stream(policy=SourceLanguagePolicy.specified("en"),
+            sample_rate=16000, hotwords=[], context=["Test context"])
+        try:
+            request = self.server.start_requests[0]
+            self.assertEqual(request["header"]["action"], "run-task")
+            self.assertEqual(request["payload"]["model"], provider.model)
+            self.assertEqual(request["payload"]["parameters"]["vad_model"], "near_meeting_16k")
+            self.assertEqual(request["payload"]["input"]["context"], [{"role": "user", "content": [{"type": "input_text", "text": "Test context"}]}])
+        finally:
+            await stream.aclose()
+
+    def test_confirmed_word_times_are_preserved_but_interim_words_are_not_committed(self):
+        from companion.providers.asr_dashscope_task import _DashScopeTaskStream
+        sentence = {"sentence_id": 1, "sentence_end": True, "begin_time": 100,
+            "end_time": 2400, "text": "Hello world.", "words": [
+                {"begin_time": 100, "end_time": 900, "text": "Hello", "punctuation": ""},
+                {"begin_time": 1400, "end_time": 2400, "text": "world", "punctuation": "."}]}
+        raw = {"header": {"event": "result-generated"}, "payload": {"output": {"sentence": sentence}}}
+        observation = _DashScopeTaskStream._map_event(raw).caption_observation
+        self.assertEqual([(t.text, t.begin_pcm, t.end_pcm) for t in observation.tokens], [("Hello", .1, .9), ("world.", 1.4, 2.4)])
+        sentence["sentence_end"] = False
+        self.assertEqual(_DashScopeTaskStream._map_event(raw).caption_observation.tokens, ())
+        sentence["sentence_end"] = True
+        sentence["words"] = sentence["words"][:1]
+        fallback = _DashScopeTaskStream._map_event(raw).caption_observation
+        self.assertEqual(fallback.tokens, ())
+        self.assertEqual(fallback.stable_text, "Hello world.")
+
+    def test_qwen_protocol_switch_preserves_custom_endpoints(self):
+        from companion.providers.asr_qwen_realtime import QwenRealtimeASRProvider
+        def make(model, url):
+            return QwenRealtimeASRProvider({"id": "qwen", "model": model, "baseUrl": url})
+        new = make("qwen-audio-3.1-asr-flash-streaming", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime")
+        self.assertEqual(new._streaming_provider.base_url, "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
+        old = make("qwen3-asr-flash-realtime", "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference")
+        self.assertEqual(old.base_url, "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime")
+        custom = make("qwen-audio-3.1-asr-flash-streaming", "wss://example.com/custom/realtime")
+        self.assertEqual(custom._streaming_provider.base_url, "wss://example.com/custom/realtime")
+
+
+    def test_live_qwen31_fixture_reaches_the_chunker_with_independent_word_times(self):
+        import dataclasses
+        from companion.caption_chunker import CaptionChunker
+        from companion.providers.asr_dashscope_task import _DashScopeTaskStream
+        raw = json.loads((Path(__file__).parent / "fixtures/qwen31_synthetic_asr.json").read_text(encoding="utf-8"))
+        observation = _DashScopeTaskStream._map_event(raw).caption_observation
+        chunker = CaptionChunker(realtime=True)
+        chunks = list(chunker.observe(dataclasses.replace(observation, generation=1, language="en")).chunks)
+        chunks += list(chunker.flush_utterance(None).chunks)
+        self.assertEqual([(c.begin_pcm, c.end_pcm) for c in chunks], [(.32, 4.04), (4.76, 8.52)])
+        self.assertTrue(all(c.end_pcm - c.begin_pcm <= 7 for c in chunks))
+        self.assertEqual(" ".join(c.text for c in chunks), raw["payload"]["output"]["sentence"]["text"].strip())
+
+
 if __name__ == "__main__":
     unittest.main()

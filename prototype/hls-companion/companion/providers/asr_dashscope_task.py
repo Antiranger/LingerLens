@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from typing import Any, AsyncIterator
 
@@ -17,6 +18,7 @@ from .base import (
     ASRProvider,
     ASRStream,
     CaptionObservation,
+    RecognitionToken,
     SourceLanguagePolicy,
 )
 
@@ -36,6 +38,10 @@ _FUN_ASR_MAIN_LANGUAGES = (
 )
 
 _MODEL_PRESETS: dict[str, dict[str, Any]] = {
+    "qwen-audio-3.1-asr-flash-streaming": {
+        "tier": "provider_claimed", "languages": _FUN_ASR_MAIN_LANGUAGES,
+        "max_hints": 4, "instant_vocabulary": True, "context": True,
+    },
     "fun-asr-realtime-2026-02-28": {
         "tier": "verified", "languages": ("zh", "en", "ja"),
         "max_hints": 1, "instant_vocabulary": False, "context": False,
@@ -171,6 +177,10 @@ class _DashScopeTaskStream(ASRStream):
                 "semantic_punctuation_enabled": bool(options.get("semanticPunctuationEnabled", False)),
                 "max_sentence_silence": int(options.get("maxSentenceSilence", 800)),
             }
+            qwen31 = self.provider.model == "qwen-audio-3.1-asr-flash-streaming"
+            if qwen31:
+                parameters["vad_model"] = str(options.get("vadModel", "far_field_meeting_16k"))
+                parameters["keep_dialect"] = bool(options.get("keepDialect", False))
             if "multiThresholdModeEnabled" in options:
                 parameters["multi_threshold_mode_enabled"] = bool(options["multiThresholdModeEnabled"])
             if "heartbeat" in options:
@@ -190,6 +200,10 @@ class _DashScopeTaskStream(ASRStream):
                 # Official docs place dialogue context under input.context (max 5
                 # entries) for the models that support it -- NOT under parameters.
                 payload_input["context"] = self.context[-5:]
+                if qwen31:
+                    payload_input["context"] = [{"role": "user", "content": [{
+                        "type": "input_text", "text": "\n".join(self.context[-5:])[:400],
+                    }]}]
             await self.ws.send_json({
                 "header": {"action": "run-task", "task_id": self.task_id, "streaming": "duplex"},
                 "payload": {"task_group": "audio", "task": "asr", "function": "recognition", "model": self.provider.model, "parameters": parameters, "input": payload_input},
@@ -286,7 +300,25 @@ class _DashScopeTaskStream(ASRStream):
         text = str(sentence.get("text", ""))
         begin = _milliseconds(sentence.get("begin_time"))
         end = _milliseconds(sentence.get("end_time"))
-        item_id = str(sentence_id) if sentence_id is not None else "0"
+        item_id = str(sentence_id) if sentence_id is not None else (
+            "begin:" + str(sentence.get("begin_time")) if begin is not None else "0"
+        )
+        tokens: list[RecognitionToken] = []
+        # Task-ASR supplies word times, unlike the older Realtime protocol.
+        # Preserve confirmed lexical boundaries so the shared chunker can cut
+        # long sentences without assigning the entire paragraph one time span.
+        # Interim word arrays remain mutable and must never be committed.
+        if final:
+            for word in sentence.get("words") or []:
+                if not isinstance(word, dict):
+                    continue
+                start, stop = _milliseconds(word.get("begin_time")), _milliseconds(word.get("end_time"))
+                piece = str(word.get("text") or "") + str(word.get("punctuation") or "")
+                if piece.strip() and start is not None and stop is not None and start >= 0 and stop >= start:
+                    tokens.append(RecognitionToken(piece, start, stop, True))
+            # Incomplete word arrays must not silently delete recognized text.
+            if "".join("".join(token.text for token in tokens).split()) != "".join(text.split()):
+                tokens = []
         return ASREvent(
             "final" if final else "interim",
             text=text,
@@ -298,6 +330,7 @@ class _DashScopeTaskStream(ASRStream):
                 "utterance_final" if final else "text_snapshot", 0, item_id,
                 stable_text=text if final else "", tentative_text="" if final else text,
                 begin_pcm=begin, end_pcm=end,
+                tokens=tuple(tokens),
             ),
         )
 
@@ -309,4 +342,4 @@ class _DashScopeTaskStream(ASRStream):
 
 
 def _milliseconds(value: Any) -> float | None:
-    return float(value) / 1000.0 if isinstance(value, (int, float)) else None
+    return float(value) / 1000.0 if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
