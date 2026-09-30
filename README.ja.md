@@ -1,10 +1,24 @@
-# LingerLens
+<p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
+<h1 align="center">LingerLens</h1>
+<p align="center"><strong>ライブを、字幕と一緒に。</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
 字幕が追いつく時間をつくるライブプレーヤーです。**YouTube Live、Bilibili Live、Twitch** の映像をローカルで遅延再生し、音声認識、翻訳字幕、ライブチャットを組み合わせます。
 
-**Windows x64 向けプレビュー版 · アプリのコードは MIT ライセンス · API の認証情報は各自で用意。** 現在のバージョンは 0.1.0 です。macOS、Linux、Android 向けの対応パッケージはありません。再生可否や認識・翻訳言語は、配信元、アカウント、選択したサービスに依存します。
+**Windows・macOS 向けプレビュー版 · アプリのコードは MIT ライセンス · API の認証情報は各自で用意。** 再生可否や対応言語は配信元とサービスに依存します。
+
+![初回起動時の画面：認証情報なし](docs/assets/player.png)
+
+## ダウンロード
+
+[**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
+
+Windows x64 は `.exe`、Mac は Apple Silicon 用の `macos-arm64.dmg` または Intel 用の `macos-x64.dmg` を選びます。DMG を開き、LingerLens を「アプリケーション」にドラッグしてください。公開済み Release の添付ファイルが配布対象です。プレビュー版は未署名で、macOS 版は未公証です。`SHA256SUMS.txt` でダウンロードを確認できます。
+
+## 映像を遅らせる理由
+
+認識と翻訳には時間がかかります。映像を少し待たせることで、音声と訳文を一緒に届けます。初期値の 15 秒から、サービスと通信状況に合わせて調整してください。
 
 ## 主な機能
 
@@ -16,9 +30,9 @@
 
 ## 使い始める
 
-メンテナーから提供された Windows x64 インストーラーを実行し、**LingerLens** を開きます。Electron、Python、FFmpeg/ffprobe、yt-dlp、日本語辞書を同梱しているため、開発ツールは不要です。プレビュー版は未署名の場合があります。実行前に入手元とチェックサムを確認してください。
+お使いの OS に合うパッケージをインストールし、**LingerLens** を開きます。Electron、Python、FFmpeg/ffprobe、yt-dlp、フォント、日本語辞書を同梱し、開発ツールは不要です。クラウド認識・翻訳にはネット接続、ご自身の API キー、サービス利用料が必要です。ローカル Whisper サーバーとモデルは含まれません。
 
-配布先は [LingerLens Releases](https://github.com/Antiranger/LingerLens-releases/releases) です。このリンクは検証済みの公開版の存在を保証しません。適切な版がなければ、下記のソース実行手順を使ってください。
+設定の詳細は[日本語ガイド](docs/ja/guide.md)、Windows・macOS のビルド方法は[デスクトップ文書](desktop/README.md)を参照してください。
 
 1. 接続先と API キーの設定を開き、認識・翻訳サービスを登録します。
 2. 配信の言語と翻訳先を選び、必要に応じて字幕を有効にします。

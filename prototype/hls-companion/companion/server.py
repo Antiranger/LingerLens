@@ -405,6 +405,11 @@ class CompanionApplication:
                         if isinstance(subtitle_status.get("mediaAnchor"), dict)
                         else None,
                         "workers": subtitle_status.get("translationWorkersAlive"),
+                        "nativeWaiting": subtitle_status.get("nativeTranslationWaiting"),
+                        "nativeUnaligned": subtitle_status.get("nativeTranslationUnaligned"),
+                        "nativeNoTranslation": subtitle_status.get("nativeSegmentClosedWithoutTranslation"),
+                        "nativeFallback": subtitle_status.get("nativeFallbackUsed"),
+                        "latePatched": subtitle_status.get("lateTranslationPatched"),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),

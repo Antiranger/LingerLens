@@ -13,7 +13,7 @@ import dataclasses
 from collections import deque
 from typing import Literal
 
-CueState = Literal["src", "translating", "done", "failed"]
+CueState = Literal["src", "waiting_native", "translating", "done", "source_only", "failed"]
 TimingSource = Literal["asr", "vad", "approx"]
 
 _IMMUTABLE_AFTER_ADD = {
@@ -163,11 +163,18 @@ class CueStore:
         if cue.state in _TERMINAL_STATES:
             raise ValueError(f"cue {cue_id} translation is already terminal: {cue.state}")
         next_state = changes.get("state", cue.state)
-        if next_state not in {"src", "translating", "done", "failed"}:
+        valid_states = {"src", "waiting_native", "translating", "done", "source_only", "failed"}
+        if next_state not in valid_states:
             raise ValueError(f"invalid cue state: {next_state!r}")
-        if cue.state == "src" and next_state not in {"src", "translating", "done", "failed"}:
-            raise ValueError(f"invalid cue state transition: {cue.state} -> {next_state}")
-        if cue.state == "translating" and next_state not in {"translating", "done", "failed"}:
+        transitions = {
+            "src": valid_states,
+            "waiting_native": {"waiting_native", "translating", "done", "source_only", "failed"},
+            "translating": {"translating", "done", "source_only", "failed"},
+            # Source-only means "shown without a translation yet", not a tombstone:
+            # a late native update is allowed to patch it to done.
+            "source_only": {"source_only", "done", "failed"},
+        }
+        if cue.state in transitions and next_state not in transitions[cue.state]:
             raise ValueError(f"invalid cue state transition: {cue.state} -> {next_state}")
         if cue.state == "src" and next_state == "done" and not (changes.get("zh") or cue.zh):
             raise ValueError("direct done cue requires a translation")
@@ -188,6 +195,12 @@ class CueStore:
         """Return cues whose sequence number advanced past ``after_seq``."""
         self._prune()
         return sorted((cue for cue in self._cues if cue.seq > after_seq), key=lambda cue: cue.seq)
+
+    def by_item_id(self, item_id: str) -> list[Cue]:
+        """Return retained cues derived from one Provider utterance."""
+        self._prune()
+        key = str(item_id)
+        return [cue for cue in self._cues if cue.item_id == key]
 
     def __len__(self) -> int:
         return len(self._cues)

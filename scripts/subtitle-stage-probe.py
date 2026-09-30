@@ -129,6 +129,14 @@ async def run_case(config, profile_id, args):
     result={'profile':profile_id,'model':provider.model,'native':bus is not None,'fallbackEnabled':bool(bus is not None and args.native_fallback),
         'audioSeconds':pipeline._stream_pushed_seconds,'fixtureAudioSeconds':len(pcm)/(rate*2),'completedInput':error is None and pipeline._stream_pushed_seconds >= len(pcm)/(rate*2)-.001,'audioSha256':hashlib.sha256(pcm).hexdigest(),
         'errorCategory':error,'source':summary(source),'translation':summary(done),
+        'nativeDiagnostics': {
+            'fallbackUsed': pipeline.stats.native_fallback_used,
+            'latePatched': pipeline.stats.native_translation_late_patches,
+            'translationUpdates': pipeline.stats.native_translation_updates,
+            'unaligned': bus.unaligned_total if bus is not None else 0,
+            'closedWithoutTranslation': bus.closed_without_translation_total if bus is not None else 0,
+            'waiting': bus.waiting if bus is not None else 0,
+        },
         'events':trace,'updates':updates,'rawEvents':raw_events if stream else []}
     (args.output/(profile_id+'.json')).write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps({k:v for k,v in result.items() if k not in ('events','updates','rawEvents')},ensure_ascii=False),flush=True)

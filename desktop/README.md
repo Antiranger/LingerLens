@@ -1,4 +1,4 @@
-# Windows 桌面版
+# Windows 与 macOS 桌面版
 
 桌面版复用现有网页播放器与 Python Companion，通过 Electron 提供独立窗口。
 用户安装后双击 LingerLens 即可使用，无需控制台或本地网址。
@@ -38,6 +38,26 @@ npm run desktop:dist
 开发解释器可通过 `LINGERLENS_PYTHON` 指定。
 
 ## 验证与发布
+
+### macOS 原生构建
+
+在目标架构的 Mac 上使用 Python 3.11、Node.js 22.12+ 和 Xcode Command Line Tools：
+
+```sh
+python3.11 -m venv .venv-desktop
+.venv-desktop/bin/python -m pip install -r desktop/requirements-build.txt
+npm ci --ignore-scripts
+npm run desktop:backend:mac
+npm run desktop:dist:mac
+```
+
+构建过程下载校验过的 Electron、yt-dlp 和 FFmpeg 源码，以系统框架提供 TLS，
+不链接开发机器上自动发现的 Homebrew 库。Python、媒体工具和词典进入 App Bundle。
+在 Intel 和 Apple Silicon 上分别构建；Windows 主机无法验证 Mac 原生安装包。
+输出 DMG 与 ZIP；当前预览版未签名、未公证。Mac 用户数据位于
+`~/Library/Application Support/LingerLens`，更新通过下载新 DMG 覆盖应用完成。
+
+### Windows 验证
 
 ```powershell
 npm run desktop:test

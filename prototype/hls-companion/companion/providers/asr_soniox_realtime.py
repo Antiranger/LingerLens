@@ -261,6 +261,10 @@ class _SonioxStream(ASRStream):
         # the pair waiting to settle. See ``_settle_translation_anchor``.
         self._translation_anchors: list[tuple[str, str]] = []
         self._translation_pending: tuple[str, str] | None = None
+        # Translation tokens may trail the provider's <end> marker by a result.
+        # Until new lexical source arrives, keep the just-closed utterance as the
+        # owner so those late tokens patch the previous cue instead of the next.
+        self._translation_tail_item: str | None = None
         self._audio_bytes_sent = 0
         self._last_audio_at = time.monotonic()
         self._keepalive_task: asyncio.Task | None = None
@@ -444,10 +448,7 @@ class _SonioxStream(ASRStream):
         if not isinstance(raw_tokens, list):
             raw = dict(raw)
             raw["tokens"] = []
-        source_tokens, translation_tokens = _split_translation(raw["tokens"])
-        translation_before = self._translation_final
-        utterance_before = self._utterance
-        self._absorb_translation(translation_tokens)
+        source_tokens, translation_tokens, late_translation = self._partition_and_absorb_ordered_tokens(raw["tokens"])
         tokens = self._project_token_clock({**raw, "tokens": source_tokens})
         events: list[ASREvent] = []
         non_final: list[dict[str, Any]] = []
@@ -473,13 +474,6 @@ class _SonioxStream(ASRStream):
                 non_final.append(token)
 
         stable_delta = self._update_final_cache()
-        if self._utterance == utterance_before:
-            # An utterance that closed inside this frame already claimed the
-            # running translation; the tokens left over belong to the next one.
-            self._track_translation_anchor(
-                source_advanced=bool(new_final_tokens),
-                translation_advanced=self._translation_final != translation_before,
-            )
         if self._final_tokens or non_final:
             text = (self._final_text + "".join(str(token.get("text", "")) for token in non_final)).strip()
             if text:
@@ -515,6 +509,7 @@ class _SonioxStream(ASRStream):
                     translation=self._open_translation,
                     translation_stash=self._translation_stash,
                     translation_anchors=tuple(self._translation_anchors),
+                    translation_anchors_trusted=True,
                     # Mutable Soniox pieces are tokenizer output, not complete
                     # lexical snapshots. Publish only the immutable lexical
                     # prefix; an empty delta still suppresses the legacy mutable
@@ -532,6 +527,12 @@ class _SonioxStream(ASRStream):
                 ))
         if raw.get("finished") and self._final_tokens:
             events.extend(self._finish_utterance(raw, None, new_final_tokens))
+        if late_translation is not None:
+            late_item, late_text = late_translation
+            events.append(ASREvent(
+                "translation", item_id=late_item, translation=late_text,
+                translation_anchors_trusted=True, raw=raw,
+            ))
         if translation_tokens and not any(event.type == "final" for event in events):
             # Translation can advance without new source tokens. Preserve its
             # latest snapshot; the native bus joins only complete source segments.
@@ -541,6 +542,7 @@ class _SonioxStream(ASRStream):
                 translation=self._open_translation,
                 translation_stash=self._translation_stash,
                 translation_anchors=tuple(self._translation_anchors),
+                translation_anchors_trusted=True,
                 raw=raw,
             ))
         return events
@@ -621,41 +623,88 @@ class _SonioxStream(ASRStream):
         """Confirmed translation received since the last utterance boundary."""
         return self._translation_final
 
-    def _absorb_translation(self, tokens: list[dict[str, Any]]) -> None:
-        """Accumulate ``translation_status == "translation"`` tokens.
+    def _partition_and_absorb_ordered_tokens(
+        self, tokens: list[dict[str, Any]]
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        tuple[str, str] | None,
+    ]:
+        """Preserve Soniox's documented source/translation chunk ordering.
 
-        Only confirmed pieces are kept. A non-final translated token may still be
-        rewritten, and a cue that has already been shown cannot be taken back, so
-        the tentative tail is published separately and never resolved against.
+        Translation tokens have no timestamps, so they stay out of the source
+        clock. Their position still carries two useful facts: a translation
+        chunk followed by more source settles a safe cumulative prefix boundary,
+        and translation tokens arriving after the endpoint marker still belong
+        to the just-closed utterance until new lexical source appears.
         """
+        source: list[dict[str, Any]] = []
+        translated_current: list[dict[str, Any]] = []
+        late_update: tuple[str, str] | None = None
+        late_changed = False
+        running_source = self._final_text
+        seen_new_source: set[tuple[object, ...]] = set()
+
         for token in tokens:
-            text = str(token.get("text", ""))
-            if not text:
+            if not isinstance(token, dict):
                 continue
-            if token.get("is_final"):
-                self._translation_final += text
-                # A confirmed piece supersedes whatever tentative tail preceded it.
+            if token.get("translation_status") == _TRANSLATED:
+                if self._translation_tail_item is None:
+                    translated_current.append(token)
+                text = str(token.get("text", ""))
+                if not text:
+                    continue
+                if token.get("is_final"):
+                    self._translation_final += text
+                    self._translation_stash = ""
+                    if self._translation_tail_item is not None:
+                        late_changed = True
+                    elif running_source and self._translation_final:
+                        self._translation_pending = (running_source, self._translation_final)
+                else:
+                    self._translation_stash += text
+                continue
+
+            source.append(token)
+            text = str(token.get("text", ""))
+            lexical_source = bool(text and text not in _END_TOKENS)
+
+            if lexical_source and self._translation_tail_item is not None:
+                # The first source token of the next utterance closes ownership
+                # of any translation tail that followed the previous endpoint.
+                if late_changed and self._translation_final.strip():
+                    late_update = (
+                        self._translation_tail_item,
+                        self._translation_final.strip(),
+                    )
+                self._translation_final = ""
                 self._translation_stash = ""
-            else:
-                self._translation_stash += text
+                self._translation_pending = None
+                self._translation_anchors = []
+                self._translation_tail_item = None
+                running_source = self._final_text
 
-    def _track_translation_anchor(self, *, source_advanced: bool, translation_advanced: bool) -> None:
-        """Follow the Provider's own ordering between speech and translation.
+            if lexical_source and self._translation_pending is not None:
+                # The Provider has moved on to more speech: the preceding
+                # translation chunk is complete for the source prefix it followed.
+                self._settle_translation_anchor()
+            if token.get("is_final") and lexical_source:
+                key = _token_key(token)
+                if key not in self._emitted_final_token_keys and key not in seen_new_source:
+                    running_source += text
+                    seen_new_source.add(key)
 
-        Soniox states that transcription and translation chunks follow each
-        other, and gives a translated token no timestamp and no id for the words
-        it renders. So the only alignment that exists is which chunk came last:
-        once speech arrives after a translation chunk, the pair recorded at that
-        chunk's end is the Provider saying "what I just translated is exactly
-        this much source". A frame that carried both is no evidence of an order,
-        so it only moves the candidate forward.
-        """
-        if translation_advanced:
-            if self._translation_final:
-                self._translation_pending = (self._final_text, self._translation_final)
-            return
-        if source_advanced:
-            self._settle_translation_anchor()
+        if (
+            late_changed
+            and late_update is None
+            and self._translation_tail_item is not None
+            and self._translation_final.strip()
+        ):
+            late_update = (
+                self._translation_tail_item,
+                self._translation_final.strip(),
+            )
+        return source, translated_current, late_update
 
     def _settle_translation_anchor(self) -> None:
         """Freeze the waiting pair as an anchor the pipeline may attribute to."""
@@ -666,14 +715,17 @@ class _SonioxStream(ASRStream):
             self._translation_anchors.append(pending)
             del self._translation_anchors[:-64]  # Diagnostic-only bounded history.
 
-    def _take_translation(self) -> str:
-        """Claim the open utterance's translation and start a fresh bucket.
+    def _take_translation(self, *, preserve_tail: bool = False) -> str:
+        """Snapshot the open utterance's confirmed translation.
 
-        Clearing rather than advancing a cursor keeps a multi-hour session from
-        holding every translation it has ever produced.
+        At an endpoint the confirmed prefix is kept briefly because Soniox may
+        deliver more translation tokens before the next lexical source result.
+        The first new source token clears that tail ownership.
         """
         text = self._translation_final.strip()
-        self._translation_final = ""
+        if not preserve_tail:
+            self._translation_final = ""
+            self._translation_tail_item = None
         self._translation_stash = ""
         self._translation_pending = None
         self._translation_anchors = []
@@ -685,19 +737,20 @@ class _SonioxStream(ASRStream):
         endpoint_token: dict[str, Any] | None,
         finalized_delta: list[dict[str, Any]],
     ) -> list[ASREvent]:
-        # The utterance closing is the Provider's last word on where its
-        # translation ends and new speech begins; claim both before the buckets
-        # reset, since ``_take_translation`` clears them.
+        # The endpoint closes the source segment, but translation tokens may
+        # still trail it by one or more results. Preserve the confirmed prefix
+        # and keep this item as their owner until new lexical source arrives.
         self._settle_translation_anchor()
         anchors = tuple(self._translation_anchors)
-        translation = self._take_translation()
+        item_id = str(self._utterance)
+        translation = self._take_translation(preserve_tail=True)
+        self._translation_tail_item = item_id
         tokens = self._final_tokens
         self._final_tokens = []
         self._emitted_final_token_keys.clear()
         emitted_lexical_tokens = self._emitted_lexical_tokens
         self._emitted_lexical_tokens = 0
         self._reset_final_cache()
-        item_id = str(self._utterance)
         self._utterance += 1
         begin = self._utterance_start if self._utterance_start is not None else _token_start(tokens)
         # ``<end>`` / ``<fin>`` are control boundaries, not spoken words.
@@ -729,6 +782,7 @@ class _SonioxStream(ASRStream):
                 raw=raw,
                 translation=translation,
                 translation_anchors=anchors,
+                translation_anchors_trusted=True,
                 caption_observation=CaptionObservation(
                     "utterance_final", 0, item_id,
                     tokens=tuple(_lexical_tokens(tokens, True)[emitted_lexical_tokens:]),

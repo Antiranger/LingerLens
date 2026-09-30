@@ -1,10 +1,24 @@
-# LingerLens
+<p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
+<h1 align="center">LingerLens</h1>
+<p align="center"><strong>Livestreams verstehen. Mit passenden Untertiteln.</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
 Livestreams mit etwas Zeit für die Untertitel: LingerLens spielt **YouTube Live, Bilibili Live und Twitch** lokal verzögert ab und ergänzt Spracherkennung, übersetzte Untertitel und Livechat.
 
-**Vorschau für Windows x64 · Anwendungscode unter MIT · Eigene Zugangsdaten erforderlich.** Aktuelle Version: 0.1.0. Unterstützte Pakete für macOS, Linux oder Android gibt es nicht. Verfügbarkeit und Sprachunterstützung hängen vom Stream, vom Konto und vom gewählten Dienst ab.
+**Vorschau für Windows und macOS · Anwendungscode unter MIT · Eigene Zugangsdaten erforderlich.** Verfügbarkeit und Sprachunterstützung hängen von Stream, Konto und Dienst ab.
+
+![Oberfläche beim ersten Start ohne Zugangsdaten](docs/assets/player.png)
+
+## Download
+
+[**GitHub Releases →**](https://github.com/Antiranger/LingerLens/releases)
+
+Windows x64: `.exe`. Mac: `macos-arm64.dmg` für Apple Silicon oder `macos-x64.dmg` für Intel. DMG öffnen und LingerLens in Programme ziehen. Verfügbar sind die Anhänge eines veröffentlichten Releases. Vorschaupakete sind unsigniert; macOS-Pakete sind nicht notarisiert. Prüfe den Download mit `SHA256SUMS.txt`.
+
+## Warum die Verzögerung?
+
+Erkennung und Übersetzung brauchen Zeit. LingerLens verzögert das Bild kurz, damit Sprache und übersetzte Untertitel gemeinsam ankommen. Beginne mit 15 Sekunden und passe das Ziel an Anbieter und Netzwerk an.
 
 ## Funktionen
 
@@ -16,9 +30,9 @@ Livestreams mit etwas Zeit für die Untertitel: LingerLens spielt **YouTube Live
 
 ## Einstieg
 
-Installiere das vom Maintainer bereitgestellte Windows-x64-Paket und öffne **LingerLens**. Electron, Python, FFmpeg/ffprobe, yt-dlp und das japanische Wörterbuch sind enthalten; Entwicklungswerkzeuge werden nicht benötigt. Vorschaupakete können unsigniert sein. Prüfe Herkunft und Prüfsumme vor dem Ausführen.
+Installiere das Paket für dein System und öffne **LingerLens**. Electron, Python, FFmpeg/ffprobe, yt-dlp, Schriftarten und das japanische Wörterbuch sind enthalten; Entwicklungswerkzeuge werden nicht benötigt. Cloud-Dienste benötigen Internet, eigene API-Schlüssel und gegebenenfalls kostenpflichtige Konten. Ein lokaler Whisper-Server samt Modell ist nicht enthalten.
 
-Der Downloadkanal ist [LingerLens Releases](https://github.com/Antiranger/LingerLens-releases/releases). Der Link garantiert keine bereits geprüfte öffentliche Version. Fehlt ein passendes Paket, nutze die Anleitung für den Quellcode.
+Weitere Hilfe: [deutsche Anleitung](docs/de/guide.md) und [Desktop-Builds für Windows und macOS](desktop/README.md).
 
 1. Öffne die Einstellungen für Verbindungen und Schlüssel und richte Erkennung und Übersetzung ein.
 2. Wähle die gesprochene Sprache und die Zielsprache; aktiviere bei Bedarf Untertitel.

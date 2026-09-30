@@ -7,6 +7,8 @@ const { spawn } = require('node:child_process');
 const { startBackend, createDevLog, localStamp } = require('./backend.cjs');
 const { defaultLogPath } = require('./devlog.cjs');
 const { createUpdater } = require('./updater.cjs');
+
+if (process.platform === 'win32') app.setAppUserModelId('io.github.antiranger.lingerlens');
 const { startMainHealthProbe } = require('./health.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'lingerlens', privileges: {
@@ -262,6 +264,11 @@ async function handleAppUpdate(request, url) {
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
+  // The checksum-verified NSIS updater is Windows-only. macOS uses the release DMG.
+  if (process.platform !== 'win32') {
+    const update = { status: 'unsupported', error: 'Download macOS updates from GitHub Releases.' };
+    return json(url.pathname === '/api/app-update' ? { ...buildInfo(), update } : update);
+  }
   if (url.pathname === '/api/app-update' && request.method === 'GET') {
     return json({ ...buildInfo(), update: updater.getState() });
   }
@@ -381,7 +388,9 @@ async function start() {
   // 只记录，不做判据：这个状态在启动初期还不稳定，见 watchGpuProcessHealth 的说明。
   const mode = gpuForcedOff ? 'software (requested)' : gpuAlreadyFellBack ? 'software (fallback)' : 'normal';
   console.log('[main] render path:', mode, JSON.stringify(app.getGPUFeatureStatus()));
-  Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(process.platform === 'darwin'
+    ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }])
+    : null);
   // The layout is a three-column desktop board with `body { min-width: 1080px }`
   // and its own 1240px breakpoint below which the live chat column is hidden.
   // The previous fixed 1440x920 came out at roughly 960 CSS px on a 150%-scaled
@@ -394,6 +403,7 @@ async function start() {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const fitsBoard = workAreaSize.width >= 1280;
   window = new BrowserWindow({
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     width: Math.min(workAreaSize.width, 1680),
     height: Math.min(workAreaSize.height, 1000),
     minWidth: 1080, minHeight: 700,
@@ -467,11 +477,11 @@ async function start() {
   // Check once per run, well after startup so it never competes with the first
   // stream a user opens. Failures are reported, never retried in a loop: an
   // update check that hammers a dead host is worse than no update check.
-  setTimeout(() => { void updater?.check(); }, 10000);
+  if (process.platform === 'win32' && !smoke) setTimeout(() => { void updater?.check(); }, 10000);
   if (smoke) {
     const { runSmoke } = require('./smoke.cjs');
     await runSmoke({ window, dataDir: app.getPath('userData'), outputDir: smoke, backendPid: backend.pid,
-      ffmpeg: app.isPackaged ? path.join(process.resourcesPath, 'backend', '_internal', 'bin', 'ffmpeg.exe') : 'ffmpeg' });
+      ffmpeg: app.isPackaged ? path.join(process.resourcesPath, 'backend', '_internal', 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg') : 'ffmpeg' });
     app.quit();
   }
 }

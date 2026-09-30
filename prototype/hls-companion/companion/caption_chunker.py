@@ -18,6 +18,7 @@ from typing import Literal
 from .languages import primary_subtag
 from .clause_boundaries import TERMINALS, SEPARATORS, caption_boundaries
 from .providers.base import CaptionCutReason, CaptionObservation, RecognitionToken
+from .subtitle_text import subtitle_match_key
 
 GuaranteeTier = Literal["strict", "best_effort"]
 
@@ -193,6 +194,8 @@ class _CaptionState:
     """
     last_chunk_ended_mid: bool | None = None
     emitted_chunks: int = 0
+    emitted_text: str = ""
+    """Source prefix already released from this Provider item/lane."""
     pending_reported: bool = False
     last_touched: float = 0.0
     """Monotonic time of the last unit routed into this lane."""
@@ -225,14 +228,33 @@ class CaptionChunker:
         self._local_agreement_rewrites = 0
         self._residual_flushes = 0
         self._final_reconciliation_conflicts = 0
+        self._translation_boundaries: dict[str, tuple[str, ...]] = {}
 
     def reset(self, generation: int) -> None:
         self.generation = generation
         self._items.clear()
         self._captions.clear()
+        self._translation_boundaries.clear()
         # Span samples belong to one generation's audio clock; the cumulative
         # chunk count is a session statistic and deliberately survives a reset.
         self._spans.clear()
+
+    def set_translation_boundaries(
+        self, item_id: str, anchors: tuple[tuple[str, str], ...]
+    ) -> None:
+        """Publish trusted cumulative source prefixes for hard-deadline cuts.
+
+        The chunker stays Provider-neutral: it only receives source prefixes the
+        adapter has already certified as correspondence boundaries. Translation
+        text is intentionally ignored here; NativeTranslationBus owns it.
+        """
+        if not self.segments_only or not item_id:
+            return
+        boundaries = tuple(source for source, translation in anchors if source and translation)
+        if boundaries:
+            self._translation_boundaries[str(item_id)] = boundaries[-64:]
+            while len(self._translation_boundaries) > 256:
+                self._translation_boundaries.pop(next(iter(self._translation_boundaries)), None)
 
     def open_item(self, item_id: str, begin_pcm: float | None) -> None:
         """Register a timed utterance before lexical evidence arrives.
@@ -440,17 +462,25 @@ class CaptionChunker:
         return ChunkerDecision(tuple(chunks))
 
     def _cut_over_budget(self, key: tuple[str, str | None], now: float) -> list[CaptionChunk]:
-        """Give up on a lane the Provider will not close, in pieces one can read.
+        """Release readable text when a lane outlives its waiting budget.
 
-        The wall-clock deadline decides *when* to stop waiting; it must not also
-        decide how much speech one caption carries. It used to, and on the four real
-        captures replayed 2026-09-22 that produced 11.1, 11.9 and 12.4 s captions,
-        because a stalled path delivers several seconds of evidence at once. Each
-        piece is therefore bounded in seconds of speech -- the same number, in the
-        unit the viewer reads against -- and a backlog drains in this one call
-        instead of one caption per deadline.
+        For native translation, a trusted Provider boundary is strictly better
+        than a local mechanical cut: emit only through that boundary and keep the
+        remainder open for the next native translation chunk. Without a trusted
+        boundary we retain the existing bounded backlog drain so a stalled
+        Provider can never hold arbitrarily old source text.
         """
         caption = self._captions[key]
+        if self.segments_only:
+            trusted = self._trusted_translation_boundary_index(caption)
+            if trusted is not None:
+                chunk = self._emit(caption, trusted, "hard_deadline")
+                if caption.units:
+                    caption.hard_deadline = now + HARD_DEADLINE_SECONDS
+                    caption.last_touched = now
+                else:
+                    del self._captions[key]
+                return [chunk]
         chunks = self._release(caption, "hard_deadline")
         del self._captions[key]
         return chunks
@@ -472,7 +502,9 @@ class CaptionChunker:
             return [self._emit(caption, len(caption.units) - 1, reason)]
         chunks = []
         while caption.units:
-            index = _budget_prefix(caption.units)
+            index = self._trusted_translation_boundary_index(caption) if reason == "hard_deadline" else None
+            if index is None:
+                index = _budget_prefix(caption.units)
             if index == 0 and len(caption.units) > 1:
                 # The budget broke on this piece's very first unit, so the only cut
                 # available is one word off a sentence -- and a unit standing alone
@@ -482,6 +514,29 @@ class CaptionChunker:
                 index = len(caption.units) - 1
             chunks.append(self._emit(caption, index, reason))
         return chunks
+
+    def _trusted_translation_boundary_index(self, caption: _CaptionState) -> int | None:
+        """Closest safe Provider prefix that fits inside the hard speech span."""
+        if not caption.units:
+            return None
+        item_ids = {unit.item_id for unit in caption.units if unit.item_id}
+        if len(item_ids) != 1:
+            return None
+        item_id = next(iter(item_ids))
+        boundaries = self._translation_boundaries.get(item_id)
+        if not boundaries:
+            return None
+        boundary_keys = {subtitle_match_key(source) for source in boundaries}
+        first_begin = next((unit.begin for unit in caption.units if unit.begin is not None), None)
+        best: int | None = None
+        for index in range(len(caption.units)):
+            end = caption.units[index].end
+            if first_begin is not None and end is not None and end - first_begin > HARD_DEADLINE_SECONDS + 1e-9:
+                break
+            candidate = f"{caption.emitted_text} {_join_units(caption.units[:index + 1])}".strip()
+            if subtitle_match_key(candidate) in boundary_keys:
+                best = index
+        return best
 
     def _close_caption(
         self,
@@ -810,8 +865,9 @@ class CaptionChunker:
             starts_mid = False
         else:
             starts_mid = None
+        emitted_text = _join_units(selected)
         chunk = CaptionChunk(
-            text=_join_units(selected),
+            text=emitted_text,
             begin_pcm=begin,
             end_pcm=end,
             language=_dominant(unit.language for unit in selected),
@@ -825,6 +881,7 @@ class CaptionChunker:
         )
         state.last_chunk_ended_mid = ends_mid
         state.emitted_chunks += 1
+        state.emitted_text = f"{state.emitted_text} {emitted_text}".strip()
         self._spans.append(span)
         self._caption_chunk_total += 1
         self._cut_reasons[reason] += 1

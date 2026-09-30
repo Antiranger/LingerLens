@@ -22,6 +22,13 @@ class PreviewPrefetchTests(unittest.TestCase):
         self.assertEqual(len(drafts),1)
         self.assertEqual((drafts[0]['text'],drafts[0]['tStart'],drafts[0]['tEnd']),('Upcoming speech',1010,1012))
         self.assertEqual(drafts[0]['itemId'],'future')
+    def test_prefetched_preview_carries_safe_native_translation_prefix(self):
+        p=self.pipeline()
+        p.native_translation_bus.record(item_id='future',source_text='Upcoming speech',translation='即将说话',
+            anchors=(('Upcoming speech','即将说话'),),anchors_trusted=True)
+        draft=p.caption_drafts()[0]
+        self.assertEqual(draft['translation'],'即将说话')
+        self.assertFalse(p.native_translation_bus._segments['future'].consumed)
     def test_untrusted_or_missing_anchor_never_fabricates_a_preview_time(self):
         p=self.pipeline();p.media_anchor=MediaAnchor()
         self.assertEqual(p.caption_drafts(),[])

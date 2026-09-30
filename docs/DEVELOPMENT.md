@@ -6,6 +6,8 @@ Windows development uses Python 3.11+, Node.js 22.12+, FFmpeg/ffprobe and Chrome
 
 ## Checks
 
+For native macOS builds, use the Python virtual environment and commands in [desktop/README.md](../desktop/README.md). Each architecture is built and verified on its own GitHub macOS runner; Windows executables cannot be reused in a Mac package.
+
 ```powershell
 npm ci --ignore-scripts
 npm run ci
@@ -24,3 +26,5 @@ Changes that affect cookies, provider protocols, data flow, packaging or command
 ## Browser verification
 
 The optional Playwright smoke starts a real local server and checks rendered controls, language switching, settings, fullscreen ownership and playback fixtures. Source inspection and an XML/HTML parse are not visual acceptance. Record the browser, viewport, stream fixture and limitations when a smoke is skipped.
+
+After packaging, `python scripts/desktop-smoke.py` starts the native application with a fresh profile and plays a generated video. It records a screenshot and acceptance JSON under `output/packaged-smoke-*/`; CI uploads these as smoke artifacts. This verifies bundled media playback without credentials or a real livestream.

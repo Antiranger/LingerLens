@@ -30,4 +30,7 @@ test("the update button re-localizes when the locale changes without a new updat
   english = true;
   h.call("renderUpdate", current, true);
   assert.equal(el("appUpdateButton").textContent, labels.currentEn);
+
+  h.call("renderUpdate", { ...current, update: { status: "unsupported" } });
+  assert.equal(el("appUpdateButton").hidden, true, "macOS must not offer the Windows installer updater");
 });

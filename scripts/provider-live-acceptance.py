@@ -48,19 +48,22 @@ async def probe(args):
             'fixtureSha256':hashlib.sha256(pcm).hexdigest(),'audioSeconds':len(pcm)/(rate*2),
             'measurement':'paced fixture to ASR events; not screen latency',
             'cloudAttempted':False,'completed':False,'errorCategory':None}
-    counts=Counter(); kinds=Counter(); lag=[]; first=None; spans={}; events=[]
+    counts=Counter(); kinds=Counter(); lag=[]; first=None; first_translation=None; translated_finals=0; trusted_anchor_events=0; spans={}; events=[]
     stream=None; reader=None; start=None
     try:
         report['cloudAttempted']=True
         stream=await asyncio.wait_for(provider.stream(policy=policy,sample_rate=rate,hotwords=[],context=[]),15)
         start=time.monotonic()
         async def consume():
-            nonlocal first
+            nonlocal first, first_translation, translated_finals, trusted_anchor_events
             async for event in stream:
                 at=time.monotonic()-start
                 if event.type=='error': raise RuntimeError('provider reported an error')
                 counts[event.type]+=1
                 if first is None and event.type in ('interim','final'): first=at
+                if first_translation is None and (event.translation or event.translation_stash): first_translation=at
+                if event.type=='final' and event.translation: translated_finals+=1
+                if event.translation_anchors_trusted and event.translation_anchors: trusted_anchor_events+=1
                 if event.type=='speech_stopped' and event.item_id:
                     spans[event.item_id]=event.end_pcm
                     while len(spans)>128: spans.pop(next(iter(spans)))
@@ -100,6 +103,8 @@ async def probe(args):
         if reader is not None:
             reader.cancel(); await asyncio.gather(reader,return_exceptions=True)
     report.update(eventCounts=dict(counts),observationKinds=dict(kinds),firstTranscriptSeconds=first,
+        firstTranslationSeconds=first_translation,translatedFinals=translated_finals,
+        trustedTranslationAnchorEvents=trusted_anchor_events,
         finalLagMs={'samples':len(lag),'p50':percentile(lag,.5),'p95':percentile(lag,.95)},
         wallSeconds=round(time.monotonic()-start,3) if start is not None else None)
     if args.events_output:

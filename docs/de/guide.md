@@ -1,10 +1,12 @@
 # LingerLens Benutzerhandbuch
 
-[Dokumentation](../README.md) · Stand 0.1.0 · Aktualisiert 2026-09-20
+[Dokumentation](../README.md) · Stand 0.1.0 · Aktualisiert 2026-09-29
 
 ## Start
 
-Das Desktopziel ist Windows x64. Der Installer enthält Electron, Python, FFmpeg/ffprobe, yt-dlp und das japanische Wörterbuch. Cloudkonten und lokaler Whisper werden separat eingerichtet. Prüfe Quelle und SHA-256; eine unsignierte Vorschau ist keine stabile signierte Version.
+Buildziele sind Windows x64 und macOS arm64/x64. Verfügbare Pakete stehen unter [Releases](https://github.com/Antiranger/LingerLens/releases). Windows: EXE ausführen. Mac: passendes DMG öffnen und die App in Programme ziehen. Vorschaupakete sind unsigniert, Mac-Pakete nicht notarisiert. Prüfe `SHA256SUMS.txt`.
+
+Electron, Python, FFmpeg/ffprobe, yt-dlp, Schriftarten und das japanische Wörterbuch sind enthalten. Cloudkonten, API-Kosten und optionale lokale Whisper-Server samt Modellen sind separat. Mac-Daten liegen unter `~/Library/Application Support/LingerLens`. Mac-Updates erfolgen über ein neues DMG; der integrierte Installer-Updater gilt nur für Windows.
 
 Für den Browsermodus brauchst du Python 3.11+, Node.js 22.12+, FFmpeg/ffprobe und Chrome oder Edge:
 

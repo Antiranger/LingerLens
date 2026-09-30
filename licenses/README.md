@@ -66,4 +66,4 @@ Points where the shipped artifact and the canonical upstream text do not agree. 
 
 Reported rather than silently patched, because fixing them means editing files outside `licenses/`:
 
-The earlier audit that generated this file described missing notices and the former GPL-enabled FFmpeg artifact. The current source tree has since added the missing names, native-library coverage and LGPL FFmpeg provenance; `npm run guard:licences:frozen` is the authoritative current check. The unresolved `elevate.exe` licence remains recorded in `THIRD_PARTY_NOTICES.md` and in `docs/RELEASING.md`.
+The earlier audit described missing notices and the former GPL-enabled FFmpeg artifact. The current source tree includes the missing names, native-library coverage and LGPL FFmpeg provenance. `npm run guard:licences:frozen` checks the current inventory. Per-user installers now disable `packElevateHelper` and do not redistribute `elevate.exe`.

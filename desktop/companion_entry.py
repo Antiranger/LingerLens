@@ -144,8 +144,15 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
     try:
         raise SystemExit(main())
-    except Exception:
+    except Exception as error:
         # Underlying provider exceptions can include secrets. The desktop shell
         # only needs a category; never forward raw exceptions into its UI/logs.
-        print('LingerLens backend failed to start or stop.', file=sys.stderr)
+        if '--check-dependencies' in sys.argv:
+            # Build-time inventory contains no provider requests or user profile.
+            print(f'Dependency check failed: {type(error).__name__}: {error}', file=sys.stderr)
+            if isinstance(error, subprocess.CalledProcessError):
+                detail = error.stderr or b''
+                print(detail.decode('utf-8', errors='replace') if isinstance(detail, bytes) else detail, file=sys.stderr)
+        else:
+            print('LingerLens backend failed to start or stop.', file=sys.stderr)
         raise SystemExit(1)

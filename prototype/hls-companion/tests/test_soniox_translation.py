@@ -258,9 +258,47 @@ class SonioxTranslationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final.text, "こんにちはさようなら")
         self.assertEqual(final.translation, "你好再见")
         self.assertEqual(
-            final.translation_anchors, (("こんにちは", "你好"),),
-            "the closing pair is the segment itself, which the final already carries",
+            final.translation_anchors,
+            (("こんにちは", "你好"), ("こんにちはさようなら", "你好再见")),
+            "the final boundary remains explicit alongside the earlier prefix anchor",
         )
+        self.assertTrue(final.translation_anchors_trusted)
+
+    async def test_same_frame_source_translation_source_order_settles_anchor(self) -> None:
+        """A unified Soniox frame may contain both chunks and the next source.
+
+        The old frame-level tracker only knew that both source and translation
+        advanced; it lost their order and therefore could not expose the safe
+        prefix boundary. The adapter must preserve the token-array order.
+        """
+        stream = await self.connected(self.provider(translationType="one_way"))
+        iterator = stream.__aiter__()
+        await self.server.send([
+            original("Hello ", 0, 400), original("world", 400, 800),
+            translated("你好世界"),
+            original(" again", 800, 1200),
+        ])
+        update = await self.next_event(iterator, "interim")
+        self.assertTrue(update.translation_anchors_trusted)
+        self.assertEqual(update.translation_anchors, (("Hello world", "你好世界"),))
+
+    async def test_translation_arriving_after_endpoint_keeps_previous_item_identity(self) -> None:
+        stream = await self.connected(self.provider(translationType="one_way"))
+        iterator = stream.__aiter__()
+        await self.server.send([original("hello", 0, 600)])
+        await self.next_event(iterator, "interim")
+        await self.server.send([original("<end>", 600, 600)])
+        final = await self.next_event(iterator, "final")
+        self.assertEqual((final.item_id, final.translation), ("1", ""))
+
+        await self.server.send([translated("你好")])
+        late = await self.next_event(iterator, "translation")
+        self.assertEqual((late.item_id, late.translation), ("1", "你好"))
+
+        await self.server.send([original("next", 600, 1000)])
+        following = await self.next_event(iterator, "interim")
+        self.assertEqual(following.item_id, "2")
+        self.assertEqual(following.translation, "")
 
     async def test_each_utterance_gets_only_its_own_translation(self) -> None:
         """The bucket resets at the endpoint, so a long session does not accumulate."""

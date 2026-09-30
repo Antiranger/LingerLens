@@ -156,6 +156,47 @@ class BusTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(bus._take('1','three four'))
         self.assertEqual(bus._take('1','one two three four'),'complete translation')
 
+    async def test_trusted_provider_anchor_resolves_a_partial_cue_and_remainder(self) -> None:
+        bus = NativeTranslationBus()
+        bus.record(
+            item_id="1",
+            source_text="one two three four",
+            translation="一二三四",
+            anchors=(("one two", "一二"),),
+            anchors_trusted=True,
+        )
+        self.assertEqual(
+            await bus.resolve(item_id="1", source_text="one two", deadline_monotonic=time.monotonic() + 0.1),
+            "一二",
+        )
+        bus.close_item(
+            "1", source_text="one two three four", translation="一二三四",
+            anchors=(("one two", "一二"),), anchors_trusted=True,
+        )
+        self.assertEqual(
+            await bus.resolve(item_id="1", source_text="three four", deadline_monotonic=None),
+            "三四",
+        )
+
+    async def test_preview_returns_only_trusted_heard_prefix_without_consuming(self) -> None:
+        bus = NativeTranslationBus()
+        bus.record(
+            item_id="preview", source_text="one two three four", translation="一二三四",
+            anchors=(("one two", "一二"), ("one two three", "一二三")),
+            anchors_trusted=True,
+        )
+        self.assertEqual(bus.preview(item_id="preview", source_text="one two three four"), "一二三")
+        self.assertEqual(bus.preview(item_id="preview", source_text="one two"), "一二")
+        self.assertIsNone(bus.preview(item_id="preview", source_text="one"), "never preview future source")
+        self.assertFalse(bus._segments["preview"].consumed, "preview must not consume the ledger")
+
+        untrusted = NativeTranslationBus()
+        untrusted.record(
+            item_id="preview", source_text="one two", translation="一二",
+            anchors=(("one two", "一二"),), anchors_trusted=False,
+        )
+        self.assertIsNone(untrusted.preview(item_id="preview", source_text="one two"))
+
     async def test_a_cut_the_provider_never_aligned_fails_fast_once_closed(self) -> None:
         """No anchor and not the whole segment: nothing can arrive later either."""
         bus = NativeTranslationBus()
@@ -363,8 +404,33 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             await self.stop(pipeline, worker)
         cues = list(pipeline.store._cues)
         self.assertEqual(len(cues), 1)
-        self.assertEqual(cues[0].state, "failed")
+        self.assertEqual(cues[0].state, "source_only")
         self.assertIsNone(cues[0].zh)
+
+    async def test_late_native_translation_repairs_a_source_only_cue(self) -> None:
+        bus = NativeTranslationBus()
+        pipeline, worker = await self.pipeline(bus)
+        try:
+            await pipeline._handle_asr_event(ASREvent(
+                "final", text="hello", item_id="late", translation="",
+                begin_pcm=0.0, end_pcm=1.0, language="en",
+                caption_observation=CaptionObservation(
+                    "utterance_final", pipeline._generation, "late",
+                    stable_text="hello", begin_pcm=0.0, end_pcm=1.0, language="en",
+                ),
+            ))
+            await asyncio.wait_for(pipeline._translation_queue.join(), 2)
+            cue = list(pipeline.store._cues)[0]
+            self.assertEqual((cue.state, cue.zh), ("source_only", None))
+
+            await pipeline._handle_asr_event(ASREvent(
+                "translation", item_id="late", translation="你好",
+            ))
+            cue = list(pipeline.store._cues)[0]
+            self.assertEqual((cue.state, cue.zh), ("done", "你好"))
+            self.assertEqual(pipeline.stats.native_translation_late_patches, 1)
+        finally:
+            await self.stop(pipeline, worker)
 
     async def test_the_session_backed_provider_replaces_the_configured_llm(self) -> None:
         """The point of the feature: no second model is called."""
@@ -460,6 +526,23 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             pipeline.caption_draft(),
             "the cue replaced the projection, so drawing both would double the line",
         )
+
+    async def test_caption_draft_includes_safe_native_translation_prefix(self) -> None:
+        bus = NativeTranslationBus()
+        pipeline, worker = await self.pipeline(bus)
+        pipeline._push_breadcrumbs.append((0.0, 0.0))
+        try:
+            await pipeline._handle_asr_event(self.held("hello world again", end=3.0))
+            bus.record(
+                item_id="1", source_text="hello world again", translation="你好世界",
+                anchors=(("hello world", "你好世界"),), anchors_trusted=True,
+            )
+            draft = pipeline.caption_draft()
+            self.assertEqual(draft["text"], "hello world again")
+            self.assertEqual(draft["translation"], "你好世界")
+            self.assertFalse(bus._segments["1"].consumed, "drawing a draft must not consume translation")
+        finally:
+            await self.stop(pipeline, worker)
 
     async def test_caption_draft_stops_where_the_viewer_has_heard(self) -> None:
         """The audio leg runs ahead of the playhead, so the held text does too."""

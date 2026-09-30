@@ -57,6 +57,8 @@
           "keepAliveSeconds": 5,
           "enableSpeakerDiarization": true,
           "translationType": "one_way",
+          "nativeTranslationFallback": true,
+          "nativeTranslationTimeoutSeconds": 15,
           "translationTerms": []
         }
       },

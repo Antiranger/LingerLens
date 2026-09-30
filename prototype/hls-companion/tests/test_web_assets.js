@@ -216,8 +216,8 @@ test("subtitle overlay is ready-gated, seq-polled, and wall-clock aligned", () =
   assert.match(js, /position > draft\.tEnd \+ SUBTITLE_DRAFT_STALE_SECONDS/);
   assert.match(js, /position < draft\.tStart/);
   assert.match(html, /id="subtitleDraft"[^>]+hidden/);
-  assert.match(html, /class="subtitle-content"><\/div>\s*<div id="subtitleDraft"/);
-  assert.match(css, /\.subtitle-draft\s*\{[^}]*var\(--font-jp\)/);
+  assert.match(html, /class="subtitle-content"><\/div>\s*<div id="subtitleDraft"[^>]*>\s*<div class="subtitle-zh"><\/div><div class="subtitle-src"><\/div>/);
+  assert.match(css, /\.subtitle-src\s*\{[^}]*var\(--font-jp\)/);
   assert.match(js, /return hash % 10/);
   assert.match(js, /row\.dataset\.speakerColor/);
   assert.match(js, /\/api\/target-delay/);

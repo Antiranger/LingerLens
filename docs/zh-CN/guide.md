@@ -1,10 +1,12 @@
 # LingerLens 使用指南
 
-[文档目录](../README.md) · 基线 0.1.0 · 更新日期 2026-09-20
+[文档目录](../README.md) · 基线 0.1.0 · 更新日期 2026-09-29
 
 ## 运行
 
-当前桌面目标是 Windows x64。安装包包含 Electron、Python、FFmpeg/ffprobe、yt-dlp 和日语词典；云账户与本地 Whisper 需另行配置。请核对安装包来源和 SHA-256；未签名预览包不等于稳定版。
+桌面构建支持 Windows x64、macOS arm64 和 x64。可下载的安装包见 [Releases](https://github.com/Antiranger/LingerLens/releases)：Windows 运行 EXE；Mac 按芯片选择 DMG，打开后拖入「应用程序」。预览包尚未签名，Mac 包尚未公证；请使用 `SHA256SUMS.txt` 核对下载文件。
+
+安装包包含 Electron、Python、FFmpeg/ffprobe、yt-dlp、字体和日语词典，无需额外安装开发工具。云服务账户、API 费用，以及可选本地 Whisper 服务和模型权重需自行准备。Mac 数据目录为 `~/Library/Application Support/LingerLens`。Mac 更新时下载新版 DMG 覆盖应用；内置安装更新器仅适用于 Windows。
 
 浏览器开发模式需要 Python 3.11+、Node.js 22.12+、FFmpeg/ffprobe、Chrome 或 Edge：
 

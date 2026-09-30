@@ -23,10 +23,9 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-/* Public release channel. The source repository is private; this one only ever
-   holds installers and this manifest. `latest/download` is a GitHub redirect to
+/* Release assets and their manifest live alongside the source repository. `latest/download` is a GitHub redirect to
    the newest release's asset, so the URL does not change per version. */
-const DEFAULT_MANIFEST_URL = "https://github.com/Antiranger/LingerLens-releases/releases/latest/download/manifest.json";
+const DEFAULT_MANIFEST_URL = "https://github.com/Antiranger/LingerLens/releases/latest/download/manifest.json";
 const MANIFEST_ENV = "LINGERLENS_UPDATE_URL";
 const REQUEST_TIMEOUT_MS = 20000;
 

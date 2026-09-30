@@ -66,9 +66,12 @@
     var maxLateSeconds = Number.isFinite(opts.maxLateSeconds) ? opts.maxLateSeconds : 2.0;
     var bridgeGap = Number.isFinite(opts.bridgeGap) ? opts.bridgeGap : 0.3;
     var maxTail = Number.isFinite(opts.maxTail) ? opts.maxTail : 1.5;
+    var lateTranslationPatchSeconds = Number.isFinite(opts.lateTranslationPatchSeconds)
+      ? opts.lateTranslationPatchSeconds : 3.0;
 
     var admissions = new Map(); // cue.id -> {from, until} | DROPPED
-    var stats = { lateCues: 0, droppedLateCues: 0, sourceOnlyCues: 0 };
+    var admissionVersions = new Map(); // cue.id -> {hasTranslation}
+    var stats = { lateCues: 0, droppedLateCues: 0, sourceOnlyCues: 0, lateTranslationRevives: 0 };
     var currentId = null;
     var shownSince = null;
 
@@ -82,24 +85,42 @@
 
     function admit(cue, t) {
       var admission = admissions.get(cue.id);
-      if (admission !== undefined) return admission;
-      if (!displayable(cue)) return undefined; // not ready yet; retry next tick
+      var translated = cue.state === "done" && typeof cue.zh === "string" && !!cue.zh.trim();
+      var version = admissionVersions.get(cue.id);
+      var translationUpgrade = !!version && !version.hasTranslation && translated;
       var windowEnd = cue.tEnd + Math.min(cue.hold, maxTail);
+
+      // A late translation revision is the one reason an old admission may be
+      // reconsidered. Keep the grace short: patch the sentence the viewer just
+      // read, never resurrect an old paragraph over newer speech.
+      if (admission !== undefined && translationUpgrade && t <= windowEnd + lateTranslationPatchSeconds) {
+        admissions.delete(cue.id);
+        admission = undefined;
+      }
+      if (admission !== undefined) {
+        admissionVersions.set(cue.id, { hasTranslation: translated });
+        return admission;
+      }
+      if (!displayable(cue)) return undefined; // not ready yet; retry next tick
       if (t <= windowEnd) {
         // Ready before the speaker reaches this sentence -> wait for tStart.
         // Ready part-way through it -> show immediately for the remainder.
         admission = { from: Math.max(t, startOf(cue)), until: windowEnd };
       } else {
         var late = t - windowEnd;
-        if (late <= maxLateSeconds) {
-          admission = { from: t, until: t + cue.hold, catchUp: true };
+        var lateLimit = translationUpgrade
+          ? Math.max(maxLateSeconds, lateTranslationPatchSeconds) : maxLateSeconds;
+        if (late <= lateLimit) {
+          admission = { from: t, until: t + cue.hold, catchUp: true, translationPatch: translationUpgrade };
           stats.lateCues += 1;
+          if (translationUpgrade) stats.lateTranslationRevives += 1;
         } else {
           admission = DROPPED;
           stats.droppedLateCues += 1;
         }
       }
       admissions.set(cue.id, admission);
+      admissionVersions.set(cue.id, { hasTranslation: translated });
       return admission;
     }
 
@@ -121,7 +142,10 @@
       var retained = new Set();
       for (var index = 0; index < cues.length; index += 1) retained.add(cues[index].id);
       for (var id of admissions.keys()) {
-        if (!retained.has(id)) admissions.delete(id);
+        if (!retained.has(id)) {
+          admissions.delete(id);
+          admissionVersions.delete(id);
+        }
       }
       if (currentId !== null && !retained.has(currentId)) {
         currentId = null;
@@ -260,6 +284,7 @@
 
     function retime() {
       admissions.clear();
+      admissionVersions.clear();
       currentId = null;
       shownSince = null;
     }
@@ -269,6 +294,7 @@
       stats.lateCues = 0;
       stats.droppedLateCues = 0;
       stats.sourceOnlyCues = 0;
+      stats.lateTranslationRevives = 0;
     }
 
     return {

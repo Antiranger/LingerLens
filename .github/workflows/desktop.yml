@@ -1,15 +1,38 @@
-name: Windows desktop build
+name: Desktop packages
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: windows-latest
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            python: .venv-desktop/Scripts/python.exe
+            backend: build-desktop/backend/lingerlens-backend/lingerlens-backend.exe
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+            python: .venv-desktop/bin/python
+            backend: build-desktop/backend/lingerlens-backend/lingerlens-backend
+          - os: macos-15
+            platform: macos
+            arch: arm64
+            python: .venv-desktop/bin/python
+            backend: build-desktop/backend/lingerlens-backend/lingerlens-backend
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -22,31 +45,57 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m venv .venv-desktop
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .venv-desktop/Scripts/python.exe -m pip install -r desktop/requirements-build.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "${{ matrix.python }}" -m pip install -r desktop/requirements-build.txt
           npm ci --ignore-scripts
-      - name: Verify source, documentation and offline regressions
+      - name: Verify source and desktop contracts
         run: |
-          $env:PATH = "$PWD/.venv-desktop/Scripts;$env:PATH"
-          npm run ci
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build runtime and test desktop contracts
+          npm run guard:release
+          npm run guard:tracked
+          npm run guard:licences
+          npm run check:docs
+          npm test
+      - name: Freeze Windows backend
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: "${{ matrix.python }} desktop/prepare_backend.py"
+      - name: Freeze macOS backend
+        if: runner.os == 'macOS'
+        run: "${{ matrix.python }} desktop/prepare_macos.py"
+      - name: Record native executable dependencies
+        if: runner.os == 'macOS'
         run: |
-          npm run desktop:backend
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run desktop:test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:LINGERLENS_TEST_BACKEND = "$PWD/build-desktop/backend/lingerlens-backend/lingerlens-backend.exe"
-          .venv-desktop/Scripts/python.exe -m unittest discover -s desktop/tests -p test_*.py
-      - name: Build unsigned installer without publishing
-        run: npm run desktop:dist
-      - name: Check the notices cover everything that was frozen in
+          file build-desktop/backend/lingerlens-backend/_internal/bin/*
+          otool -L build-desktop/backend/lingerlens-backend/_internal/bin/ffmpeg
+          build-desktop/backend/lingerlens-backend/lingerlens-backend --check-dependencies
+      - name: Verify bundled dependencies without system development tools
+        env:
+          LINGERLENS_TEST_BACKEND: ${{ github.workspace }}/${{ matrix.backend }}
         run: |
+          export PATH="$PWD/build-desktop/media/bin:$PATH"
+          "${{ matrix.python }}" -m unittest discover -s desktop/tests -p 'test_*.py'
           npm run guard:licences:frozen
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/upload-artifact@v6
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: npm run desktop:dist
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --config desktop/builder.cjs --mac --${{ matrix.arch }} --publish never
+      - name: Play synthetic video in the packaged application
+        run: "${{ matrix.python }} scripts/desktop-smoke.py"
+      - uses: actions/upload-artifact@v4
         with:
-          name: lingerlens-windows-x64-preview
-          path: release/*-setup.exe
+          name: LingerLens-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*-setup.exe
+            release/*.dmg
+            release/*.zip
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-${{ matrix.platform }}-${{ matrix.arch }}
+          path: output/packaged-smoke-*/
+          if-no-files-found: ignore
