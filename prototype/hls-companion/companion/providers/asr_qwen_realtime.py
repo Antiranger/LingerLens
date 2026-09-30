@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import uuid
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any, AsyncIterator
 
 import aiohttp
@@ -40,9 +41,28 @@ class QwenRealtimeASRProvider(ASRProvider):
         self.api_key = config.get("_apiKey", config.get("apiKey", ""))
         self.options = config.get("options", {})
         self.price_per_second_cny = config.get("pricePerSecondCny")
+        self._streaming_provider = None
+        url = urlsplit(self.base_url)
+        official = url.hostname in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"} or (
+            url.hostname is not None and url.hostname.endswith(".maas.aliyuncs.com")
+        )
+        if self.model in {"qwen-audio-3.0-asr-flash-streaming", "qwen-audio-3.1-asr-flash-streaming"}:
+            from .asr_dashscope_task import DashScopeTaskASRProvider
+            streaming_config = dict(config)
+            streaming_options = dict(self.options)
+            streaming_options.setdefault("maxSentenceSilence", self.options.get("turnDetection", {}).get("silenceDurationMs", 400))
+            streaming_options.setdefault("multiThresholdModeEnabled", True)
+            streaming_config["options"] = streaming_options
+            if official and url.path == "/api-ws/v1/realtime":
+                streaming_config["baseUrl"] = urlunsplit(url._replace(path="/api-ws/v1/inference"))
+            self._streaming_provider = DashScopeTaskASRProvider(streaming_config)
+        elif official and url.path == "/api-ws/v1/inference" and self.model.startswith("qwen3-asr-flash-realtime"):
+            self.base_url = urlunsplit(url._replace(path="/api-ws/v1/realtime"))
 
     @property
     def capabilities(self) -> ASRCapabilities:
+        if self._streaming_provider is not None:
+            return self._streaming_provider.capabilities
         return ASRCapabilities(
             True, True, True, True, False, False, False, _LANGUAGES, (16000,), True,
             language=ASRLanguageCapabilities(
@@ -56,6 +76,10 @@ class QwenRealtimeASRProvider(ASRProvider):
         )
 
     async def stream(self, *, policy: SourceLanguagePolicy, sample_rate: int, hotwords: list[str], context: list[str]) -> ASRStream:
+        if self._streaming_provider is not None:
+            return await self._streaming_provider.stream(
+                policy=policy, sample_rate=sample_rate, hotwords=hotwords, context=context,
+            )
         del hotwords, context
         if not self.api_key:
             raise ValueError(f"API key is not configured for provider {self.id}")

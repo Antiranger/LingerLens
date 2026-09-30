@@ -1,0 +1,98 @@
+{
+  "header": {
+    "event": "result-generated"
+  },
+  "payload": {
+    "output": {
+      "sentence": {
+        "sentence_id": 1,
+        "sentence_end": true,
+        "begin_time": 320,
+        "end_time": 8520,
+        "text": "Hello. This is a subtitle timing test. The second sentence should appear after the first sentence. ",
+        "words": [
+          {
+            "text": "Hello.",
+            "begin_time": 320,
+            "end_time": 720
+          },
+          {
+            "text": " This",
+            "begin_time": 1520,
+            "end_time": 1720
+          },
+          {
+            "text": " is",
+            "begin_time": 1720,
+            "end_time": 1920
+          },
+          {
+            "text": "a",
+            "begin_time": 2200,
+            "end_time": 2284
+          },
+          {
+            "text": " subtitle",
+            "begin_time": 2284,
+            "end_time": 3040
+          },
+          {
+            "text": " timing",
+            "begin_time": 3040,
+            "end_time": 3560
+          },
+          {
+            "text": " test.",
+            "begin_time": 3560,
+            "end_time": 4040
+          },
+          {
+            "text": " The",
+            "begin_time": 4760,
+            "end_time": 5080
+          },
+          {
+            "text": " second",
+            "begin_time": 5080,
+            "end_time": 5640
+          },
+          {
+            "text": " sentence",
+            "begin_time": 5640,
+            "end_time": 6040
+          },
+          {
+            "text": " should",
+            "begin_time": 6040,
+            "end_time": 6400
+          },
+          {
+            "text": " appear",
+            "begin_time": 6400,
+            "end_time": 6880
+          },
+          {
+            "text": " after",
+            "begin_time": 6880,
+            "end_time": 7200
+          },
+          {
+            "text": " the",
+            "begin_time": 7200,
+            "end_time": 7400
+          },
+          {
+            "text": " first",
+            "begin_time": 7400,
+            "end_time": 7960
+          },
+          {
+            "text": " sentence. ",
+            "begin_time": 7960,
+            "end_time": 8520
+          }
+        ]
+      }
+    }
+  }
+}

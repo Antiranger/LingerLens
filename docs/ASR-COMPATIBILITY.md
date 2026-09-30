@@ -1,6 +1,6 @@
 # ASR subtitle compatibility audit
 
-Audit date: 2026-09-30. This audit exercises the shipped adapters, `SubtitlePipeline`, `CaptionChunker`, translation workers and `CueStore`. It uses recorded-format protocol fixtures and a local HTTP service; it does not send audio to paid services or use personal credentials.
+Audit date: 2026-09-30. This audit exercises the shipped adapters, `SubtitlePipeline`, `CaptionChunker`, translation workers and `CueStore`. Most checks use recorded-format protocol fixtures and a local HTTP service. Qwen Audio 3.1 was additionally tested with a 9.09-second locally synthesized English sample against the real service; that narrow check does not certify other languages, regions or accounts. The committed fixture contains only synthetic speech and word times, without credentials.
 
 ## What seven seconds means
 
@@ -22,7 +22,8 @@ These are local integration results. A protocol appearing here does not certify 
 | Soniox, recognition | `soniox-realtime-transcribe` | Same token adapter, translation disabled | Same lexical timeline | Stable evidence can release without an endpoint |
 | 千问 / Qwen, bilingual | `dashscope-livetranslate-realtime` | Stable source prefix | Server speech-start/stop plus sent-audio frontier | Source can release; a cut is not automatically an aligned native translation |
 | 千问 / Qwen, recognition | `dashscope-qwen-realtime` | Stable source prefix; mutable stash excluded | Server speech boundaries | Stable evidence can release without an endpoint |
-| 阿里云 / Alibaba | `dashscope-task-asr` | Mutable sentence hypotheses; final sentence is authoritative | Sentence begin/end timestamps | Waits for final; seven seconds cannot certify a mutable hypothesis |
+| 千问 / Qwen Audio 3.1 | `dashscope-qwen-realtime` (streaming model) | Mutable hypotheses; confirmed words at finalization | Sentence and lexical word timestamps | Shared chunker uses confirmed word boundaries; mutable words remain uncommitted |
+| 阿里云 / Alibaba | `dashscope-task-asr` | Mutable sentence hypotheses; final sentence is authoritative | Sentence begin/end and confirmed word timestamps | Waits for final; seven seconds cannot certify a mutable hypothesis |
 | OpenAI, segments | `openai-audio-transcriptions` | Completed HTTP windows | Window offset plus returned segment ranges, or whole window | Audio windows are bounded before the request; service latency remains unbounded by the chunker |
 | OpenAI, realtime | `openai-realtime-transcription` | Mutable deltas; final is authoritative | Server speech boundaries; approximate fallback if absent | Waits for final when only mutable deltas exist |
 | Deepgram | `deepgram-streaming` | `is_final` token intervals; `speech_final` is a separate endpoint | Word timestamps | Stable intervals can release before the utterance endpoint |
@@ -46,7 +47,7 @@ Protocol names are short vendor names, with the existing bilingual/recognition g
 
 Every ASR protocol has a model selector populated from models handled by its adapter. Selecting a model fills the editable model ID. Custom models remain possible. Tencent selection also updates `engineModelType`, the option actually sent to its service. Changing the model does not overwrite the profile name, endpoint, credentials or unrelated options.
 
-Qwen's bilingual picker initially offers the existing 3.5 subtitle timing preset. The previous live investigations in this repository found cross-segment source timing with 3.8; 3.8 remains manually configurable with its existing warning. Model existence is not evidence of subtitle alignment quality. All five UI locales translate the selector and its guidance.
+Qwen's bilingual picker initially offers the existing 3.5 subtitle timing preset. Previous live investigations found cross-segment source timing with 3.8, so its existing experimental warning remains. This does not mean 3.8 cannot connect: a fresh 2026-09-30 test using the saved account and a locally synthesized English sample returned three English/Chinese captions through the actual adapter, native translation ledger, caption chunker and store. Their audio ranges were `0.00–0.50`, `1.24–3.936` and `4.568–8.40` seconds, without API errors. An older failure was the server's unsupported default `Chelsie` voice; the adapter already pins a working voice and text output. This short sample does not certify continuous Japanese speech, long native segments or precise timing across every language. All five UI locales translate the selector and its guidance.
 
 ## Verification
 
@@ -54,7 +55,7 @@ Qwen's bilingual picker initially offers the existing 3.5 subtitle timing preset
 - Stable evidence is replayed through Soniox, Qwen recognition, Qwen bilingual, Deepgram and AssemblyAI and released at the local deadline without a provider endpoint. Soniox tokenizer fixtures retain the final incomplete whitespace word rather than claiming it is ready.
 - Mutable hypotheses from eight adapter paths remain unpublished after the deadline. Recognition-only WebSocket paths also run through the actual translation worker and retain their cue ordering.
 - Existing native translation tests cover trusted/untrusted anchors, missing translations, delayed translation, source-only outcomes, fallback, whole-segment correspondence and generation isolation.
-- Full Python suite: 902 tests passed; three optional-dependency files skipped (`browser_metrics`, `browser_smoke`, `streamlink_ingest`). Player suite: 257 tests passed. Root suite: 52 tests passed.
+- Full Python suite: 913 tests passed; the optional `streamlink_ingest` file was skipped because Streamlink was unavailable. Both browser smoke files passed using installed Chrome. Player suite: 258 tests passed. Root suite: 52 tests passed.
 - An isolated source backend and Electron DOM check verifies Chinese protocol names, fresh Soniox fallback disabled, Tencent model/engine synchronization, Qwen 3.5 selection, and switching all five UI locales. It does not modify the installed application's user profile.
 
 ## Official references consulted
@@ -64,3 +65,11 @@ Qwen's bilingual picker initially offers the existing 3.5 subtitle timing preset
 - [Google model catalog](https://ai.google.dev/gemini-api/docs/models): `gemini-2.5-flash` is a text-capable model ID offered by the existing Google translation protocol. This audit does not measure its live translation latency.
 
 Live acceptance is still needed for the less-used providers with the intended account, language pair, region, real speech and sustained network conditions. These local checks establish integration behavior and make the limits explicit; they do not replace that acceptance.
+
+## Caption display and history repair
+
+Without speaker labels, newer recognition chunks replace older overlapping chunks in the same generation at their onset. Distinct speaker labels retain true overlaps; exact equal starts retain their independent rows. Browser regression checks verify that a long older row cannot push newer undiarized captions below the video while all three cues remain in history.
+
+Temporary translation timeouts, unavailable services and rate limits receive up to five background retries, delayed by 2, 5, 15, 30 and 60 seconds, with a fresh 30-second request budget per attempt (or the configured timeout when larger). Live translation workers continue independently. Successful repairs advance the original cue revision and polling sequence. Existing translations cannot be overwritten. Authentication/request failures, target-language changes, stopped playback and evicted history do not keep retrying obsolete work. Very late results enrich history; the renderer retains its stale-caption limits.
+
+Qwen 3.1 request fields and word timestamps follow [client events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events) and [server events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events). Selecting it under the Qwen connection uses task-ASR; the old Realtime transport still handles `qwen3-asr-flash-realtime`. Official endpoints switch between `/api-ws/v1/inference` and `/api-ws/v1/realtime`; custom gateway endpoints remain untouched.

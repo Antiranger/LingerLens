@@ -35,6 +35,10 @@ from .providers.base import (
     SourceLanguagePolicy,
     StreamMeta,
     ProviderRefusalError,
+    ProviderAuthError,
+    ProviderRequestError,
+    ProviderUnavailableError,
+    ProviderRateLimitError,
     TranslationProvider,
     TranslationRequest,
 )
@@ -232,6 +236,9 @@ class PipelineStats:
     translation_deadline_expired: int = 0
     translation_provider_failures: int = 0
     translation_attempts: int = 0
+    history_translation_attempts: int = 0
+    history_translation_repaired: int = 0
+    history_translation_exhausted: int = 0
     asr_reconnects: int = 0
     final_discarded: int = 0
     pcm_dropped: int = 0
@@ -415,6 +422,10 @@ class SubtitlePipeline:
         self.input_format: str | None = None
         self._pcm_queue: asyncio.Queue[tuple[bytes, float]] | None = None
         self._translation_queue: asyncio.Queue[Cue] = asyncio.Queue()
+        self._history_repairs: dict[int, tuple[Cue, str, int, float]] = {}
+        self._history_repair_wakeup = asyncio.Event()
+        self._history_repair_task: asyncio.Task[Any] | None = None
+        self._history_retry_delays = (2.0, 5.0, 15.0, 30.0, 60.0)
         self._translation_budgets: dict[int, TranslationBudget] = {}
         self._tasks: list[asyncio.Task[Any]] = []
         self._process: Any = None
@@ -1749,6 +1760,8 @@ class SubtitlePipeline:
             self._drop_translation_cue(cue)
 
         self._translation_budgets.clear()
+        self._history_repairs.clear()
+        self._history_repair_wakeup.set()
 
     def _track_translation_pressure(self) -> None:
         backlog = self._translation_backlog
@@ -1778,6 +1791,8 @@ class SubtitlePipeline:
             self._translation_queue.task_done()
             self._translation_budgets.pop(dropped.id, None)
             self._drop_translation_cue(dropped)
+
+            self._schedule_history_repair(dropped)
 
         # Preceding source text is available immediately; completed translations
         # enrich that snapshot. Neither requires a predecessor dependency.
@@ -1827,6 +1842,102 @@ class SubtitlePipeline:
                 )
                 self.stats.native_translation_late_patches += 1
 
+    @staticmethod
+    def _retryable_translation_error(exc: BaseException) -> bool:
+        seen: set[int] = set()
+        retryable = False
+        while exc is not None and id(exc) not in seen:
+            seen.add(id(exc))
+            if isinstance(exc, (ProviderAuthError, ProviderRequestError)):
+                return False
+            retryable |= str(exc).startswith("all translation providers are cooling down")
+            retryable |= isinstance(exc, (TimeoutError, OSError, ProviderUnavailableError,
+                                         ProviderRateLimitError, ProviderRefusalError))
+            exc = exc.__cause__
+        return retryable
+
+    def _schedule_history_repair(self, cue: Cue) -> None:
+        provider = self.translation_provider
+        if not self._running or provider is None or cue.zh or self.store.get(cue.id) is not cue:
+            return
+        # Session-native text is repaired by its evidence ledger, not by
+        # repeatedly waiting for a closed utterance with no cloud fallback.
+        if getattr(provider, "is_native_session", False) and getattr(provider, "fallback", None) is None:
+            return
+        for cue_id in list(self._history_repairs):
+            if self.store.get(cue_id) is None:
+                self._history_repairs.pop(cue_id, None)
+        self._history_repairs.setdefault(cue.id, (
+            cue, self.meta.target_lang, 0, self.monotonic() + self._history_retry_delays[0],
+        ))
+        self._history_repair_wakeup.set()
+        if self._history_repair_task is None or self._history_repair_task.done():
+            self._history_repair_task = asyncio.create_task(
+                self._history_translation_worker(), name="subtitle-history-translation",
+            )
+            self._tasks.append(self._history_repair_task)
+
+    async def _history_translation_worker(self) -> None:
+        """One bounded background lane; live workers never wait for retries."""
+        async with translation_session():
+            while self._running:
+                self._history_repair_wakeup.clear()
+                if not self._history_repairs:
+                    await self._history_repair_wakeup.wait()
+                    continue
+                cue, target, attempt, due = min(self._history_repairs.values(), key=lambda item: item[3])
+                delay = due - self.monotonic()
+                if delay > 0:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(self._history_repair_wakeup.wait(), delay)
+                    continue
+                self._history_repairs.pop(cue.id, None)
+                provider = self.translation_provider
+                if self.store.get(cue.id) is not cue or cue.zh or target != self.meta.target_lang or provider is None:
+                    continue
+                # A history call has a fresh, longer deadline: the display
+                # deadline already passed and must not cancel history repair.
+                timeout = max(30.0, self.translation_timeout_seconds)
+                try:
+                    request = TranslationRequest(
+                        source_text=cue.src,
+                        meta=dataclasses.replace(self.meta, source_lang=cue.lang),
+                        history=self.context.history(generation=cue.generation, before_order=cue.chunk_order,
+                            at_media_time=cue.t_end, include_untranslated=True)
+                            if provider.capabilities.rolling_context and cue.generation is not None and cue.chunk_order is not None else [],
+                        glossary=self.glossary if provider.capabilities.glossary else [],
+                        deadline_monotonic=self.monotonic() + timeout,
+                        generation=cue.generation, chunk_order=cue.chunk_order,
+                        starts_mid_sentence=cue.starts_mid_sentence, ends_mid_sentence=cue.ends_mid_sentence,
+                        item_id=self._cue_item_ids.get(cue.id),
+                    )
+                    self.stats.history_translation_attempts += 1
+                    result = await asyncio.wait_for(provider.translate(request), timeout)
+                    self._record_translation_usage(result.provider_id, result.usage)
+                    translated = (result.text or "").strip()
+                    if not translated:
+                        raise ProviderRefusalError("empty history translation")
+                    if not self._running or target != self.meta.target_lang or self.store.get(cue.id) is not cue:
+                        continue
+                    with contextlib.suppress(KeyError, ValueError):
+                        self.store.repair_translation(cue.id, translated, calculate_hold(
+                            cue.src, translated, minimum=self.hold_minimum,
+                            seconds_per_char=self.hold_seconds_per_char, maximum=self.hold_maximum,
+                        ))
+                        self.context.add(cue.src, translated, generation=cue.generation,
+                                         chunk_order=cue.chunk_order, media_t_end=cue.t_end)
+                        self.stats.history_translation_repaired += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    attempt += 1
+                    if self._retryable_translation_error(exc) and attempt < len(self._history_retry_delays):
+                        self._history_repairs[cue.id] = (
+                            cue, target, attempt, self.monotonic() + self._history_retry_delays[attempt],
+                        )
+                    else:
+                        self.stats.history_translation_exhausted += 1
+
     async def _translation_worker(self) -> None:
         async with translation_session():
             await self._translation_worker_loop()
@@ -1842,6 +1953,7 @@ class SubtitlePipeline:
             # request construction sat outside it, any exception there killed
             # the worker task outright and silently: cues then piled up in
             # "src" forever and no status field showed why.
+            request = None
             try:
                 backlog = self._translation_backlog
                 self._update_recovery(backlog)
@@ -1989,11 +2101,14 @@ class SubtitlePipeline:
                 if isinstance(exc, TranslationDeadlineExpired):
                     self.stats.translation_deadline_expired += 1
                     self._drop_translation_cue(cue)
+                    self._schedule_history_repair(cue)
                 else:
                     # A timeout raised by wait_for means the provider consumed
                     # its allotted call budget; it is not the queue's stale
                     # work path and should remain visible as a provider issue.
                     self._mark_translation_failed(cue, exc)
+                    if self._retryable_translation_error(exc) and (request is None or request.meta.target_lang == self.meta.target_lang):
+                        self._schedule_history_repair(cue)
             finally:
                 self._translation_budgets.pop(cue.id, None)
                 self._translation_queue.task_done()
@@ -2515,6 +2630,10 @@ class SubtitlePipeline:
             "translationDeadlineExpired": self.stats.translation_deadline_expired,
             "translationProviderFailures": self.stats.translation_provider_failures,
             "translationAttempts": self.stats.translation_attempts,
+            "historyTranslationPending": len(self._history_repairs),
+            "historyTranslationAttempts": self.stats.history_translation_attempts,
+            "historyTranslationRepaired": self.stats.history_translation_repaired,
+            "historyTranslationExhausted": self.stats.history_translation_exhausted,
             "translationWorkers": self.translation_workers,
             "translationWorkersAlive": sum(
                 1 for task in self._tasks

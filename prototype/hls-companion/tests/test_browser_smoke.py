@@ -386,6 +386,37 @@ async def run() -> None:
         }""")
         assert immediate_offset == {"before": 0, "after": 1, "label": "0.6s"}, immediate_offset
 
+        # Reproduce undiarized ASR spans that overlap after timing estimation:
+        # history has every cue, but stacking a long older row used to put the
+        # newer rows completely below the video clip rectangle.
+        undiarized = await page.evaluate("""() => {
+            const stage = document.querySelector('.player-stage');
+            const previousStyle = stage.getAttribute('style');
+            stage.style.height = '260px'; stage.style.width = '460px';
+            window.__lingerlensSetSubtitleTestWallTime(1_700_000_210);
+            const cues = window.__lingerlensSubtitleCues; cues.clear();
+            for (let i = 1; i <= 3; i++) cues.set(300 + i, {
+                id: 300 + i, seq: 300 + i, tStart: 1_700_000_200 + i * 2, tEnd: 1_700_000_220, hold: 1, state: 'done',
+                src: 'original ' + i, zh: ('sentence ' + i + ' ').repeat(i === 1 ? 45 : 3),
+                lang: 'en', speaker: null, generation: 1, chunkOrder: i,
+            });
+            window.__lingerlensRenderSubtitle(); window.__lingerlensRenderTimelines();
+            const bounds = stage.getBoundingClientRect();
+            const rows = [...document.querySelectorAll('#subtitleLayer .subtitle-cue-row')];
+            // History rows are virtualized; retained history is the cue map,
+            // not the number of DOM cards inside its current scroll viewport.
+            const result = {history: cues.size,
+                timelineVisible: document.querySelectorAll('#subtitlesTimelineList .timeline-row').length > 0,
+                ids: rows.map(row => row.dataset.cueId),
+                inside: rows.every(row => {const rect = row.getBoundingClientRect(); return rect.top >= bounds.top && rect.bottom <= bounds.bottom;})};
+            if (previousStyle === null) stage.removeAttribute('style');
+            else stage.setAttribute('style', previousStyle);
+            cues.clear(); window.__lingerlensSetSubtitleTestWallTime(1_700_000_001);
+            window.__lingerlensRenderSubtitle();
+            return result;
+        }""")
+        assert undiarized == {"history": 3, "timelineVisible": True, "ids": ["303"], "inside": True}, undiarized
+
         chat_title_box = await page.locator("#paneChat .pane-title").bounding_box()
         chat_controls_box = await page.locator("#paneChat .pane-controls").bounding_box()
         chat_head_box = await page.locator("#paneChat .pane-head").bounding_box()

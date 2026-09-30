@@ -37,10 +37,10 @@ Windows packages are unsigned. macOS packages are ad-hoc signed for integrity bu
 
 ## Verify a download
 
-Windows: `Get-FileHash .\LingerLens-0.1.3-windows-x64-setup.exe -Algorithm SHA256`.
+Windows: `Get-FileHash .\LingerLens-0.1.4-windows-x64-setup.exe -Algorithm SHA256`.
 
-Mac: `shasum -a 256 LingerLens-0.1.3-macos-arm64.dmg`.
+Mac: `shasum -a 256 LingerLens-0.1.4-macos-arm64.dmg`.
 
-Replace `0.1.3` and the architecture with the version and package you downloaded.
+Replace `0.1.4` and the architecture with the version and package you downloaded.
 
 Compare the result with the matching line in the release's `SHA256SUMS.txt`. Checksums detect changed downloads; they do not replace publisher signatures. Preserve corresponding source and build scripts for redistributed components.

@@ -1,6 +1,6 @@
 # LingerLens Benutzerhandbuch
 
-[Dokumentation](../README.md) · Stand 0.1.3 · Aktualisiert 2026-09-30
+[Dokumentation](../README.md) · Stand 0.1.4 · Aktualisiert 2026-09-30
 
 ## Start
 
@@ -28,6 +28,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 Unter Verbindungen und Schlüssel Modell-ID, Endpunkt und Authentifizierung eintragen. Erkennung und Übersetzung sind getrennt; Qwen LiveTranslate und Soniox können beides in einer Sitzung liefern. Übersetzungsprotokolle: OpenAI-kompatibel, Qwen-MT, Anthropic Messages, Google Gemini. Erkennung: DashScope, Soniox, Deepgram, OpenAI, AssemblyAI, Volcano Engine, ElevenLabs, Speechmatics, Tencent. Diese Protokollliste ist keine Garantie für jedes Konto, Modell oder jede Sprache.
 
 Die Protokollauswahl zeigt kurze Anbieternamen. Nach der ASR-Auswahl trägt die Modellauswahl eine unterstützte Modell-ID ein; eigene Gateway-IDs bleiben manuell editierbar. Bei Tencent wird auch die Engine aktualisiert. Neue Soniox-Profile benötigen keinen separaten Übersetzer. Aktivieren Sie den Übersetzungsfallback erst nach dessen Einrichtung. Die Sieben-Sekunden-Grenze veröffentlicht bestätigten Text; sie erzwingt keine Anbieterantwort und bestätigt keine veränderliche Hypothese. Zeit- und Übersetzungsgrenzen stehen im [ASR-Kompatibilitätsaudit](../ASR-COMPATIBILITY.md).
+
+Die Qwen-Erkennung empfiehlt `qwen-audio-3.1-asr-flash-streaming` und wählt das passende Streaming-Protokoll; ältere Realtime-Modelle bleiben verfügbar. Bei vorübergehenden Übersetzungsfehlern versucht ein separater Hintergrundprozess bis zu fünf Wiederholungen mit jeweils einer neuen Frist von 30 Sekunden. Späte Übersetzungen ergänzen den ursprünglichen Eintrag im behaltenen Verlauf, ohne aktuelle Untertitel zurückzusetzen. Authentifizierungs- und Anfragefehler werden nicht wiederholt. Stopp, Wechsel der Zielsprache und abgelaufener Verlauf verwerfen veraltete Ergänzungen.
 
 YouTube-, Bilibili- oder Twitch-HTTPS-URL einfügen, H.264/AVC und AAC bevorzugen und starten. Zielverzögerung: 11–60 Sekunden, Standard 15; die tatsächliche Latenz hängt zusätzlich von Stream und Netzwerk ab. Die Player-Vollbildtaste nimmt Untertitel mit. Öffentliche Streams zuerst ohne Cookies testen. Der Import akzeptiert unterstützte Header, Tabellen oder Netscape-Exporte; Bilibili-Anmeldung benötigt `SESSDATA`. Cookies umgehen weder DRM noch Bezahl-, Regions- oder Bot-Schutz.
 

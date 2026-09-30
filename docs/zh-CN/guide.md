@@ -1,6 +1,6 @@
 # LingerLens 使用指南
 
-[文档目录](../README.md) · 基线 0.1.3 · 更新日期 2026-09-30
+[文档目录](../README.md) · 基线 0.1.4 · 更新日期 2026-09-30
 
 ## 运行
 
@@ -28,6 +28,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 在「连接与密钥」中新建并选择配置，使用服务方准确的模型 ID、地址和鉴权。识别与翻译默认分开；启用服务原生双语时可由一个会话提供两者。翻译协议包括 OpenAI 兼容、Qwen-MT、Anthropic Messages、Google Gemini；识别适配器包括 DashScope、Soniox、Deepgram、OpenAI、AssemblyAI、火山引擎、ElevenLabs、Speechmatics 和腾讯。协议已实现不等于每个模型、语言、账户都验证通过。
 
 协议列表使用简短的平台名称。选择 ASR 协议后，可从模型下拉栏自动填写已适配的模型 ID，也可手动填写自定义服务的 ID；腾讯模型会同时更新实际调用的引擎。新建 Soniox 配置不要求另配翻译模型，配好后才可按需开启原生翻译补译。7 秒上限用于释放已确认的字幕文字，不能强迫服务返回结果，也不会把可变的临时文字当成最终字幕。时间轴与原生译文的限制见 [ASR 适配检查](../ASR-COMPATIBILITY.md)。
+
+千问识别推荐 `qwen-audio-3.1-asr-flash-streaming`，程序按模型选择对应的流式协议，也保留旧版 Realtime 模型。翻译遇到临时超时、网络故障或限流时，独立后台任务最多重试五次，每次有新的 30 秒请求期限；迟到的译文补回原来的字幕历史，不倒放当前字幕。错误凭据或无效请求不重复尝试；停止播放、切换目标语言或历史过期后，不再写回过时结果。
 
 本地 Whisper 兼容识别需要自行运行服务，常见地址为 `http://127.0.0.1:8000/v1`，程序会请求 `/audio/transcriptions`。是否支持自动检测、混合语言和具体字幕语言由所选服务决定；五种界面语言不代表每个识别服务都支持五种语言。费用缺数据时显示不可估算，不按零处理。
 

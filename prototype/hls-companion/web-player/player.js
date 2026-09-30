@@ -1666,8 +1666,8 @@
     "soniox-realtime": ["stt-rt-v5"],
     "soniox-realtime-transcribe": ["stt-rt-v5"],
     "dashscope-livetranslate-realtime": ["qwen3.5-livetranslate-flash-realtime"],
-    "dashscope-qwen-realtime": ["qwen3-asr-flash-realtime"],
-    "dashscope-task-asr": ["fun-asr-realtime-2026-02-28", "qwen-audio-3.0-asr-flash-streaming", "paraformer-realtime-v2"],
+    "dashscope-qwen-realtime": ["qwen-audio-3.1-asr-flash-streaming", "qwen3-asr-flash-realtime"],
+    "dashscope-task-asr": ["qwen-audio-3.1-asr-flash-streaming", "fun-asr-realtime-2026-02-28", "qwen-audio-3.0-asr-flash-streaming", "paraformer-realtime-v2"],
     "openai-audio-transcriptions": ["whisper-1"],
     "openai-realtime-transcription": ["gpt-live-transcribe", "gpt-transcribe"],
     "deepgram-streaming": ["nova-3"],
@@ -1715,7 +1715,7 @@
     // Saving a profile writes these numbers into providers.json, where they win
     // over the backend builtin -- so silenceDurationMs has to agree with config.py.
     "dashscope-livetranslate-realtime": { model: "qwen3.5-livetranslate-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000, workspaceId: "", voice: "Tina", audioOutput: false, silenceDurationMs: 800, sourceLanguage: "", nativeTranslationFallback: false, closeDrainTimeoutSeconds: 15 } },
-    "dashscope-qwen-realtime": { model: "qwen3-asr-flash-realtime", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", options: { sampleRate: 16000 } },
+    "dashscope-qwen-realtime": { model: "qwen-audio-3.1-asr-flash-streaming", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference", options: { sampleRate: 16000 } },
     "dashscope-task-asr": { model: "fun-asr-realtime-2026-02-28", baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference", options: { sampleRate: 16000, heartbeat: true } },
     // No `language` here. The adapter builds its request from the global
     // SourceLanguagePolicy (asr_openai_transcriptions.py:59), so a catalog key
