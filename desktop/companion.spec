@@ -24,7 +24,11 @@ datas = [(str(python_license), 'third-party/python'),
 datas += [(str(yt_dlp / name), 'vendor/yt-dlp') for name in yt_dlp_notices]
 suffix = '.exe' if sys.platform == 'win32' else ''
 binaries = [(str(media / 'bin' / (name + suffix)), 'bin') for name in ('ffmpeg', 'ffprobe')]
-binaries += [(str(yt_dlp / ('yt-dlp' + suffix)), 'vendor/yt-dlp')]
+if sys.platform == 'win32':
+    binaries += [(str(yt_dlp / ('yt-dlp' + suffix)), 'vendor/yt-dlp')]
+# macOS yt-dlp is a self-contained universal executable with an appended
+# archive. prepare_macos copies it after COLLECT so architecture processing
+# cannot discard its archive while thinning the executable.
 hiddenimports = []
 for package in ('fugashi', 'unidic_lite'):
     extra_data, extra_bins, extra_imports = collect_all(package)

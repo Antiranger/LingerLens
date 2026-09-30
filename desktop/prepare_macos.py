@@ -39,7 +39,7 @@ def main():
     # No autodetected Homebrew libraries: only macOS system frameworks may link.
     configure = ['./configure', '--disable-autodetect', '--disable-doc',
                  '--disable-debug', '--disable-x86asm', '--enable-securetransport',
-                 '--disable-ffplay', '--disable-shared', '--enable-static']
+                 '--disable-ffplay', '--disable-shared', '--enable-static', '--enable-videotoolbox']
     subprocess.run(configure, cwd=source, check=True)
     subprocess.run(['make', '-j', str(os.cpu_count() or 2)], cwd=source, check=True)
     media = BUILD / 'media'
@@ -59,6 +59,12 @@ def main():
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
                     '--distpath', str(BUILD / 'backend'), '--workpath', str(BUILD / 'pyinstaller'),
                     str(ROOT / 'desktop/companion.spec')], cwd=ROOT, check=True)
+    bundled = BUILD / 'backend/lingerlens-backend/_internal/vendor/yt-dlp/yt-dlp'
+    bundled.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target, bundled)
+    if sha256(bundled) != pins['yt-dlp-macos']['sha256']:
+        raise RuntimeError('Bundled yt-dlp checksum mismatch')
+    subprocess.run([str(bundled), '--version'], check=True)
 
 
 if __name__ == '__main__':

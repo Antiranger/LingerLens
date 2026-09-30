@@ -14,10 +14,10 @@ const execFile = promisify(require('node:child_process').execFile);
 async function h264Encoder(ffmpeg) {
   const { stdout } = await execFile(ffmpeg, ['-hide_banner', '-encoders'],
     { windowsHide: true, timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
-  for (const name of ['libx264', 'libopenh264']) {
+  for (const name of ['libx264', 'libopenh264', 'h264_videotoolbox']) {
     if (new RegExp(`\\b${name}\\b`).test(stdout)) return name;
   }
-  throw new Error(`The FFmpeg at ${ffmpeg} offers neither libx264 nor libopenh264, so the smoke stream cannot be encoded.`);
+  throw new Error(`The FFmpeg at ${ffmpeg} offers no supported H.264 encoder for the smoke fixture.`);
 }
 
 async function runSmoke({ window, dataDir, ffmpeg, outputDir, backendPid }) {
@@ -26,7 +26,8 @@ async function runSmoke({ window, dataDir, ffmpeg, outputDir, backendPid }) {
   const encoder = await h264Encoder(ffmpeg);
   await execFile(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
-    '-t', '3', '-c:v', encoder, '-pix_fmt', 'yuv420p', '-g', '24', '-c:a', 'aac',
+    '-t', '3', '-c:v', encoder, ...(encoder === 'h264_videotoolbox' ? ['-allow_sw', '1'] : []),
+    '-pix_fmt', 'yuv420p', '-g', '24', '-c:a', 'aac',
     '-f', 'hls', '-hls_time', '1', '-hls_segment_type', 'fmp4', '-hls_playlist_type', 'vod',
     '-hls_segment_filename', path.join(publicDir, 'smoke_%03d.m4s'), path.join(publicDir, 'smoke.m3u8')],
   { windowsHide: true, timeout: 20000, cwd: publicDir });

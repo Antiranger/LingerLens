@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -394,6 +395,7 @@ class YtDlpLiveIngest:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=False,
+            start_new_session=(os.name != "nt"),
         )
         if self._tree.owns_tree and not self._tree.adopt(process):
             try:
@@ -506,6 +508,15 @@ class YtDlpLiveIngest:
         #    grandchildren that own the stdout/stderr pipes. This is what makes
         #    the readers below return EOF instead of waiting out a timeout.
         self._tree.terminate()
+
+        if os.name != "nt":
+            # _spawn creates one owned session per leg. Kill descendants even
+            # when yt-dlp itself has exited but FFmpeg still holds its pipes.
+            for process in self.processes:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
         for process in self.processes:
             if process.poll() is None:

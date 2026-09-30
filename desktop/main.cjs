@@ -388,7 +388,9 @@ async function start() {
   // 只记录，不做判据：这个状态在启动初期还不稳定，见 watchGpuProcessHealth 的说明。
   const mode = gpuForcedOff ? 'software (requested)' : gpuAlreadyFellBack ? 'software (fallback)' : 'normal';
   console.log('[main] render path:', mode, JSON.stringify(app.getGPUFeatureStatus()));
-  Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(process.platform === 'darwin'
+    ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }])
+    : null);
   // The layout is a three-column desktop board with `body { min-width: 1080px }`
   // and its own 1240px breakpoint below which the live chat column is hidden.
   // The previous fixed 1440x920 came out at roughly 960 CSS px on a 150%-scaled
