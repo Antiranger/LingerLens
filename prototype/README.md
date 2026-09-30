@@ -1,10 +1,20 @@
-# PROTOTYPE — yt-dlp fixed-delay live player
+# Source layout and early playback experiment
 
-This is throwaway code for one question:
+This directory contains both the current application code and an earlier playback experiment:
+
+- `hls-companion/companion/`: the backend used by the desktop application.
+- `hls-companion/web-player/`: the current player interface.
+- `delayed_live_player.py`: an early command-line experiment using yt-dlp and ffplay.
+
+For the current application, start with the [project README](../README.md), [user guide](../docs/en/guide.md) or [development instructions](../docs/DEVELOPMENT.md). Desktop packaging is documented in [desktop/README.md](../desktop/README.md).
+
+## Early fixed-delay playback experiment
+
+The instructions below describe only `delayed_live_player.py`. It was built to explore one question:
 
 > Can a local player stay approximately 10 seconds behind a YouTube/Bilibili livestream without relying on the website player's DVR behavior?
 
-It deliberately does not include a browser extension, ASR, translation, subtitles, or a polished UI.
+This early experiment does not include ASR, translation or subtitles. Those features belong to the current application under `hls-companion/`.
 
 ## How it works
 
@@ -26,7 +36,7 @@ These executables must be on `PATH`:
 - `ffplay` and `ffmpeg`
 - Python 3.10+ for this prototype
 
-The current machine already has all four installed.
+Install these tools before running the experiment. The desktop application's installers provide their own bundled runtime dependencies.
 
 ## Run
 

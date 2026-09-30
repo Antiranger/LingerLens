@@ -37,8 +37,10 @@ Preview packages are unsigned and macOS packages are not notarized. Developer ID
 
 ## Verify a download
 
-Windows: `Get-FileHash .\LingerLens-0.1.0-windows-x64-setup.exe -Algorithm SHA256`.
+Windows: `Get-FileHash .\LingerLens-0.1.2-windows-x64-setup.exe -Algorithm SHA256`.
 
-Mac: `shasum -a 256 LingerLens-0.1.0-macos-arm64.dmg`.
+Mac: `shasum -a 256 LingerLens-0.1.2-macos-arm64.dmg`.
+
+Replace `0.1.2` and the architecture with the version and package you downloaded.
 
 Compare the result with the matching line in the release's `SHA256SUMS.txt`. Checksums detect changed downloads; they do not replace publisher signatures. Preserve corresponding source and build scripts for redistributed components.
