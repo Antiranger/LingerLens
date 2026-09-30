@@ -62,6 +62,12 @@ jobs:
       - name: Freeze macOS backend
         if: runner.os == 'macOS'
         run: "${{ matrix.python }} desktop/prepare_macos.py"
+      - name: Record native executable dependencies
+        if: runner.os == 'macOS'
+        run: |
+          file build-desktop/backend/lingerlens-backend/_internal/bin/*
+          otool -L build-desktop/backend/lingerlens-backend/_internal/bin/ffmpeg
+          build-desktop/backend/lingerlens-backend/lingerlens-backend --check-dependencies
       - name: Verify bundled dependencies without system development tools
         env:
           LINGERLENS_TEST_BACKEND: ${{ github.workspace }}/${{ matrix.backend }}
