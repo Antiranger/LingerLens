@@ -16,16 +16,21 @@ test('package audit rejects private configuration backups and browser cookies', 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingerlens-package-audit-'));
   try {
     const source = path.join(dir, 'source');
-    const resources = path.join(dir, 'resources');
-    fs.mkdirSync(source); fs.mkdirSync(resources);
+    fs.mkdirSync(source);
     fs.writeFileSync(path.join(source, 'package.json'), '{}');
-    await asar.createPackage(source, path.join(resources, 'app.asar'));
-    auditPackage(dir);
-    for (const name of ['providers.json.bak-test', 'auth-snapshot.json', 'Cookies', 'providers.example.json']) {
-      const file = path.join(resources, name);
-      fs.writeFileSync(file, '{}');
-      assert.throws(() => auditPackage(dir), /Unexpected packaged paths/);
-      fs.unlinkSync(file);
+    for (const platform of ['win32', 'darwin']) {
+      const fixture = path.join(dir, platform);
+      const resources = path.join(fixture, ...(platform === 'darwin'
+        ? ['LingerLens.app', 'Contents', 'Resources'] : ['resources']));
+      fs.mkdirSync(resources, { recursive: true });
+      await asar.createPackage(source, path.join(resources, 'app.asar'));
+      auditPackage(fixture, platform);
+      for (const name of ['providers.json.bak-test', 'auth-snapshot.json', 'Cookies', 'providers.example.json']) {
+        const file = path.join(resources, name);
+        fs.writeFileSync(file, '{}');
+        assert.throws(() => auditPackage(fixture, platform), /Unexpected packaged paths/);
+        fs.unlinkSync(file);
+      }
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
