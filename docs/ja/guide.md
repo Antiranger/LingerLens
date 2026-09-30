@@ -1,6 +1,6 @@
 # LingerLens 利用ガイド
 
-[文書一覧](../README.md) · 対象 0.1.2 · 更新日 2026-09-30
+[文書一覧](../README.md) · 対象 0.1.3 · 更新日 2026-09-30
 
 ## 起動
 
@@ -8,7 +8,7 @@ Windows の既定のインストール先は `%LOCALAPPDATA%/Programs/lingerlens
 
 初回起動時には設定済みモデル、API キー、インポート済み Cookie はありません。モデル設定で自分の接続を追加してください。更新や再インストールではこのコンピューターの既存データが保持されるため、開発環境で以前の設定が表示されても配布物に含まれるとは限りません。録画には新しい専用データディレクトリを使い、ユーザーデータやバックアップを配布物に含めないでください。
 
-ビルド対象は Windows x64 と macOS arm64/x64 です。[Releases](https://github.com/Antiranger/LingerLens/releases) の公開済みファイルから選んでください。Windows は EXE、Mac はチップに合う DMG を開き、アプリケーションにドラッグします。プレビュー版は未署名、Mac 版は未公証です。`SHA256SUMS.txt` で確認してください。
+ビルド対象は Windows x64 と macOS arm64/x64 です。[Releases](https://github.com/Antiranger/LingerLens/releases) の公開済みファイルから選んでください。Windows は EXE、Mac はチップに合う DMG を開き、アプリケーションにドラッグします。Windows 版は未署名です。Mac 版はアドホック署名済みですが、Apple Developer ID 署名と公証はありません。`SHA256SUMS.txt` で確認してください。
 
 Electron、Python、FFmpeg/ffprobe、yt-dlp、フォント、日本語辞書を同梱しています。クラウドのアカウント・API 料金と任意のローカル Whisper サーバー・モデルは別途必要です。Mac のデータは `~/Library/Application Support/LingerLens` に保存されます。Mac の更新は新しい DMG から行います。アプリ内インストーラー更新は Windows 専用です。
 

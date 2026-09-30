@@ -28,7 +28,7 @@ English interface: bilingual captions, delayed playback and live chat.
 | macOS · Apple Silicon | `LingerLens-<version>-macos-arm64.dmg` |
 | macOS · Intel | `LingerLens-<version>-macos-x64.dmg` |
 
-Only files attached to a published release are available downloads. Preview builds are unsigned; macOS builds are not notarized. On macOS, open the matching DMG and drag LingerLens to Applications. Compare the download with the release's `SHA256SUMS.txt`.
+Only files attached to a published release are available downloads. Windows builds are unsigned. macOS builds have an ad-hoc signature for integrity, but no Apple Developer ID signature or notarization. On macOS, open the matching DMG and drag LingerLens to Applications. Compare the download with the release's `SHA256SUMS.txt`.
 
 ## Why delay the video?
 

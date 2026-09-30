@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Fix invalid macOS bundle signatures by re-signing the modified application and nested executable code with an ad-hoc identity.
+- Verify strict recursive signature integrity in the app, extracted ZIP and mounted DMG on both native Mac architectures before uploading packages.
+- Clarify that ad-hoc signing does not replace Apple Developer ID signing or notarization.
+
 ## 0.1.2
 
 - Reduce overlapping caption intervals for ASR results without word timestamps by preserving each utterance's estimated start and advancing the finalized frontier.

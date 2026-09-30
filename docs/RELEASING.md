@@ -33,14 +33,14 @@ After a verified revision is merged to `main`, push its `v<version>` tag. **Prep
 
 See [native build instructions](../desktop/README.md). Test each architecture on a Mac: drag the app to Applications, launch without Python/Node/FFmpeg installed, configure providers, play video with sound and subtitles, toggle fullscreen, interrupt the network, sleep/resume and close the app. Install a new DMG to test replacement while preserving user data. Fixture tests do not prove real-provider quality, billing or platform access.
 
-Preview packages are unsigned and macOS packages are not notarized. Developer ID signing and Apple notarization require maintainer credentials and a separately tested configuration. Do not disable Gatekeeper globally. Mac updates use a new DMG; the in-app EXE installer updater is Windows-only.
+Windows packages are unsigned. macOS packages are ad-hoc signed for integrity but have no Developer ID signature or notarization. Run `scripts/verify-macos-signature.py` on each native build to check the app, extracted ZIP and mounted DMG with strict recursive codesign verification. Developer ID signing and Apple notarization require maintainer credentials and a separately tested configuration. Do not disable Gatekeeper globally. Mac updates use a new DMG; the in-app EXE installer updater is Windows-only.
 
 ## Verify a download
 
-Windows: `Get-FileHash .\LingerLens-0.1.2-windows-x64-setup.exe -Algorithm SHA256`.
+Windows: `Get-FileHash .\LingerLens-0.1.3-windows-x64-setup.exe -Algorithm SHA256`.
 
-Mac: `shasum -a 256 LingerLens-0.1.2-macos-arm64.dmg`.
+Mac: `shasum -a 256 LingerLens-0.1.3-macos-arm64.dmg`.
 
-Replace `0.1.2` and the architecture with the version and package you downloaded.
+Replace `0.1.3` and the architecture with the version and package you downloaded.
 
 Compare the result with the matching line in the release's `SHA256SUMS.txt`. Checksums detect changed downloads; they do not replace publisher signatures. Preserve corresponding source and build scripts for redistributed components.
