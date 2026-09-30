@@ -4,6 +4,8 @@
 
 ## Run
 
+The default Windows installation folder is `%LOCALAPPDATA%/Programs/lingerlens`; user data is stored separately in `%APPDATA%/LingerLens`. The published 0.1.0 installer uses one-click installation. Subsequent installers use a wizard with a folder selection page.
+
 Desktop build targets are Windows x64 and macOS arm64/x64. Download available packages from [Releases](https://github.com/Antiranger/LingerLens/releases). Windows uses an EXE installer; on Mac open the DMG for your chip and drag LingerLens to Applications. Preview packages are unsigned and macOS packages are not notarized. Verify the download against `SHA256SUMS.txt`.
 
 The installer includes Electron, Python, FFmpeg/ffprobe, yt-dlp, fonts and the Japanese dictionary. Cloud accounts, API charges and optional local Whisper servers/model weights are separate. No developer tools are needed. Mac data lives in `~/Library/Application Support/LingerLens`. Mac updates are installed by downloading a new DMG; the in-app installer updater is Windows-only.

@@ -4,6 +4,8 @@
 
 ## Start
 
+Der Windows-Installationsordner ist standardmäßig `%LOCALAPPDATA%/Programs/lingerlens`; Benutzerdaten liegen separat unter `%APPDATA%/LingerLens`. Der veröffentlichte Installer 0.1.0 installiert per Klick. Künftige Installer verwenden einen Assistenten mit Ordnerauswahl.
+
 Buildziele sind Windows x64 und macOS arm64/x64. Verfügbare Pakete stehen unter [Releases](https://github.com/Antiranger/LingerLens/releases). Windows: EXE ausführen. Mac: passendes DMG öffnen und die App in Programme ziehen. Vorschaupakete sind unsigniert, Mac-Pakete nicht notarisiert. Prüfe `SHA256SUMS.txt`.
 
 Electron, Python, FFmpeg/ffprobe, yt-dlp, Schriftarten und das japanische Wörterbuch sind enthalten. Cloudkonten, API-Kosten und optionale lokale Whisper-Server samt Modellen sind separat. Mac-Daten liegen unter `~/Library/Application Support/LingerLens`. Mac-Updates erfolgen über ein neues DMG; der integrierte Installer-Updater gilt nur für Windows.

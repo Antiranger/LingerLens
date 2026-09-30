@@ -4,6 +4,8 @@
 
 ## 起動
 
+Windows の既定のインストール先は `%LOCALAPPDATA%/Programs/lingerlens`、ユーザーデータは別の `%APPDATA%/LingerLens` に保存されます。公開済みの 0.1.0 はワンクリック方式です。次のインストーラーから保存先を選べるウィザードに変更します。
+
 ビルド対象は Windows x64 と macOS arm64/x64 です。[Releases](https://github.com/Antiranger/LingerLens/releases) の公開済みファイルから選んでください。Windows は EXE、Mac はチップに合う DMG を開き、アプリケーションにドラッグします。プレビュー版は未署名、Mac 版は未公証です。`SHA256SUMS.txt` で確認してください。
 
 Electron、Python、FFmpeg/ffprobe、yt-dlp、フォント、日本語辞書を同梱しています。クラウドのアカウント・API 料金と任意のローカル Whisper サーバー・モデルは別途必要です。Mac のデータは `~/Library/Application Support/LingerLens` に保存されます。Mac の更新は新しい DMG から行います。アプリ内インストーラー更新は Windows 専用です。
