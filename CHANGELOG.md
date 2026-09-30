@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — preview
 
 - Use the purple LL mark for application, installer and shortcut icons.
 - Add native macOS Intel and Apple Silicon packaging alongside Windows x64.
@@ -18,10 +18,8 @@
 - Cookie import: marked as optional, with an explanation of cookies and `cookies.txt`, a step-by-step guide using the open-source Get cookies.txt LOCALLY extension, and automatic Netscape-format detection on paste.
 - Model settings: the saved-configuration panel is a readable summary instead of raw JSON (raw data stays available for troubleshooting); internal release-gate labels such as "experimental" and "awaiting acceptance" no longer appear in provider lists.
 
-## 0.1.0 — preview
-
-- Windows-first Electron desktop entry with bundled Python backend, FFmpeg/ffprobe, yt-dlp and language data.
+- Electron desktop packages for Windows x64, macOS Intel x64 and Apple Silicon arm64, with bundled Python backend, FFmpeg/ffprobe, yt-dlp and language data.
 - Delayed YouTube, Bilibili and Twitch playback with HLS, ASR, translated captions, speaker-aware caption rows and optional live chat.
 - Five interface locales: Simplified Chinese, English, Japanese, German and Russian.
 - Provider profiles, native bilingual recognition routes, usage/cost telemetry, local diagnostics and verified-manifest update checks.
-- This is a pre-release. Real-provider coverage, stream stability, code signing, updater publishing, macOS and Android remain separately gated.
+- Preview packages are unsigned and macOS packages are not notarized. Real-provider coverage and stream stability depend on the stream, account and service; optional local Whisper services and model weights are not bundled.
