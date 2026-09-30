@@ -1,6 +1,6 @@
 # Contributing to LingerLens
 
-This repository is Windows-first and currently developed as a local prototype. Keep changes narrow, test observable behavior, and do not add credentials or captured media.
+LingerLens ships desktop packages for Windows x64 and macOS Intel/Apple Silicon. The browser-mode development bootstrap uses Windows PowerShell. Keep changes narrow, test observable behavior, and do not add credentials or captured media.
 
 ## Setup
 

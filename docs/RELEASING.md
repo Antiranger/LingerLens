@@ -25,7 +25,7 @@ Test a clean Windows install, first launch, upgrade from the previous version, u
 
 ## GitHub workflow
 
-The manually dispatched **Desktop packages** workflow builds all three platforms without publishing. It verifies the frozen backend with development tools removed from PATH, including FFmpeg, ffprobe, yt-dlp, provider imports and Japanese tokenization. An after-pack audit rejects private runtime paths and unexpected application files.
+The manually dispatched **Desktop packages** workflow builds all three platforms without publishing. It verifies the frozen backend with development tools removed from PATH, including FFmpeg, ffprobe, yt-dlp, provider imports and Japanese tokenization. An after-pack audit rejects private runtime paths and unexpected application files. The packaged application then starts with a fresh profile and plays synthetic video; screenshots and acceptance results are uploaded as smoke artifacts. These checks do not replace manual installation or real-provider acceptance.
 
 After a verified revision is merged to `main`, push its `v<version>` tag. **Prepare desktop release** checks that the tag matches `package.json`, waits for all three packages and creates a draft containing the Windows EXE, both Mac DMGs and ZIPs, `SHA256SUMS.txt`, and the Windows updater's `manifest.json`. Review the assets and [.github/RELEASE_NOTES.md](../.github/RELEASE_NOTES.md) before publishing. A failed platform must not be described as supported by that release.
 
