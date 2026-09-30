@@ -8,6 +8,7 @@
 - New Soniox profiles do not require a separate translation model unless native-translation fallback is enabled.
 - Rewrite the five README introductions around subtitle flickering / revision churn and delayed playback, with Chinese screenshots/GIF for Simplified Chinese and English media for the other four languages.
 - Publish a public GitHub release channel with verified Windows update metadata; retain user data during upgrades and keep fresh packages free of personal configuration.
+- Use Electron's network stack for update requests so system proxy settings apply to GitHub release checks and downloads.
 
 ## 0.1.1 — preview
 

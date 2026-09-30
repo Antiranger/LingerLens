@@ -439,7 +439,9 @@ async function start() {
     onExit: () => { if (endpoint && !quitting) void fail(); } });
   endpoint = await backend.ready;
   if (quitting) return;
-  updater = createUpdater({ currentVersion: app.getVersion() });
+  // Use Chromium's network stack so release downloads follow the desktop's
+  // system proxy, just like the player's other desktop requests.
+  updater = createUpdater({ currentVersion: app.getVersion(), fetch: net.fetch.bind(net) });
   // Stable origin preserves localStorage even though the private backend port
   // changes. HLS stays streaming HTTP internally; no renderer Node privileges.
   protocol.handle('lingerlens', async request => {

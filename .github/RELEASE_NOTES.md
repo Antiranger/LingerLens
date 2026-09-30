@@ -18,6 +18,8 @@ Deutsch and Русский interfaces and documentation.
 - Allow new Soniox native bilingual profiles without a separate translation model.
 - Rewrite all five README introductions around subtitle flickering and delayed
   playback, with localized screenshots and animated demos.
+- Use the desktop network stack for update checks and downloads, including the
+  operating system's proxy settings.
 
 The Windows installer lets you choose the installation folder. A fresh desktop
 profile has no configured models, API keys or imported cookies. Add your own
