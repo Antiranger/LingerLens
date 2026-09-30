@@ -1,6 +1,6 @@
 # LingerLens user guide
 
-[Documentation index](../README.md) · Baseline 0.1.0 · Updated 2026-09-29
+[Documentation index](../README.md) · Baseline 0.1.2 · Updated 2026-09-30
 
 ## Run
 
@@ -26,6 +26,8 @@ Open `http://127.0.0.1:8765/`. Add `-CheckOnly` to bootstrap for checks without 
 ## Configure providers
 
 In **Connections & keys**, add a profile, save it and select it. Use the provider's exact model ID, endpoint and authentication. Recognition and translation are separate unless provider-native bilingual mode is enabled. Implemented translation protocols include OpenAI-compatible Chat Completions, Qwen-MT, Anthropic Messages and Google Gemini. Recognition adapters include DashScope, Soniox, Deepgram, OpenAI, AssemblyAI, Volcano Engine, ElevenLabs, Speechmatics and Tencent. This list describes protocol support, not real-account success for every model or language.
+
+The protocol selector uses short vendor names. After selecting an ASR protocol, use the model dropdown to fill a supported model ID, or edit the ID manually for your own gateway. Tencent model selection also updates its engine. New Soniox profiles work without a separate translator; enable native translation fallback only after configuring one. The seven-second limit releases confirmed caption evidence, not mutable hypotheses or a result the service has not returned. See the [ASR compatibility audit](../ASR-COMPATIBILITY.md) for timing and native-translation limitations.
 
 Local Whisper-compatible recognition requires a service that you operate. A common base URL is `http://127.0.0.1:8000/v1`; the adapter sends `/audio/transcriptions`. A blank key works only when that service allows it. ASR language detection, code switching and target-language coverage are provider-specific; the five UI locales do not imply five-language recognition for every provider. Costs are estimates only and unavailable data is not zero.
 

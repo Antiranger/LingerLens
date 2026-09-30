@@ -1627,24 +1627,24 @@
       [
         "bilingual",
         [
-          ["soniox-realtime", "⭐ Soniox Realtime STT（端到端双语）"],
-          ["dashscope-livetranslate-realtime", "DashScope Qwen LiveTranslate（端到端双语）"],
+          ["soniox-realtime", "⭐ Soniox"],
+          ["dashscope-livetranslate-realtime", "千问"],
         ],
       ],
       [
         "recognition",
         [
-          ["dashscope-qwen-realtime", "DashScope Qwen Realtime"],
-          ["soniox-realtime-transcribe", "Soniox Realtime STT（只做识别）"],
-          ["dashscope-task-asr", "DashScope Task ASR"],
-          ["openai-audio-transcriptions", "OpenAI Audio Transcriptions"],
-          ["deepgram-streaming", "Deepgram Streaming"],
-          ["openai-realtime-transcription", "OpenAI Realtime Transcription"],
-          ["assemblyai-streaming", "AssemblyAI Streaming v3"],
-          ["volcengine-sauc", "火山引擎豆包大模型流式 ASR (v3 sauc)"],
-          ["elevenlabs-scribe-realtime", "ElevenLabs Scribe v2 Realtime"],
-          ["speechmatics-realtime", "Speechmatics Realtime v2"],
-          ["tencent-asr", "腾讯云实时语音识别"],
+          ["dashscope-qwen-realtime", "千问"],
+          ["soniox-realtime-transcribe", "Soniox"],
+          ["dashscope-task-asr", "阿里云"],
+          ["openai-audio-transcriptions", "OpenAI（分段）"],
+          ["deepgram-streaming", "Deepgram"],
+          ["openai-realtime-transcription", "OpenAI（实时）"],
+          ["assemblyai-streaming", "AssemblyAI"],
+          ["volcengine-sauc", "豆包"],
+          ["elevenlabs-scribe-realtime", "ElevenLabs"],
+          ["speechmatics-realtime", "Speechmatics"],
+          ["tencent-asr", "腾讯"],
         ],
       ],
     ],
@@ -1652,13 +1652,48 @@
       [
         null,
         [
-          ["openai-compatible", "OpenAI Compatible"],
-          ["anthropic-messages", "Anthropic Messages (Claude)"],
-          ["google-genai", "Google Gemini (GenerateContent)"],
+          ["openai-compatible", "OpenAI 兼容"],
+          ["anthropic-messages", "Claude"],
+          ["google-genai", "谷歌"],
         ],
       ],
     ],
   };
+
+  // Curated for the adapters we ship, not a list of every vendor model.
+  // Empty selections always leave the editable model ID available for gateways.
+  const providerModels = {
+    "soniox-realtime": ["stt-rt-v5"],
+    "soniox-realtime-transcribe": ["stt-rt-v5"],
+    "dashscope-livetranslate-realtime": ["qwen3.5-livetranslate-flash-realtime"],
+    "dashscope-qwen-realtime": ["qwen3-asr-flash-realtime"],
+    "dashscope-task-asr": ["fun-asr-realtime-2026-02-28", "qwen-audio-3.0-asr-flash-streaming", "paraformer-realtime-v2"],
+    "openai-audio-transcriptions": ["whisper-1"],
+    "openai-realtime-transcription": ["gpt-live-transcribe", "gpt-transcribe"],
+    "deepgram-streaming": ["nova-3"],
+    "assemblyai-streaming": ["universal-3-5-pro"],
+    "volcengine-sauc": ["bigmodel_async"],
+    "elevenlabs-scribe-realtime": ["scribe_v2_realtime"],
+    "speechmatics-realtime": ["enhanced", "standard"],
+    "tencent-asr": ["16k_zh_en_speaker_2.0", "16k_zh", "16k_en", "16k_ja"],
+    "google-genai": ["gemini-2.5-flash"],
+  };
+
+  function providerModelChoices(provider) {
+    const models = providerModels[provider.kind] || [];
+    if (!models.length) return "";
+    const options = models.map((model) => `<option value="${escapeHtml(model)}"${provider.model === model ? " selected" : ""}>${escapeHtml(model)}</option>`).join("");
+    return `<select data-model-preset aria-label="${escapeHtml(updateLabel("dlg.model.chooseModel", "选择推荐模型"))}"><option value=""${models.includes(provider.model) ? "" : " selected"}>${escapeHtml(updateLabel("dlg.model.customModel", "自定义模型"))}</option>${options}</select><small>${escapeHtml(updateLabel("dlg.model.modelChoiceHint", "选择后自动填写模型 ID，也可以在下方手动修改。可用模型与语言取决于你的服务账号。"))}</small>`;
+  }
+
+  function applyProviderModel(provider, model) {
+    if (!(providerModels[provider.kind] || []).includes(model)) return;
+    provider.model = model;
+    if (provider.kind === "tencent-asr") {
+      provider.options ||= {};
+      provider.options.engineModelType = model;
+    }
+  }
 
   // The group headings carry the recommendation, not just decoration: an
   // untested protocol listed right next to a working one reads as an equal
@@ -1689,7 +1724,9 @@
     // carries one loads, round-trips and is ignored, as before.
     "openai-audio-transcriptions": { model: "", baseUrl: "https://api.openai.com/v1", options: { windowSeconds: 3, requestTimeoutSeconds: 20 } },
     "deepgram-streaming": { model: "nova-3", baseUrl: "wss://api.deepgram.com/v1/listen", options: { interimResults: true, smartFormat: true, endpointingMs: 100, vadEvents: true, utteranceEndMs: 1000, keepAliveSeconds: 8 } },
-    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3, translationType: "one_way", nativeTranslationFallback: true, nativeTranslationTimeoutSeconds: 15 } },
+    // A fresh profile has no separate translator yet. Fallback is opt-in once
+    // the user configures one; enabling it here makes the first session fail.
+    "soniox-realtime": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3, translationType: "one_way", nativeTranslationFallback: false, nativeTranslationTimeoutSeconds: 15 } },
     "soniox-realtime-transcribe": { model: "stt-rt-v5", baseUrl: "wss://stt-rt.soniox.com/transcribe-websocket", options: { enableEndpointDetection: true, enableLanguageIdentification: true, enableSpeakerDiarization: true, maxEndpointDelayMs: 700, endpointSensitivity: 0.3 } },
     "openai-realtime-transcription": { model: "gpt-live-transcribe", baseUrl: "wss://api.openai.com/v1/realtime", options: { delay: "low" } },
     "assemblyai-streaming": { model: "universal-3-5-pro", baseUrl: "wss://streaming.assemblyai.com/v3/ws", options: { mode: "balanced", continuousPartials: true, speakerLabels: true, maxSpeakers: 6 } },
@@ -1899,7 +1936,7 @@
         <div class="provider-fields">
           <label><span>${updateLabel("field.name", "名称")}</span><input data-field="label" value="${escapeHtml(provider.label || "")}" required></label>
           <label><span>${updateLabel("field.protocol", "协议")}</span><select data-field="kind">${kinds}</select></label>
-          <label><span>${updateLabel("field.model", "模型")}</span><input data-field="model" value="${escapeHtml(provider.model || "")}" placeholder="${updateLabel("ph.modelId", "填写厂商模型 ID")}" required></label>
+          <label><span>${updateLabel("field.model", "模型")}</span>${providerModelChoices(provider)}<input data-field="model" value="${escapeHtml(provider.model || "")}" placeholder="${updateLabel("ph.modelId", "填写厂商模型 ID")}" required></label>
           <label><span>Base URL</span><input data-field="baseUrl" value="${escapeHtml(provider.baseUrl || "")}" required></label>
           <label class="wide"><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(provider.apiKey || "")}" autocomplete="off"><small>${updateLabel("dlg.model.keyLocal", "凭据保存在本机。")}</small>${section === "asr" ? providerLinksHtml(provider.kind) : ""}<button type="button" class="secondary compact" data-action="reveal">${updateLabel("action.showKey", "显示 Key")}</button></label>
           <details class="wide"><summary>${updateLabel("dlg.model.advanced", "价格与高级设置")}</summary><div class="provider-fields">${section === "asr" ? asrPricingFields(provider) : translationPricingFields(provider)}
@@ -2045,6 +2082,16 @@
     const section = card.closest("#asrProfiles") ? "asr" : "translation";
     const provider = providerCatalog[section].providers.find((item) => item.id === card.dataset.providerId);
     if (!provider) return;
+    if (event.target.hasAttribute?.("data-model-preset")) {
+      if (event.type !== "change") return;
+      if (event.target.value) {
+        applyProviderModel(provider, event.target.value);
+        renderProviderProfiles();
+      } else {
+        card.querySelector('[data-field="model"]').focus();
+      }
+      return;
+    }
     const field = event.target.dataset.field;
     const option = event.target.dataset.option;
     if (field) {

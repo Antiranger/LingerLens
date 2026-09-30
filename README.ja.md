@@ -1,14 +1,22 @@
 <p align="center"><img src="desktop/assets/icon.png" width="96" alt="LingerLens"></p>
 <h1 align="center">LingerLens</h1>
-<p align="center"><strong>ライブを、字幕と一緒に。</strong></p>
+<p align="center"><strong>約15秒の遅延で、より安定した、文脈のある読みやすい翻訳字幕を。</strong></p>
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
 
-字幕が追いつく時間をつくるライブプレーヤーです。**YouTube Live、Bilibili Live、Twitch** の映像をローカルで遅延再生し、音声認識、翻訳字幕、ライブチャットを組み合わせます。
+LingerLens は **YouTube、Bilibili、Twitch に対応した二言語ライブプレーヤー**です。音声翻訳、ライブチャットの翻訳、翻訳したコメントの弾幕表示で、外国語の配信を追いやすくします。
 
-**Windows・macOS 向けプレビュー版 · アプリのコードは MIT ライセンス · API の認証情報は各自で用意。** 再生可否や対応言語は配信元とサービスに依存します。
+リアルタイム翻訳は字幕を早く表示する一方、話し終わる前の不完全な文から認識・翻訳結果を出します。続きの音声が届くたびに字幕が追加・修正され、ときには文全体が書き換わります。この **字幕のちらつき・頻繁な書き換え（subtitle flickering / revision churn）**により、同じ行を読み直す必要が生じ、視聴が途切れます。
 
-![初回起動時の画面：認証情報なし](docs/assets/player.png)
+LingerLens は映像を約 **15秒**バッファリングし、音声認識、文の分割、翻訳に時間を確保してから、再生タイムラインに沿って二言語字幕を表示します。一時的な結果の書き換えを減らし、対応する映像とともに、より安定した文脈のある訳文を読めるようにします。**遅延は調整可能で、翻訳したライブチャットを映像上に弾幕として表示することもできます。**
+
+![LingerLens — English interface](docs/assets/player.en.png)
+
+## 動作デモ
+
+英語画面での二言語字幕、遅延再生、ライブチャットのデモです。
+
+![LingerLens — English demo](docs/assets/demo.en.gif)
 
 ## ダウンロード
 
@@ -18,7 +26,7 @@ Windows x64 は `.exe`、Mac は Apple Silicon 用の `macos-arm64.dmg` また�
 
 ## 映像を遅らせる理由
 
-認識と翻訳には時間がかかります。映像を少し待たせることで、音声と訳文を一緒に届けます。初期値の 15 秒から、サービスと通信状況に合わせて調整してください。
+遅延再生より先に認識と翻訳を処理します。初期目標は15秒、設定範囲は11～60秒です。配信元・通信・サービスにも左右されるため、一定の総遅延を保証するものではありません。長い発話は分割され、単語の時刻情報がないサービスでは概算の区間を使います。字幕の書き換えを減らしますが、すべての訳文の到着時刻や正確さを保証するものではありません。
 
 ## 主な機能
 
@@ -43,7 +51,7 @@ Windows x64 は `.exe`、Mac は Apple Silicon 用の `macos-arm64.dmg` また�
 
 ## ソースから実行する
 
-Windows、Python **3.11 以上**、Node.js **22.12 以上**、PATH 上の FFmpeg/ffprobe、Chrome または Edge が必要です。リポジトリが非公開の間は GitHub のアクセス権も必要です。
+Windows、Python **3.11 以上**、Node.js **22.12 以上**、PATH 上の FFmpeg/ffprobe、Chrome または Edge が必要です。
 
 ```powershell
 git clone https://github.com/Antiranger/LingerLens.git
@@ -57,6 +65,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 <http://127.0.0.1:8765/> を開きます。Bootstrap はツールと yt-dlp のチェックサムを確認して依存関係をインストールします。`-CheckOnly` なら確認のみです。デスクトップ版のビルドは行いません。
 
 `-Prototype` を付けない起動コマンドは、既存の `release/win-unpacked/LingerLens.exe` を開きます。[ビルド手順](desktop/README.md)も参照してください。
+
+## モデルの設定
+
+認識プロトコルを選び、推奨モデルからIDを入力するか、手動で指定します。Tencentでは認識エンジンも更新されます。サービス内蔵の二言語モードは1つの接続で認識と翻訳を行い、その他のモードでは翻訳サービスを別に設定します。[サービス設定](docs/PROVIDERS.md)と[ASR時刻の互換性](docs/ASR-COMPATIBILITY.md)を参照してください。
+
+## 更新
+
+Windowsのインストール版はGitHub Releasesで更新を確認します。利用者の操作で新版をダウンロードし、サイズとSHA-256を検証してからインストーラーを実行します。ソース実行時は更新ボタンを表示しません。macOSは新版DMGでアプリを置き換えます。既存の設定は保持され、新規プロファイルには個人のモデル・APIキー・Cookieは含まれません。
 
 ## プライバシーと制限
 

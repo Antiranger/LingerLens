@@ -4,6 +4,8 @@ This is a protocol and configuration reference, not a promise that every provide
 
 ## Recognition
 
+See the [ASR subtitle compatibility audit](ASR-COMPATIBILITY.md) for per-adapter timing evidence, the limits of the seven-second publication deadline, regression coverage, and the model selector. Local integration passing does not certify real-account latency or every custom model.
+
 Implemented adapters include DashScope task/realtime ASR, Soniox Realtime, Deepgram Streaming, OpenAI Realtime Transcription and Audio Transcriptions, AssemblyAI Streaming, Volcano Engine, ElevenLabs Scribe Realtime, Speechmatics Realtime and Tencent Cloud ASR. Provider-native bilingual sessions currently include DashScope LiveTranslate and Soniox when translation is enabled.
 
 DashScope LiveTranslate answers on the global realtime host, `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=<id>` — verified against a real account on 2026-09-21 with an API key and nothing else. The per-workspace host the provider docs print, `wss://<workspaceId>.<region>.maas.aliyuncs.com/api-ws/v1/realtime`, is an alternative some accounts are told to use; **业务空间 ID / WorkspaceId** is optional and the adapter only substitutes it when the address itself carries a placeholder (an unreplaced one fails fast and says which field to fill). What is not optional is `voice`: the session the server starts carries `Chelsie`, Qwen 3.8 rejects that voice on its first generated turn and drops the connection, so the adapter pins a voice it accepts (`Tina`, configurable) even for text-only subtitles. Its caption language comes from 字幕与弹幕设置 → 目标语言, and LiveTranslate 3.8 detects the spoken language itself (a source-language pin reaches only a 3.5 model).

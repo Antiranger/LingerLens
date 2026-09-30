@@ -1,6 +1,6 @@
 # LingerLens Benutzerhandbuch
 
-[Dokumentation](../README.md) · Stand 0.1.0 · Aktualisiert 2026-09-29
+[Dokumentation](../README.md) · Stand 0.1.2 · Aktualisiert 2026-09-30
 
 ## Start
 
@@ -26,6 +26,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 ## Anbieter und Wiedergabe
 
 Unter Verbindungen und Schlüssel Modell-ID, Endpunkt und Authentifizierung eintragen. Erkennung und Übersetzung sind getrennt; Qwen LiveTranslate und Soniox können beides in einer Sitzung liefern. Übersetzungsprotokolle: OpenAI-kompatibel, Qwen-MT, Anthropic Messages, Google Gemini. Erkennung: DashScope, Soniox, Deepgram, OpenAI, AssemblyAI, Volcano Engine, ElevenLabs, Speechmatics, Tencent. Diese Protokollliste ist keine Garantie für jedes Konto, Modell oder jede Sprache.
+
+Die Protokollauswahl zeigt kurze Anbieternamen. Nach der ASR-Auswahl trägt die Modellauswahl eine unterstützte Modell-ID ein; eigene Gateway-IDs bleiben manuell editierbar. Bei Tencent wird auch die Engine aktualisiert. Neue Soniox-Profile benötigen keinen separaten Übersetzer. Aktivieren Sie den Übersetzungsfallback erst nach dessen Einrichtung. Die Sieben-Sekunden-Grenze veröffentlicht bestätigten Text; sie erzwingt keine Anbieterantwort und bestätigt keine veränderliche Hypothese. Zeit- und Übersetzungsgrenzen stehen im [ASR-Kompatibilitätsaudit](../ASR-COMPATIBILITY.md).
 
 YouTube-, Bilibili- oder Twitch-HTTPS-URL einfügen, H.264/AVC und AAC bevorzugen und starten. Zielverzögerung: 11–60 Sekunden, Standard 15; die tatsächliche Latenz hängt zusätzlich von Stream und Netzwerk ab. Die Player-Vollbildtaste nimmt Untertitel mit. Öffentliche Streams zuerst ohne Cookies testen. Der Import akzeptiert unterstützte Header, Tabellen oder Netscape-Exporte; Bilibili-Anmeldung benötigt `SESSDATA`. Cookies umgehen weder DRM noch Bezahl-, Regions- oder Bot-Schutz.
 
