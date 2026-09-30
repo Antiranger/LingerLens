@@ -526,6 +526,7 @@ class SubtitlePipeline:
         self._generation += 1
         self._next_chunk_order = 1
         self._caption_exact_timing.clear()
+        self._untimed_caption_frontier = getattr(self, "_last_sent_pcm_offset", 0.0)
         self.caption_chunker.reset(self._generation)
         self._caption_deadline_changed.set()
         if self.native_translation_bus is not None:
@@ -1404,6 +1405,20 @@ class SubtitlePipeline:
             "stable_prefix_snapshot", "text_snapshot", "utterance_final", "endpoint",
         }:
             mapped_end = self._last_sent_pcm_offset
+        if mapped_begin is None and not observation.tokens and observation.kind in {
+            "stable_prefix_snapshot", "text_snapshot", "utterance_final",
+        }:
+            # Final-only services can supply neither VAD nor lexical times.
+            # Bound this item by the previous commit and received-audio frontier,
+            # never by the stream origin. This includes intervening silence and
+            # network delay: it is explicitly approximate, not word alignment.
+            span = self._span_for(item_id)
+            session_start = self._push_breadcrumbs[0][1] if self._push_breadcrumbs else 0.0
+            mapped_begin = max(session_start, self._untimed_caption_frontier)
+            span["start"] = mapped_begin
+            span["approx"] = True
+        if observation.kind == "utterance_final" and mapped_end is not None:
+            self._untimed_caption_frontier = max(self._untimed_caption_frontier, mapped_end)
         mapped_tokens = []
         valid_token_timing = bool(observation.tokens)
         for token in observation.tokens:
@@ -1532,12 +1547,11 @@ class SubtitlePipeline:
         # A caption can contain evidence from several ASR items or be emitted
         # by a later speaker's event. Its own units own timing provenance.
         #
-        # There is no third case: CaptionChunk.begin_pcm is a non-optional float
-        # (_chunk_times substitutes state.begin_pcm or 0.0), so the old
-        # `"vad" if chunk.begin_pcm is not None else "approx"` was a tautology
-        # and "approx" was unreachable. The UI displayed that permanently-zero
-        # counter as if it meant something.
+        # A numeric start alone does not establish timing provenance. An untimed
+        # item is bounded by commit/frontier estimates rather than provider VAD.
         timing_source: TimingSource = "asr" if chunk.exact_timing else "vad"
+        if not chunk.exact_timing and self._vad_spans.get(chunk.item_id, {}).get("approx"):
+            timing_source = "approx"
         begin_pcm = self.acoustic_onset.refine(chunk.begin_pcm, chunk.end_pcm)
         adjustment = abs(begin_pcm - chunk.begin_pcm)
         if adjustment > 0.001:

@@ -1885,7 +1885,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   padding: var(--s4);
 }
 .provider-fields .wide { grid-column: 1 / -1; }
-.provider-fields > label { display: grid; gap: var(--s1); min-width: 0; }
+.provider-fields > label { display: grid; align-content: start; gap: var(--s1); min-width: 0; }
 .provider-fields > label > span { font-size: 12px; font-weight: 700; color: var(--ink-70); }
 .provider-fields .provider-hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-45); }
 .provider-fields small { font-size: 11px; color: var(--ink-45); }

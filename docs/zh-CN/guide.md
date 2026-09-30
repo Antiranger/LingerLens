@@ -27,6 +27,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Python 
 
 在「连接与密钥」中新建并选择配置，使用服务方准确的模型 ID、地址和鉴权。识别与翻译默认分开；启用服务原生双语时可由一个会话提供两者。翻译协议包括 OpenAI 兼容、Qwen-MT、Anthropic Messages、Google Gemini；识别适配器包括 DashScope、Soniox、Deepgram、OpenAI、AssemblyAI、火山引擎、ElevenLabs、Speechmatics 和腾讯。协议已实现不等于每个模型、语言、账户都验证通过。
 
+协议列表使用简短的平台名称。选择 ASR 协议后，可从模型下拉栏自动填写已适配的模型 ID，也可手动填写自定义服务的 ID；腾讯模型会同时更新实际调用的引擎。新建 Soniox 配置不要求另配翻译模型，配好后才可按需开启原生翻译补译。7 秒上限用于释放已确认的字幕文字，不能强迫服务返回结果，也不会把可变的临时文字当成最终字幕。时间轴与原生译文的限制见 [ASR 适配检查](../ASR-COMPATIBILITY.md)。
+
 本地 Whisper 兼容识别需要自行运行服务，常见地址为 `http://127.0.0.1:8000/v1`，程序会请求 `/audio/transcriptions`。是否支持自动检测、混合语言和具体字幕语言由所选服务决定；五种界面语言不代表每个识别服务都支持五种语言。费用缺数据时显示不可估算，不按零处理。
 
 ## 播放直播与 Cookie

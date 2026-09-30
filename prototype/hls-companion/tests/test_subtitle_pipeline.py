@@ -633,14 +633,9 @@ class PipelineFinalTests(unittest.IsolatedAsyncioTestCase):
         # unmapped evidence (the counter that replaced `stats.unjoined_finals`).
         self.assertEqual(pipeline.stats.unmapped_observations, 0)
         self.assertEqual(len(cues), 1)
-        # A final with no VAD span is no longer labelled "approx" (the name is
-        # kept so the deleted mechanism's coverage stays traceable): the live
-        # chunker substitutes the lane's 0.0 origin for a missing unit begin
-        # (caption_chunker.py ``_chunk_times``), so the start is the pipeline
-        # origin and the end is the audio frontier that
-        # ``_map_caption_observation`` used as the fallback end. The deleted
-        # _handle_final left t_start None for this case instead.
-        self.assertEqual(cues[0].timing_source, "vad")
+        # No provider onset/VAD was supplied. The first commit spans the session
+        # origin to the received-audio frontier and must report approximation.
+        self.assertEqual(cues[0].timing_source, "approx")
         self.assertEqual(cues[0].t_start, 950.0)
         self.assertAlmostEqual(cues[0].t_end, 953.0)
 
