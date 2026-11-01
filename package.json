@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "electron": "44.2.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.18.0"
   },
   "main": "desktop/main.cjs",
   "author": "Antiranger"
